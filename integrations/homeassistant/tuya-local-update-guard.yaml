@@ -1,0 +1,67 @@
+# Install as a Home Assistant package. Replace the example update entity if needed.
+# The reviewed installer bundle lives outside HACS's integration directory.
+shell_command:
+  stmq_preserve_tuya_observations: >-
+    python3 /config/stmq-tuya-observation/scripts/apply-tuya-local-observation.py
+    --integration-dir /config/custom_components/tuya_local
+    --backup-dir /config/private-backups/tuya-local-observation
+
+automation:
+  - id: stmq_preserve_tuya_observations
+    alias: ST-MQ preserve Tuya observations after updates
+    description: Restore reviewed source and device profile after compatible HACS updates; report incompatible updates without restarting HA or operating equipment.
+    triggers:
+      - trigger: state
+        entity_id: update.tuya_local_update
+        attribute: installed_version
+      - trigger: state
+        entity_id: update.tuya_local_update
+        attribute: in_progress
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: template
+        value_template: "{{ not state_attr('update.tuya_local_update', 'in_progress') }}"
+    actions:
+      - delay: "00:00:03"
+      - condition: template
+        value_template: "{{ not state_attr('update.tuya_local_update', 'in_progress') }}"
+      - action: shell_command.stmq_preserve_tuya_observations
+        response_variable: adapter_result
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ adapter_result is not defined or adapter_result.get('returncode', -1) != 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: stmq_tuya_observation_adapter
+              title: Tuya observation adapter needs review
+              message: >-
+                The observation adapter could not be preserved. The updated Tuya
+                source or dependencies may need review. Ordinary HA entity state
+                cannot confirm Caravan readings. Keep the reviewed bundle and
+                private backups; do not reapply an older patch by force.
+        else:
+          - if:
+              - condition: template
+                value_template: "{{ (adapter_result.get('stdout', '') | from_json({})).get('restartRequired', false) }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: stmq_tuya_observation_adapter
+                  title: Tuya observation adapter preserved
+                  message: >-
+                    The reviewed adapter and device profile are installed.
+                    Restart Home Assistant to load them, then verify confirmed
+                    Caravan readings. No appliance commands were sent.
+            else:
+              - if:
+                  - condition: template
+                    value_template: "{{ trigger.platform == 'homeassistant' }}"
+                then:
+                  - action: persistent_notification.dismiss
+                    data:
+                      notification_id: stmq_tuya_observation_adapter
+    mode: queued
+    max: 3

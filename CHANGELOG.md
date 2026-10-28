@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Support Tuya Local 2026.10.0 in the Caravan observation adapter. Add an optional
+  HA update guard that preserves the adapter and custom device profile after
+  compatible HACS updates, and reports changed upstream code for review.
+
 - Update the application and qualification containers to the Node.js 22.23.4
   security release, including patched TLS, DNS, compression,
   SQLite and HTTP dependencies.

@@ -1747,11 +1747,14 @@ that installed charger confirmation chatter or replanning has been resolved.
 The Tuya Local bridge tests render synthetic HA templates and verify independent
 native report clocks, identity, supported controls and request expiry. The pinned
 observation-adapter tests execute actual patched upstream methods and exercise
-installer rejection, private backups and rollback. Profile encoding can also be
-checked against an unpacked public Tuya Local 2026.9.2 source release:
+installer rejection, private backups and rollback, compatible-update restoration
+of the adapter and a missing
+custom profile, dependency rejection, concurrent-updater preservation and update
+guard notification templates. Profile encoding can also be
+checked against an unpacked public Tuya Local 2026.10.0 source release:
 
 ```sh
-STMQ_TUYA_LOCAL_SOURCE=/path/to/tuya-local-2026.9.2 \
+STMQ_TUYA_LOCAL_SOURCE=/path/to/tuya-local-2026.10.0 \
   node --test test/tuya-local-desd8lw-profile.test.js
 ```
 

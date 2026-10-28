@@ -82,7 +82,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -354,6 +374,7 @@
+@@ -355,6 +375,7 @@
                      # has been established.  Until then, we need to rotate
                      # the protocol version, which seems to require a fresh
                      # connection.
@@ -90,17 +90,17 @@
                      persist = not self.should_poll
                      _LOGGER.debug(
                          "%s persistant connection set to %s", self.name, persist
-@@ -363,7 +384,8 @@
+@@ -364,7 +385,8 @@
                          self._api.parent.set_socketPersistent(persist)
                      self._last_full_poll = 0  # ensure we start with a full poll
  
--                needs_full_poll = now - self._last_full_poll > self._CACHE_TIMEOUT
+-                needs_full_poll = now - self._last_full_poll > self._POLLING_INTERVAL
 +                refresh = self._take_local_status_refresh()
-+                needs_full_poll = refresh is not None or now - self._last_full_poll > self._CACHE_TIMEOUT
-                 if now - last_cache > self._CACHE_TIMEOUT or (
++                needs_full_poll = refresh is not None or now - self._last_full_poll > self._POLLING_INTERVAL
+                 if now - last_cache > self._POLLING_INTERVAL or (
                      persist and needs_full_poll
                  ):
-@@ -372,20 +394,45 @@
+@@ -373,20 +395,45 @@
                          and not dps_updated
                          and self._api_protocol_working
                      ):
@@ -150,7 +150,7 @@
                  elif persist:
                      if now - last_heartbeat > self._HEARTBEAT_INTERVAL:
                          await self._hass.async_add_executor_job(
-@@ -393,9 +440,20 @@
+@@ -394,9 +441,20 @@
                              True,
                          )
                          last_heartbeat = now
@@ -174,7 +174,7 @@
                      # Ignore Payload error 904, as 3.4 protocol devices seem to return
                      # this when there is no new data, instead of just returning nothing.
                      if poll and "Err" in poll and poll["Err"] == "904":
-@@ -411,6 +469,7 @@
+@@ -412,6 +470,7 @@
                          if poll["Err"] in {"901", "902", "905", "906", "914"}:
                              force_backoff = True
                              persist = False
@@ -182,7 +182,7 @@
                              self._api.set_socketPersistent(False)
                              if self._api.parent:
                                  self._api.parent.set_socketPersistent(False)
-@@ -443,6 +502,7 @@
+@@ -444,6 +503,7 @@
                  # Close the persistent connection when exiting the loop
                  persist = False
                  _LOGGER.debug("%s receive loop interrupted", self.name)
@@ -190,7 +190,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -455,6 +515,7 @@
+@@ -456,6 +516,7 @@
                      t,
                  )
                  persist = False
@@ -198,7 +198,7 @@
                  self._api.set_socketPersistent(False)
                  if self._api.parent:
                      self._api.parent.set_socketPersistent(False)
-@@ -465,6 +526,7 @@
+@@ -466,6 +527,7 @@
              await asyncio.sleep(5 if force_backoff else 0.1)
  
          # Close the persistent connection when exiting the loop
@@ -206,7 +206,7 @@
          self._api.set_socketPersistent(False)
          if self._api.parent:
              self._api.parent.set_socketPersistent(False)
-@@ -536,6 +598,313 @@
+@@ -537,6 +599,313 @@
                  f"Failed to refresh device state for {self.name}.",
              )
  
@@ -520,7 +520,7 @@
      def get_property(self, dps_id):
          cached_state = self._get_cached_state()
          return cached_state.get(dps_id)
-@@ -554,16 +923,26 @@
+@@ -555,16 +924,26 @@
          """
          self._cached_state[dps_id] = value
  
@@ -550,7 +550,7 @@
                  self._cached_state = self._cached_state | new_state.get("dps", {})
                  self._cached_state["updated_at"] = time()
                  for entity in self._children:
-@@ -643,29 +1022,44 @@
+@@ -644,29 +1023,44 @@
          await self._send_pending_updates()
  
      async def _send_pending_updates(self):
@@ -612,7 +612,7 @@
          if self._api_protocol_version_index is None:
              await self._rotate_api_protocol_version()
          auto = (self._protocol_configured == "auto") and (
-@@ -682,13 +1076,28 @@
+@@ -683,13 +1077,28 @@
              )
          )
  
@@ -641,7 +641,7 @@
                      if isinstance(retval, dict) and "Error" in retval:
                          last_err_code = retval.get("Err")
                          last_err_msg = retval.get("Error")
-@@ -713,12 +1122,29 @@
+@@ -714,12 +1123,29 @@
                      connections,
                  )
                  # Ensure we have a fresh connection for the next attempt
@@ -672,7 +672,7 @@
                      self._api_working_protocol_failures += 1
                      if (
                          self._api_working_protocol_failures
-@@ -860,6 +1286,11 @@
+@@ -861,6 +1287,11 @@
          "tuyadevice": device._api,
          "tuyadevicelock": device._api_lock,
      }

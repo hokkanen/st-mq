@@ -18,7 +18,7 @@ import unittest
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / 'test' / 'fixtures' / 'tuya-local-2026.9.2'
+FIXTURE = ROOT / 'test' / 'fixtures' / 'tuya-local-2026.10.0'
 spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts' / 'apply-tuya-local-observation.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
@@ -437,7 +437,10 @@ class InstallerTests(unittest.TestCase):
         self.integration.mkdir()
         for name, data in ORIGINALS.items():
             (self.integration / name).write_bytes(data)
-        (self.integration / 'manifest.json').write_text(json.dumps({'domain': 'tuya_local', 'version': '2026.9.2'}))
+        (self.integration / 'manifest.json').write_text(json.dumps({'domain': 'tuya_local', 'version': '2026.10.0', 'requirements': CONTRACT['requirements']}))
+        (self.integration / 'devices').mkdir()
+        self.profile = self.integration / 'devices/electriq_desd8lw_dehumidifier.yaml'
+        self.profile.write_bytes((installer.BUNDLE / 'tuya-local-desd8lw.yaml').read_bytes())
         self.backup = self.root / 'backup'
 
     def test_dry_run_apply_backup_and_idempotence(self):
@@ -456,8 +459,88 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual((self.integration / 'device.py').read_bytes(), ORIGINALS['device.py'])
         self.assertFalse(self.backup.exists())
         (self.integration / 'manifest.json').write_text(json.dumps({'domain': 'tuya_local', 'version': 'future'}))
-        with self.assertRaisesRegex(ValueError, 'exact supported'):
+        with self.assertRaisesRegex(ValueError, 'supported manifest'):
             installer.install(self.integration, self.backup)
+
+    def test_compatible_hacs_update_restores_adapter_and_removed_profile(self):
+        installer.install(self.integration, self.backup)
+        # HACS replaces its whole integration; the persistent external bundle remains.
+        for name, data in ORIGINALS.items():
+            (self.integration / name).write_bytes(data)
+        self.profile.unlink()
+        manifest = json.loads((self.integration / 'manifest.json').read_text())
+        manifest['version'] = '2026.11.0'
+        (self.integration / 'manifest.json').write_text(json.dumps(manifest))
+        self.assertTrue(installer.install(self.integration, check=True)['restoreProfile'])
+        self.assertEqual(installer.install(self.integration, self.backup)['version'], '2026.11.0')
+        self.assertEqual(self.profile.read_bytes(), (installer.BUNDLE / 'tuya-local-desd8lw.yaml').read_bytes())
+        for name in ORIGINALS:
+            self.assertEqual((self.integration / name).read_bytes(), PATCHED[name])
+        self.assertEqual(installer.install(self.integration, self.backup)['status'], 'already-installed')
+
+    def test_dependency_change_and_custom_profile_rejected_without_source_changes(self):
+        manifest = json.loads((self.integration / 'manifest.json').read_text())
+        manifest['requirements'] = ['tinytuya==99.0.0']
+        (self.integration / 'manifest.json').write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, 'reviewed dependencies'):
+            installer.install(self.integration, self.backup)
+        manifest['requirements'] = CONTRACT['requirements']
+        (self.integration / 'manifest.json').write_text(json.dumps(manifest))
+        self.profile.write_text('name: Custom configuration\nentities: []\n')
+        with self.assertRaisesRegex(ValueError, 'customization'):
+            installer.install(self.integration, self.backup)
+        self.assertFalse(self.backup.exists())
+        self.assertEqual((self.integration / 'device.py').read_bytes(), ORIGINALS['device.py'])
+
+    def test_patched_sources_can_restore_only_a_missing_profile(self):
+        installer.install(self.integration, self.backup)
+        self.profile.unlink()
+        installer.install(self.integration, self.backup)
+        self.assertTrue(self.profile.is_file())
+
+    def test_concurrent_updater_bytes_are_not_overwritten_by_rollback(self):
+        real = installer.atomic_replace
+        concurrent = b'# synthetic concurrent updater owns this file\n'
+        def update_during_second_file(path, data, attributes):
+            if path.name == 'entity.py':
+                (self.integration / 'device.py').write_bytes(concurrent)
+                raise OSError('Synthetic concurrent updater')
+            real(path, data, attributes)
+        installer.atomic_replace = update_during_second_file
+        try:
+            with self.assertRaisesRegex(OSError, 'concurrent updater'):
+                installer.install(self.integration, self.backup)
+        finally:
+            installer.atomic_replace = real
+        self.assertEqual((self.integration / 'device.py').read_bytes(), concurrent)
+
+    def test_update_guard_reports_failure_and_only_clears_restart_notice_at_startup(self):
+        try:
+            import yaml
+            from jinja2 import StrictUndefined
+            from jinja2.sandbox import ImmutableSandboxedEnvironment
+        except ImportError:
+            self.skipTest('Update guard template check requires optional PyYAML and Jinja2')
+        guard = yaml.safe_load((installer.BUNDLE / 'tuya-local-update-guard.yaml').read_text())
+        automation = guard['automation'][0]
+        env = ImmutableSandboxedEnvironment(undefined=StrictUndefined)
+        env.filters['from_json'] = lambda value, default: json.loads(value) if value else default
+        render = lambda template, **values: env.from_string(template).render(**values).strip() == 'True'
+        busy = automation['conditions'][0]['value_template']
+        self.assertFalse(render(busy, state_attr=lambda *_: True))
+        self.assertTrue(render(busy, state_attr=lambda *_: False))
+        result = automation['actions'][3]
+        failure = result['if'][0]['value_template']
+        for values in [{}, {'adapter_result': {}}, {'adapter_result': {'returncode': 1}}]:
+            self.assertTrue(render(failure, **values))
+        self.assertFalse(render(failure, adapter_result={'returncode': 0}))
+        success = result['else'][0]
+        restart = success['if'][0]['value_template']
+        self.assertTrue(render(restart, adapter_result={'stdout': '{"restartRequired":true}'}))
+        self.assertFalse(render(restart, adapter_result={'stdout': '{"restartRequired":false}'}))
+        clear = success['else'][0]['if'][0]['value_template']
+        self.assertTrue(render(clear, trigger={'platform': 'homeassistant'}))
+        self.assertFalse(render(clear, trigger={'platform': 'state'}))
 
     def test_partial_install_and_unsafe_backup_rejected(self):
         (self.integration / 'device.py').write_bytes(PATCHED['device.py'])

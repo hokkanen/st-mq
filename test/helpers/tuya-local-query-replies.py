@@ -83,7 +83,7 @@ def fixture(api=None, record=None):
         n._encode_message=encode;n._receive=lambda:n.socket.next()
         n._decode_payload=lambda data:json.loads(data);n._cache_response=lambda _:None;n._process_response=lambda data:data
     d=Device.__new__(Device);d._children=[];d._name='Synthetic appliance';d.dev_cid=None;d.dev_id=n.id;d._api=n
-    d._FAKE_IT_TIMEOUT=5;d._CACHE_TIMEOUT=30;d._HEARTBEAT_INTERVAL=5
+    d._FAKE_IT_TIMEOUT=5;d._POLLING_INTERVAL=30;d._HEARTBEAT_INTERVAL=5
     d._reset_cached_state();d._running=True;d._poll_only=False;d._temporary_poll=False
     d._last_full_poll=o.CLOCK[0];d._force_dps=[];d._last_connection=o.CLOCK[0]
     d._api_protocol_version_index=0;d._protocol_configured=3.3;d._api_protocol_working=True

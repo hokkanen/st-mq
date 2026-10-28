@@ -254,10 +254,12 @@ separately planned Home Assistant restart described below.
 
 ## Apply the reviewed patch
 
-This adapter supports only the exact reviewed **2026.9.2** source hashes listed
+This adapter supports only the reviewed **2026.10.0** source hashes listed
 in `tuya-local-observation.json`. An unknown or partially patched source is
 rejected before mutation. Review a changed upstream source before updating the
-adapter; a matching version label alone is insufficient.
+adapter; a matching version label alone is insufficient. A later version is accepted
+only when both exact source files and declared dependencies are unchanged. This
+permits profile-only releases without weakening code or SDK review.
 An earlier patch's bytes are unsupported. To replace an already patched
 installation, stop Core and deliberately restore both exact reviewed pristine
 source files from their private backup before checking and applying the current
@@ -275,7 +277,9 @@ Copy `scripts/apply-tuya-local-observation.py` and the three files
 `integrations/homeassistant/tuya-local-observation.json`,
 `integrations/homeassistant/tuya-local-observation.patch` and
 `integrations/homeassistant/tuya-local-desd8lw.yaml` with their relative layout
-intact. Run from the copied bundle's root, first checking without writing:
+intact. Keep the bundle outside HACS's integration directory, for example at
+`/config/stmq-tuya-observation` inside Core. Run from the bundle's root, first
+checking without writing:
 
 ```sh
 python3 scripts/apply-tuya-local-observation.py \
@@ -293,11 +297,40 @@ python3 scripts/apply-tuya-local-observation.py \
 The installer performs no network calls, Home Assistant restart, service call or
 device command. It validates both files and the patch before backing up original
 bytes, preserves permissions and line endings, then replaces each file atomically.
-A failed second replacement restores the first. A reviewed Home Assistant restart
+A failed publication restores earlier files only while they still contain this
+installer's bytes; it never overwrites a concurrent updater's newer content.
+A missing custom profile is restored, but an existing profile with different
+settings is rejected before source changes. A reviewed Home Assistant restart
 is required to load the patched Python classes; plan it separately from file
 installation. HACS may replace the patch during an integration update. A missing
 observation attribute makes the bridge unavailable rather than falling back to
 optimistic entity state.
+
+## Preserve the adapter across HACS updates
+
+Install [the update guard package](tuya-local-update-guard.yaml) in Home Assistant
+and merge it into the existing `homeassistant.packages` configuration. Use the
+actual Tuya Local update entity in its triggers and conditions;
+`update.tuya_local_update` is the example. Keep the persistent bundle at the path
+used by its `shell_command`, and backups outside the bundle and HACS. The package
+requires one reviewed Core restart to load.
+
+After HACS changes the installed version or finishes updating, the guard waits
+three seconds, checks that no update is in progress, then runs the same installer.
+It also checks once at HA startup. It makes no appliance commands, opens no
+second device connection, never restarts Core and performs no repeated polling.
+Compatible updates restore the adapter and any removed custom profile before
+the normal user-initiated update restart. Unknown code, dependencies or profile
+customizations produce a persistent HA notification requiring review. The guard
+never force-applies an older patch to different code.
+
+Wait for the adapter-preserved notification before restarting after an update.
+An immediate restart can race the guard; a startup repair then requires another
+Core restart because changing files cannot replace loaded Python classes.
+Successful installation is not proof of fresh device readings or physical
+operation. Check `local_observations` and the bridge after restart. This avoids
+routine manual reinstallation for compatible updates; future code or SDK changes
+still require review.
 
 Offline validation: `node --test test/tuya-local-observation.test.js`. The tests
 execute patched upstream methods and the pinned current SDK query/receive producers using synthetic native replies and checks

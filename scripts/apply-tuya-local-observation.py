@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the pinned Tuya Local observation adapter without network access or reloads."""
+"""Apply reviewed Tuya Local source changes without network access or reloads."""
 import argparse
 import hashlib
 import json
@@ -15,6 +15,12 @@ BUNDLE = ROOT / 'integrations' / 'homeassistant'
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def profile_content(data):
+    # Permit changed comment lines, not changed YAML structure or settings.
+    return '\n'.join(line.rstrip() for line in data.decode('utf-8').splitlines()
+                     if line.strip() and not line.lstrip().startswith('#'))
 
 
 def patched_sources(patch, originals):
@@ -94,9 +100,13 @@ def atomic_replace(path, data, original_stat):
 def install(integration_dir, backup_dir=None, check=False):
     integration_dir = Path(integration_dir).resolve()
     contract = json.loads((BUNDLE / 'tuya-local-observation.json').read_text())
-    manifest = json.loads((integration_dir / 'manifest.json').read_text())
-    if manifest.get('domain') != 'tuya_local' or manifest.get('version') != contract['version']:
-        raise ValueError('Observation adapter requires the exact supported Tuya Local version')
+    manifest_bytes = (integration_dir / 'manifest.json').read_bytes()
+    manifest = json.loads(manifest_bytes)
+    version = manifest.get('version')
+    if (manifest.get('domain') != 'tuya_local' or not isinstance(version, str)
+            or not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9.-]+)?', version)
+            or manifest.get('requirements') != contract['requirements']):
+        raise ValueError('Observation adapter requires a supported manifest and exact reviewed dependencies')
     if set(contract['files']) != {'device.py', 'entity.py'}:
         raise ValueError('Invalid observation adapter source contract')
     patch = (BUNDLE / 'tuya-local-observation.patch').read_bytes()
@@ -115,21 +125,38 @@ def install(integration_dir, backup_dir=None, check=False):
         originals[name], states[name], attributes[name] = data, state, path.stat()
     if len(set(states.values())) != 1:
         raise ValueError('Partially installed observation adapter; restore the reviewed backup before retrying')
-    if states['device.py'] == 'patched':
-        return {'status': 'already-installed', 'version': contract['version']}
-    patched = patched_sources(patch.decode('utf-8'), originals)
+    profile = 'devices/electriq_desd8lw_dehumidifier.yaml'
+    profile_data = (BUNDLE / 'tuya-local-desd8lw.yaml').read_bytes()
+    if digest(profile_data) != contract['profileSha256']:
+        raise ValueError('Observation adapter profile checksum differs')
+    profile_path = integration_dir / profile
+    if profile_path.is_symlink() or profile_path.parent.is_symlink() or not profile_path.parent.is_dir():
+        raise ValueError('Observation adapter requires a regular devices directory and profile')
+    existing_profile = profile_path.read_bytes() if profile_path.exists() else None
+    if existing_profile is not None and profile_content(existing_profile) != profile_content(profile_data):
+        raise ValueError('Installed device profile differs; preserve and review the customization')
+    already_patched = states['device.py'] == 'patched'
+    if already_patched and existing_profile is not None:
+        return {'status': 'already-installed', 'version': version, 'restartRequired': False}
+    patched = {} if already_patched else patched_sources(patch.decode('utf-8'), originals)
     if any(digest(data) != contract['files'][name]['patchedSha256'] for name, data in patched.items()):
         raise ValueError('Patched observation adapter checksum differs')
     if check:
-        return {'status': 'ready', 'version': contract['version']}
+        return {'status': 'ready', 'version': version, 'restoreProfile': existing_profile is None}
     if backup_dir is None:
         raise ValueError('A backup directory outside the repository and integration is required')
     backup_dir = Path(backup_dir).resolve()
     if backup_dir.is_relative_to(ROOT) or backup_dir.is_relative_to(integration_dir):
         raise ValueError('The backup directory must be outside the repository and integration')
     backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if existing_profile is None:
+        patched[profile] = profile_data
+        originals[profile] = None
+        attributes[profile] = attributes['device.py']
     for name, data in originals.items():
-        backup = backup_dir / f'{name}.{digest(data)}.bak'
+        if data is None:
+            continue
+        backup = backup_dir / f'{Path(name).name}.{digest(data)}.bak'
         try:
             descriptor = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -145,15 +172,25 @@ def install(integration_dir, backup_dir=None, check=False):
         for name, data in patched.items():
             # Refuse a concurrent HACS update between preflight and publication.
             path = integration_dir / name
-            if path.read_bytes() != originals[name]:
+            if (path.is_symlink() or (path.read_bytes() if path.exists() else None) != originals[name]
+                    or (integration_dir / 'manifest.json').read_bytes() != manifest_bytes):
                 raise ValueError('Tuya Local source changed during installation')
             atomic_replace(path, data, attributes[name])
             changed.append(name)
+        if (integration_dir / 'manifest.json').read_bytes() != manifest_bytes or any(
+                (integration_dir / name).read_bytes() != data for name, data in patched.items()):
+            raise ValueError('Tuya Local source changed during installation')
     except BaseException:
         for name in reversed(changed):
-            atomic_replace(integration_dir / name, originals[name], attributes[name])
+            path = integration_dir / name
+            # A concurrent updater owns its newer bytes; never restore over them.
+            if not path.is_symlink() and path.exists() and path.read_bytes() == patched[name]:
+                if originals[name] is None:
+                    path.unlink()
+                else:
+                    atomic_replace(path, originals[name], attributes[name])
         raise
-    return {'status': 'installed', 'version': contract['version'], 'restartRequired': True}
+    return {'status': 'installed', 'version': version, 'restartRequired': True}
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-# electriQ DESD8LW: verified local DP subset for Tuya Local 2026.9.2.
+# electriQ DESD8LW: verified local DP subset for Tuya Local 2026.10.0.
 # The DESD9LW profiles use different DP types, ranges and enum values.
 # No product/device identifiers or observed household values belong here.
 # Native entity state may be optimistic; the MQTT bridge requires the separate

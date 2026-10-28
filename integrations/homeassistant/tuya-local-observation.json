@@ -1,14 +1,19 @@
 {
-  "version": "2026.9.2",
-  "patchSha256": "484966b7fdf57fa0e2734f92e34ea174d9ff196e4b1f32d2d66b090c004b9c4d",
+  "version": "2026.10.0",
+  "patchSha256": "7497cb8c1fbefaae985afbe1a232b458803562a76c2ec6b8195b34a9016c07d8",
   "files": {
     "device.py": {
-      "originalSha256": "9ec422f63e53b5c366e5fd9b1abd886beaa5e7d27a1a631a48253b91148b3bdb",
-      "patchedSha256": "51f909fbfa224301eec10167a44cbd0aed92f051fd188ab7c60d6195f3923a98"
+      "originalSha256": "2c6092f087eb4d71e9c48abbe34e9c82e0189a604aaf3b7ce8f8493cd3e60aff",
+      "patchedSha256": "e605f4386cda1ab5dfc1b8bc1ad6edabf0c3d99a59d77ac5abf20ab383e114f1"
     },
     "entity.py": {
-      "originalSha256": "31e69b3ffd0f26036d6711746e565bf1e65304eae88730a19c37bbaac4c5dbd2",
-      "patchedSha256": "001f16e8255e2ed8e55e5e637da7b42852ed27cab6072051d833bcf9ac93f83a"
+      "originalSha256": "a866dc9c59161c8026ab116405fd359193ad4c3a4e42e66c60613a8719b6d577",
+      "patchedSha256": "b3ffb7b2a9198fc6dce6ba67658d93f526c9a7dbe71203020d62f4072f28beb4"
     }
-  }
+  },
+  "requirements": [
+    "tinytuya==1.20.0",
+    "tuya-device-sharing-sdk~=0.2.4"
+  ],
+  "profileSha256": "77cc380685158c65e5ae9fcea5d02bd272eac7e9d99790d9d1ddec062bdf5336"
 }

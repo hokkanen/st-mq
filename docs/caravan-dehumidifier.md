@@ -70,8 +70,10 @@ local integration and bridge in this order:
    a **Fan speed** select and a measured-humidity sensor. The select writes only
    fan speed, so changing it does not implicitly switch the appliance on.
 2. Apply the [received-observation adapter](../integrations/homeassistant/tuya-local-observation.md).
-   Its installer checks the exact reviewed Tuya Local 2026.9.2 source hashes and
-   preserves private backups before changing Python files. A separately reviewed
+   Its installer checks the reviewed Tuya Local 2026.10.0 source hashes and
+   preserves private backups before changing Python files. Keep the installer
+   bundle outside HACS and install its optional update guard to restore compatible
+   updates and a removed custom profile before the normal HA restart. A separately reviewed
    Home Assistant restart loads the patch. The adapter exposes confirmed raw
    device replies in the humidifier's `local_observations` attribute.
    A bounded current-source refresh can request an earlier native status read

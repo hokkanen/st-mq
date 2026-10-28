@@ -39,13 +39,13 @@ test('DESD8LW profile exposes only the independently verified native settings an
   }
 });
 
-// Supply an unpacked public 2026.9.2 release to exercise Tuya Local's actual
+// Supply an unpacked public 2026.10.0 release to exercise Tuya Local's actual
 // profile parser and DP encoder, without importing HA or opening any sockets.
 // The ordinary profile contract test above needs no release checkout.
 const upstream = process.env.STMQ_TUYA_LOCAL_SOURCE;
 const helperPath = upstream && join(upstream, 'custom_components/tuya_local/helpers/device_config.py');
 test('upstream Tuya Local parser round-trips supported readbacks and writes only the chosen DP', {
-  skip: !hasYaml || !helperPath || !existsSync(helperPath) ? 'Set STMQ_TUYA_LOCAL_SOURCE to an unpacked Tuya Local 2026.9.2 release' : false,
+  skip: !hasYaml || !helperPath || !existsSync(helperPath) ? 'Set STMQ_TUYA_LOCAL_SOURCE to an unpacked Tuya Local 2026.10.0 release' : false,
 }, () => {
   const program = `import importlib.util, json, pathlib, re, sys, types, yaml
 profile_path, helper_path = map(pathlib.Path, sys.argv[1:])
