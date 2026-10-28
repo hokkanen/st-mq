@@ -103,6 +103,15 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
         status.readOnly = true;
         status.readView = { configurationMessage: 'Synthetic replica configuration is available for inspection. This long explanation remains accessible without resizing the folded dashboard.' };
       }
+      if (state.scenario.startsWith('charging-report-')) status.charging.diagnostics = {
+        available: state.scenario !== 'charging-report-unavailable',
+        chargers: status.charging.chargers.map(charger => ({ id: charger.id, recent: [], current: {
+          id: 'height-report-' + charger.id, behavior: 'expected', attentionCount: 0, recoveredCount: 0,
+          evidenceStale: state.scenario === 'charging-report-incomplete',
+          planning: { state: state.scenario === 'charging-report-limited' ? 'degraded' : 'available' },
+          outcome: { state: 'in-progress' },
+        } })),
+      };
       if (state.scenario === 'charging-error') status.charging.error = 'charging-planning-unavailable';
       return status;
     };
@@ -318,7 +327,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
           }
         }
       }
-      for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'charging-paused-periods', 'normal']) {
+      for (const scenario of ['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'provider-attention', 'long-plan', 'paused', 'control-unavailable', 'missing-price', 'simulation', 'history', 'replica', 'charging-error', 'charging-report-limited', 'charging-report-incomplete', 'charging-report-unavailable', 'charging-paused-periods', 'normal']) {
         await evaluate(`dashboardHeightFixture.scenario = '${scenario}'`); await refresh();
         if (['unavailable', 'not-configured', 'stale', 'indoor-stale', 'garage-stale', 'missing-price', 'simulation', 'history', 'replica', 'charging-error'].includes(scenario))
           await naturalResize(baseline, width, scenario);
@@ -330,6 +339,20 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
             - actual.chargingHeight + baseline.chargingHeight) <= 1,
           `${width}px: Garage grows only by its naturally wrapped charger content`);
         } else await stable(baseline, `${width}px ${scenario}`);
+        if (scenario.startsWith('charging-report-')) {
+          const expected = { 'charging-report-limited': 'Plan limited', 'charging-report-incomplete': 'Incomplete',
+            'charging-report-unavailable': 'Unavailable' }[scenario];
+          assert.equal(await evaluate("document.querySelector('#charger1-session-report .charging-session-report-status').textContent"), expected);
+          if (width >= 1280) {
+            const theme = await evaluate('document.documentElement.dataset.theme');
+            try {
+              for (const value of ['dark', 'light']) {
+                await evaluate(`document.documentElement.dataset.theme = '${value}'`); await settle();
+                await stable(baseline, `${width}px ${scenario} ${value}`);
+              }
+            } finally { await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`); }
+          }
+        }
         if (scenario === 'charging-paused-periods') {
           assert.equal(await evaluate("document.getElementById('charger1-event-label').textContent"), 'Paused between periods');
           assert.match(await evaluate("document.getElementById('charger1-event-value').textContent"), /^Resumes /);

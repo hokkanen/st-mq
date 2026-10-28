@@ -127,6 +127,15 @@ test('report buttons retain their label, report state and dialog behavior across
   assert.equal(empty.querySelector('.charging-session-report-status').hidden, true);
   assert.equal(empty.getAttribute('aria-label'), 'Open Charger 2 session report');
 
+  const planning = f.current.planning;
+  f.current.planning = { ...planning, state: 'degraded' }; f.panel.update(structuredClone(f.state));
+  assert.equal(statusText.textContent, 'Plan limited'); assert.equal(button.dataset.state, 'unknown');
+  assert.equal(button.getAttribute('aria-label'), 'Open Charger 1 session report · Scheduling limited');
+  f.current.planning = planning; f.current.evidenceStale = true; f.panel.update(structuredClone(f.state));
+  assert.equal(statusText.textContent, 'Incomplete'); assert.equal(button.dataset.state, 'unknown');
+  assert.equal(button.getAttribute('aria-label'), 'Open Charger 1 session report · Evidence incomplete');
+  f.current.evidenceStale = false; f.panel.update(structuredClone(f.state));
+  assert.equal(statusText.textContent, 'Checks passed');
   button.focus(); f.current.attentionCount = 1; f.panel.update(structuredClone(f.state));
   assert.equal(f.document.getElementById('charger1-session-report'), button); assert.equal(f.document.activeElement, button);
   assert.equal(button.querySelector('.charging-session-report-label'), label);
@@ -139,7 +148,8 @@ test('report buttons retain their label, report state and dialog behavior across
   assert.equal(f.document.activeElement, button);
 
   f.state.charging.diagnostics.available = false; f.panel.update(f.state);
-  assert.equal(statusText.textContent, 'Report unavailable'); assert.equal(button.dataset.state, 'unknown');
+  assert.equal(statusText.textContent, 'Unavailable'); assert.equal(button.dataset.state, 'unknown');
+  assert.equal(button.getAttribute('aria-label'), 'Open Charger 1 session report · Report unavailable');
   assert.equal(label.textContent, 'Session report');
 });
 

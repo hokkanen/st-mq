@@ -689,7 +689,9 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       const slot = status.charging.diagnostics?.chargers?.find(row => row.id === charger.id), report = slot?.current ?? slot?.recent?.[0];
       const summary = chargingReportSummary(report, status.charging.diagnostics?.available !== false);
       const statusLabel = summary.label === 'Session report' ? '' : summary.label;
-      const { statusText } = parts.get(button); setText(statusText, statusLabel); statusText.hidden = !statusLabel;
+      const compactStatus = { 'Scheduling limited': 'Plan limited', 'Evidence incomplete': 'Incomplete',
+        'Report unavailable': 'Unavailable' }[statusLabel] ?? statusLabel;
+      const { statusText } = parts.get(button); setText(statusText, compactStatus); statusText.hidden = !statusLabel;
       button.dataset.state = summary.state; button.setAttribute('aria-label', `Open ${charger.label ?? charger.id} session report${statusLabel ? ` · ${statusLabel}` : ''}`);
     }
     if (dialog.open) {

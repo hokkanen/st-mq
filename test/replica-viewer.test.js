@@ -755,9 +755,12 @@ test('an archive response can retain its old publication while the next publicat
     }
     return service;
   };
-  const { app, request } = await viewer(t, directory, () => publication, { makeChartService });
+  // Establish WAL mode before opening the replica's independent readers. This
+  // case measures cache ownership, not concurrent conversion of a portable copy.
   const writer = new Store(initial.dbPath); t.after(() => writer.close());
-  const first = (await request(chartPath)).body, oldStore = app.store;
+  const { app, request } = await viewer(t, directory, () => publication, { makeChartService });
+  const response = await request(chartPath), first = response.body, oldStore = app.store;
+  assert.equal(response.status, 200, 'Establish a successful recent response before testing its cache');
   assert.equal((await request(chartPath)).body.meta.cacheHit, true, 'Establish a retained recent response before the archive');
   const archive = request(chartPath.replace('start=2026-01-15', 'start=2026-01-01'));
   await entered.promise;
