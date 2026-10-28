@@ -1,5 +1,5 @@
 # The Supervisor builds both supported architectures from this multi-arch image.
-FROM node:22.23.2-alpine AS build
+FROM node:22.23.4-alpine AS build
 WORKDIR /st-mq
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -8,12 +8,12 @@ COPY src/ ./src/
 COPY vite.config.js icon.png ./
 RUN npm run build
 
-FROM node:22.23.2-alpine AS sqlite-tools
+FROM node:22.23.4-alpine AS sqlite-tools
 RUN apk add --no-cache build-base curl unzip
 COPY scripts/build-sqlite-rsync.js /build-sqlite-rsync.js
 RUN node /build-sqlite-rsync.js --output /usr/local/bin/sqlite3_rsync
 
-FROM node:22.23.2-alpine
+FROM node:22.23.4-alpine
 ARG BUILD_VERSION=0.9.5-dev.4
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="aarch64|amd64"

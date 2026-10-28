@@ -50,7 +50,11 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
 
 test('deployment metadata uses an explicit Node base, persistent storage and both required architectures', () => {
   const dockerfile = readFileSync('Dockerfile', 'utf8');
-  assert.match(dockerfile, /FROM node:22\.23\.2-alpine/);
+  const qualification = readFileSync('test/Dockerfile.qualification', 'utf8');
+  const bases = [dockerfile, qualification].flatMap(text =>
+    [...text.matchAll(/^FROM (\S+)/gm)].map(match => match[1]));
+  assert.deepEqual([...new Set(bases)], ['node:22.23.4-alpine'],
+    'Every application and qualification stage uses the same reviewed runtime');
   assert.doesNotMatch(dockerfile, /FROM \$\{BUILD_FROM\}/);
   assert.match(dockerfile, /STMQ_DATA_DIR=\/data\/st-mq/);
   assert.match(dockerfile, /CMD \["node", "src\/main.js"\]/);

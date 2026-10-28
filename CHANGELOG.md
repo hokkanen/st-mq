@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Update the application and qualification containers to the Node.js 22.23.4
+  security release, including patched TLS, DNS, compression,
+  SQLite and HTTP dependencies.
+
 - Refresh the locked Vite build tool and transitive IP-address parser to patched
   releases. Validate local documentation links in routine checks and CI; retain
   test receipts for both Node runtimes and use current CI action runtimes. Correct
