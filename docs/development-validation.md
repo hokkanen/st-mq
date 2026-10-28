@@ -979,6 +979,17 @@ These wrappers include setup and cleanup; actual transport, writer, cancellation
 and equipment deadlines retain their own ownership. In particular, the separate
 continuous-recording recovery guard is unchanged and cannot pass publication
 after its source producer has stopped.
+The dense-bar chart fixture permits one outstanding urgent control save, so a
+commit slower than its producer interval cannot build an endless higher-priority
+backlog. Real commits must still complete while the chart is reading, timers must
+advance, and the exact projected history and drained queue remain required.
+The restorative equipment shutdown fixture uses the completion allowance for
+setup and its final independent write, while measuring shutdown separately under
+the original 6,500 ms bound with the external lock still held. Its production
+five-second admission deadline is unchanged. Held firewood-cache proofs use the
+declared synthetic latency allowance for foreground queries and worker retirement;
+proof cancellation, immutable retired files and worker-generation fencing remain
+exact. All these standard-profile bounds remain unchanged.
 The GiB reset fixture records generation and per-scenario preparation separately
 from reset latency. Its existing ten-minute parent budget uses the declared bulk
 completion allowance on HA, and each of the three independent reset scenarios

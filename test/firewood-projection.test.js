@@ -13,6 +13,7 @@ import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { getFirewoodBenefit,maintainFirewoodProjection } from '../src/app/firewood-benefit.js';
 import { FirewoodProjectionCache } from '../src/app/firewood-projection-cache.js';
 import { compactJournal,checkpointAt } from '../src/storage/journal.js';
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 
 const HOUR=3_600_000,DAY=24*HOUR,WINDOW=HOUR/4,START=Date.UTC(2026,0,1);
 function fixture(t,{days=24,withContexts=false,trained=false,file=false}={}) {
@@ -248,9 +249,11 @@ test('held background proofs leave queries responsive and retirement fences ever
   const started=performance.now();
   const second=(await service.query(args)).firewoodBenefit;
   assert.ok(Number.isFinite(second.valueEuro)||second.status==='unavailable');
-  assert.ok(performance.now()-started<1200,'A held proof must not hold foreground chart work');
+  const elapsed=performance.now()-started;
+  t.diagnostic(`Foreground chart completed in ${Math.round(elapsed)} ms while its background proof remained held`);
+  assert.ok(elapsed<testLatencyLimit(1200),'A held proof must not hold foreground chart work');
   const retiring=performance.now();await service.retireProjection();
-  assert.ok(performance.now()-retiring<1000,'Retirement must abort or bound an outstanding proof wait');assert.equal(abortedProof,true);
+  assert.ok(performance.now()-retiring<testLatencyLimit(1000),'Retirement must abort or bound an outstanding proof wait');assert.equal(abortedProof,true);
   const afterRetirement=readFileSync(f.projection.path),count=calls;
   await new Promise(resolve=>setTimeout(resolve,100));
   await service.pin();await service.query(args);
@@ -266,7 +269,7 @@ test('worker termination settles retirement even while a proof owner never repli
   await service.query({input:'mqtt',now:f.args.now,startDate:'2026-01-02',view:'power',summaryOnly:true});
   await until(()=>calls>0,'The proof should be held before terminating its worker');
   const started=performance.now();await Promise.all([service.retireProjection(),service.close()]);
-  assert.ok(performance.now()-started<1000,'Lost workers must not leave a retirement acknowledgement pending');
+  assert.ok(performance.now()-started<testLatencyLimit(1000),'Lost workers must not leave a retirement acknowledgement pending');
 });
 
 test('standalone read-only sources prepare a cache without trying to publish source-owned state',async t=>{

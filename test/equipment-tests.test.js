@@ -9,6 +9,7 @@ import { createEquipmentTests } from '../src/app/equipment-tests.js';
 import { Store } from '../src/storage/store.js';
 import { validateEquipmentTestState } from '../src/domain/equipment-test-state.js';
 import { unsentEquipmentCommand } from '../src/domain/equipment-command-errors.js';
+import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const KEY = 'equipment-tests:v1', INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const digest = 'a'.repeat(64);
@@ -466,13 +467,17 @@ test('demotion cancels post-command bookkeeping while retaining its committed re
   assert.deepEqual(f.calls.map(row => row.on), [true]);
 });
 
-test('restorative shutdown bounds a held-lock save and preserves the duty without closing shared storage', { timeout: 8000 }, async t => {
+test('restorative shutdown bounds a held-lock save and preserves the duty without closing shared storage', { timeout: testCompletionLimit(8000) }, async t => {
+  const prepared = performance.now();
   const f = storageFixture(t);
   await f.manager.start(request());
+  t.diagnostic(`Restorative shutdown fixture prepared in ${Math.round(performance.now() - prepared)} ms`);
   f.writer.exec('BEGIN IMMEDIATE');
   const started = performance.now();
   await assert.rejects(f.manager.close(), { code: 'EQUIPMENT_TEST_RESTORE' });
-  assert.ok(performance.now() - started < 6500);
+  const elapsed = performance.now() - started;
+  t.diagnostic(`Restorative shutdown completed in ${Math.round(elapsed)} ms with the external lock held`);
+  assert.ok(elapsed < 6500);
   assert.equal(f.writer.isTransaction, true);
   assert.equal(f.store.writeQueueStatus().pending, 0);
   assert.notEqual(f.store.getState(KEY).active, null);

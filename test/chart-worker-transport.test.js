@@ -412,26 +412,36 @@ test('dense bar projection yields storage admission to the real committing write
   const { store, service } = fixture(t, { warmCache: false });
   seedChartActivityFixture(store);
   await store.startWriter(); store.walMaintenance.close();
-  const saves = [], latencies = []; let writing = false, reading = true, commitsDuringRead = 0, ticks = 0, timer;
+  const saves = [], latencies = []; let writing = false, reading = true, saving = false, commitsDuringRead = 0, ticks = 0, timer;
   const heartbeat = setInterval(() => ticks++, 5);
   t.after(() => { clearInterval(heartbeat); clearInterval(timer); });
   const selection = { input: 'providers', now: ACTIVITY_FIXTURE_TO + 12 * 3600_000,
     startDate: '2026-10-05', endDate: '2026-10-06', left: 'garage_native_power', points: 100 };
   const started = performance.now();
-  const pending = service.query(selection, { onProgress(progress) {
+  const pending = service.query(selection, { signal: t.signal, onProgress(progress) {
     if (writing || progress.stage !== 'reading-history') return;
     writing = true;
     let sequence = 0;
     const save = () => {
+      // Do not turn a slow commit into an endless backlog of urgent work: the
+      // queue deliberately admits that work before a chart storage turn.
+      if (saving) return;
+      saving = true;
       const at = performance.now();
-      saves.push(store.runWrite(() => store.setState(`synthetic-chart-control-${++sequence}`, true), { priority: 'control' })
-        .then(() => { latencies.push(performance.now() - at); if (reading) commitsDuringRead++; }));
+      const saved = store.runWrite(() => store.setState(`synthetic-chart-control-${++sequence}`, true), { priority: 'control', signal: t.signal })
+        .then(() => { latencies.push(performance.now() - at); if (reading) commitsDuringRead++; })
+        .finally(() => { saving = false; });
+      saves.push(saved);
+      void saved.catch(() => {}); // The final join below still propagates every failed save.
     };
     save(); timer = setInterval(save, 20);
   } });
-  const result = await pending;
-  reading = false;
-  clearInterval(timer); await Promise.all(saves);
+  let result;
+  try { result = await pending; }
+  finally {
+    reading = false;
+    clearInterval(timer); await Promise.all(saves);
+  }
   assert(writing && commitsDuringRead > 0 && ticks > 0, 'Actual control commits and timers advance during the chart read');
   t.diagnostic(`Chart read ${Math.round(performance.now() - started)} ms; ${commitsDuringRead} control commits during reading; maximum commit latency ${Math.round(Math.max(...latencies))} ms`);
   const spans = result.shading.garage_native_power;
