@@ -52,6 +52,10 @@ async function fixture(t, payloadMiB) {
         release: async () => { owners.delete(name); }, status: () => ({ owned: owners.has(name), ready: owners.has(name) }),
       },
       hooks: {
+        // Use the runtime's shared storage admission while real recording runs.
+        // Independent maintenance workers must not race the controller writer.
+        runStorageTask: operation => name === 'source' && live ? live.runStorageTask(operation) : operation(),
+        admitStorageWrite: () => name === 'source' && live ? live.runWrite(() => {}) : undefined,
         startPrimary: async () => { if (name === 'receiver') activatedAt = performance.now(); },
         startReplica: async () => {}, closeReplica: async () => {},
         stopControl: async () => {
