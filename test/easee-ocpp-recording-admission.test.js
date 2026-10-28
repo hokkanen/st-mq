@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -106,10 +107,14 @@ for (const power of [0, 6900]) for (const context of ['Sample.Periodic', 'Sample
     assert(f.local.snapshot(), 'The preceding measured sample is still fresh');
     f.now = START + 31_000;
     const gate = f.holdCommit();
-    const polling = sample(); await gate.entered;
+    let pollingSettled = false;
+    const polling = sample().then(result => { pollingSettled = true; return result; }); await gate.entered;
     assert.equal(cloudRequests, 0);
-    let beats = 0; const heartbeat = setInterval(() => beats++, 2);
-    await delay(20); clearInterval(heartbeat); assert(beats > 2, 'Admission never blocks the event loop');
+    // Require actual timer progress while COMMIT stays held. CPU throttling can
+    // coalesce a short interval and its observation timer into the same turn.
+    const timerDeadline = AbortSignal.timeout(testLatencyLimit(1000));
+    for (let beat = 0; beat < 3; beat++) await delay(2, undefined, { signal: timerDeadline });
+    assert.equal(pollingSettled, false, 'Timer progress cannot release pending admission');
     gate.release(); const { rows, result } = await polling;
     const powerRow = rows.find(row => row.signal === 'ev1_active_power');
     assert.equal(powerRow.sourceTime, START + (context === 'Sample.Periodic' ? 30_000 : 0));

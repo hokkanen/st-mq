@@ -83,6 +83,9 @@ whole-second timestamp: valid total power retains exact integrated energy using
 earlier labelled phase weights while current control retains the conflict.
 Missing, expired and replaced connection evidence still produces gaps. The native
 sampling suite also runs maintenance before the next periodic packet arrives.
+Held-COMMIT checks require three timer turns within the declared test latency
+allowance while recording admission remains pending; they do not depend on
+interval counts inside a short wall-clock window under CPU throttling.
 HTTPS replacement tests use private synthetic installations and the same ordinary
 setup flow afterward. They cover standalone-to-pair changes, new pairs and
 certificate owners, opaque damaged-state preservation, stale approvals, peer
