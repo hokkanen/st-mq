@@ -200,7 +200,7 @@ See [Home Assistant setup](../DOCS.md) for import paths and
 ### Copying Ubuntu configuration to HA for pair mode
 
 The HA Configuration form describes the fields below. In ST-MQ's
-**Data & settings → Configuration**, expand
+**Data & settings → Connections & configuration → Configuration**, expand
 **Copying Ubuntu configuration to HA for pair mode?** for the same checklist.
 This guidance is available before enabling pair mode and does not rewrite
 configuration. Review the destination settings before importing the file.
@@ -298,7 +298,7 @@ database, or remove existing equipment restoration obligations.
 
 ## Check and review before applying
 
-In **Data & settings → Configuration**, admins
+In **Data & settings → Connections & configuration → Configuration**, admins
 choose **Check & review configuration** after saving their changes. This reads
 the same source and runs the same configuration checks as application, without
 saving imports, reconnecting providers or sending device commands. Errors leave
@@ -367,7 +367,7 @@ access with the family password; see [Home Assistant access details](../DOCS.md#
 Family reads all application data with credentials concealed, may calculate
 read-only heating-plan comparisons, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
-heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV
+heating, Home Automatic/Paused and Garage manual modes, garage doors and all EV
 card controls. The EV controls include viewing and refreshing **One extra day**
 comparisons, allowing one more day and canceling an active allowance. Every other
 write, export and download requires admin. These permissions do not change
@@ -492,7 +492,7 @@ temporary preferences are restored to configured behavior when their scope ends;
 equipment protection and outstanding restoration duties remain active. Family
 access permits simulation but cannot approve or cancel this one-cycle scope.
 
-Home has a durable **Automatic / Pause** choice, bound to the equipment
+Home has a durable **Automatic / Paused** choice, bound to the equipment
 identity and initially Pause without an end time. An optional resume time
 returns to Automatic; clearing the time keeps Pause. Normal/Reduced manual
 choices follow the pause duration, while Preheat always ends at its lease

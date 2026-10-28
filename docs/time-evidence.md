@@ -94,7 +94,7 @@ bound, and existing held-value exceptions require independent device telemetry.
 
 Home learning uses `committed-house-v17-time-evidence-admission` because admission
 changes input selection. Current journals replay deterministically under that
-algorithm. Schema 27 adds an index for bounded startup rejection of unsupported
+algorithm. The current schema includes an index for bounded startup rejection of unsupported
 learning algorithms, including inactive journal epochs. Earlier development
 algorithms are rejected before mutation and need a deliberate fresh start;
 no migration, historical timestamp repair, older

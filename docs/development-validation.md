@@ -265,7 +265,7 @@ With calculation deliberately held unfinished, status retains the previous
 complete model, exposes already committed control intent and permits urgent saves.
 The first startup view still waits for its own successful publication COMMIT.
 It can explicitly report model reconstruction with an absent learned model.
-Held-replay startup checks require HTTP status, saved Automatic/Pause intent,
+Held-replay startup checks require HTTP status, saved Automatic/Paused intent,
 source-clock preservation and manual Reduction/Pause-expiry restoration to work
 before replay is released. Model exploration remains blocked, and complete replay
 must still match the supported journal after reconstruction and publication.
@@ -370,7 +370,7 @@ receipt, physical outcomes or Raspberry Pi storage performance.
 `test/database-overview.test.js` cross-checks the bounded inventory reader
 against the direct offline calculation across source, selection and storage
 fixtures, and checks the fast catalogue, explicit shared jobs and cancellation.
-`node --test --test-timeout=180000 test/extended/recorded-inventory-scale.test.js`
+`node scripts/test-offline.js --file test/extended/recorded-inventory-scale.test.js 180000`
 checks 100,000 mixed synthetic observations, concurrent recording and exact
 snapshot results while cheap views remain independent.
 `test/energy-checks-worker.test.js` covers independent background jobs, append
@@ -573,8 +573,8 @@ and retains a 48 MiB absolute read cap and 8 MiB write cap. The default larger
 payloads are 32 and 128 MiB; custom scales also run the baseline. To run a larger case:
 
 ```sh
-STMQ_PAIR_SCALE_MIB=512 node --test --test-timeout=180000 test/extended/pair-handover-scale.test.js
-STMQ_JOURNAL_SCALE_MIB=4,512 node --test --test-timeout=180000 test/extended/incremental-storage-scale.test.js
+STMQ_PAIR_SCALE_MIB=512 node scripts/test-offline.js --file test/extended/pair-handover-scale.test.js 180000
+STMQ_JOURNAL_SCALE_MIB=4,512 node scripts/test-offline.js --file test/extended/incremental-storage-scale.test.js 180000
 node scripts/benchmarks/recovery.js --records=1000,10000,50000 --windows=96 --payload-bytes=128
 ```
 
@@ -922,10 +922,16 @@ npm ci
 npm run check
 ```
 
-`npm run check` builds the dashboard before running the routine tests. Startup
-and control-authority tests verify that the actual application keeps serving its
+`npm run check` checks local documentation links and anchors, then builds the
+dashboard before running the routine tests. `npm run check:docs` runs the link
+check separately without fetching external URLs. It checks versioned Markdown
+inline links and images, including links to directories, heading slugs and
+explicit HTML anchors; fenced examples are excluded. It does not establish that
+external links work or that the documented behavior matches the implementation.
+Startup and control-authority tests verify that the actual application keeps serving its
 dashboard, so run `npm run build` once before invoking `npm test` directly in a
-fresh checkout. CI uses the same `npm run check` command.
+fresh checkout. CI runs these same three checks as separate steps so routine
+tests can additionally retain their JSONL receipts.
 
 `npm test` (also `npm run test:unit`) runs the routine offline regression suite
 with at most four test files in parallel and a 60-second deadline per test case. Pairing
@@ -937,6 +943,9 @@ This preserves process isolation and the same case budget on Node 22
 and newer versions; Node 22's default isolated runner also applies the command-line
 timeout to the entire file, which can cancel a long file of successful short tests.
 Use `npm test -- --test-name-pattern=...` to select matching cases.
+Direct `node scripts/test-offline.js --file PATH TIMEOUT_MS` invocations also
+honor appended name/skip filters and reporter flags through the same process
+startup path. Case deadlines and application signal ownership remain unchanged.
 
 For native Home Assistant / ARM64 qualification on SD storage, use the explicit
 test profile (also available as `npm run test:ha` and `npm run test:ha:extended`):
@@ -1223,6 +1232,14 @@ Node executable for real cross-runtime replication. Each matrix job retains the
 other runtime's absolute path before selecting its primary runtime. A missing
 required tool fails instead of silently skipping coverage. Local extended runs
 report missing tools as skips unless their corresponding requirement is enabled.
+
+Both workflows use Node 24 action runtimes independently of the selected Node
+22/24 application test runtime, with read-only repository permissions. A failed
+matrix job does not cancel the other runtime's validation. Routine and extended
+jobs upload the offline runner's JSONL receipts even after test failure, retaining
+them for 14 days under the matching Node version. Receipts identify the tested
+source digest, runtime, cases, skips and failures; missing receipts remain visible
+as an upload warning if an earlier prerequisite failed.
 
 To require real mirroring and broker tests locally, install Mosquitto and OpenSSH
 client and server tools, prepare the host's SSH privilege-separation directory,

@@ -113,8 +113,14 @@ async function runFile(file, timeout, args) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const args = process.argv.slice(2);
-  if (args[0] === '--file') await runFile(args[1], Number(args[2]), args.slice(3));
-  else {
+  if (args[0] === '--file') {
+    const flags = args.slice(3);
+    // In nonisolated mode node:test also reads filters from Node's startup
+    // options. Give direct file invocations the same startup flags as runOfflineTests.
+    if (flags.some(flag => !process.execArgv.includes(flag)))
+      process.exitCode = await runOfflineTests({ files: [args[1]], timeout: Number(args[2]), args: flags, concurrency: 1 });
+    else await runFile(args[1], Number(args[2]), flags);
+  } else {
     const extended = args.includes('--extended');
     const settings = option => args.find(arg => arg.startsWith(option + '='))?.slice(option.length + 1);
     const profile = settings('--profile') ?? process.env.STMQ_TEST_PROFILE ?? 'standard', report = settings('--report');

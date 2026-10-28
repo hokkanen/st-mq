@@ -489,7 +489,8 @@ still requires current authority and the same equipment and physical connection;
 it neither replays the write nor renews its original source clock.
 
 Pre-1.0 native state is not migrated. The current charging state uses version 7
-and database schema 32; the physical adapter uses its own explicitly scoped
+within the [current database format](../reconstruction-and-versioning.md#current-formats-and-installation-exceptions);
+the physical adapter uses its own explicitly scoped
 current state. First initialization with no saved charging runtime state in any
 current input environment defaults
 to Automatic ON for both chargers and Balanced priority, bound to the configured

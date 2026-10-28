@@ -147,7 +147,8 @@ to update both computers using explicit handovers.
 ## Development and support
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [repository foundations](AGENTS.md).
-`npm run check` builds the dashboard and runs the offline tests. Extended, browser,
+`npm run check` checks local documentation links, builds the dashboard and runs
+the offline tests. Extended, browser,
 container and pinned Supervisor checks are documented in
 [development validation](docs/development-validation.md). Live provider diagnostics
 are [separately invoked](docs/live-testing.md).

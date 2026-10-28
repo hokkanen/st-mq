@@ -109,7 +109,7 @@ its first committed dashboard view independently of Home model reconstruction.
 The view reports **Rebuilding the heating model**, with no provisional learned
 model, until canonical replay and a complete controller update commit. Actual
 measurements retain their original clocks. Recording, Garage and charging,
-management, saved Automatic/Pause choices and independently qualified manual
+management, saved Automatic/Paused choices and independently qualified manual
 controls remain available. Existing heating expiry and restoration duties continue
 on the ordinary minute/deadline scheduler while replay runs; model-dependent
 economic decisions and model exploration wait for reconstruction. A rebuild

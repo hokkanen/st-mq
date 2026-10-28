@@ -8,8 +8,10 @@ this repository, with installation slug `st-mq`. It is not installed through HAC
 or as a Home Assistant Core integration.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.5-dev.4 development prerelease starts with **simulated devices and Pause heating**. Default
-startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
+The 0.9.5-dev.4 development prerelease starts with simulated devices and Home
+heating paused. Default startup launches no live controller or provider. Live
+automation is enabled separately in each feature after configuring its connection.
+See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
 the independent feature controls and Garage local temperature regulation.
@@ -72,9 +74,9 @@ the independent feature controls and Garage local temperature regulation.
 7. Follow [H66 MQTT setup](docs/h66-mqtt.md) to connect the gateway and set
    `controller.h66_device` to its exact MQTT prefix. Verify C60 telemetry, native
    settings and restoration before enabling automatic H66 control.
-   **Home** opens **Heating configuration** with current settings;
+   **Home** opens **Heating control** with current settings;
    **Home → Sensors & Equipment → Ground-source heat pump** contains parameter
-   controls and all readbacks. **Home → Heating configuration → Home learning** contains model evidence.
+   controls and all readbacks. **Home → Home heat model** contains model evidence.
 
    Existing coordinates and market country enable FMI, Open-Meteo and Elering
    without new keys. ENTSO-E is primary for prices and Elering is the backup.
@@ -95,7 +97,8 @@ the independent feature controls and Garage local temperature regulation.
    selected. All four amounts and the tariff are configurable.
 9. Set the occupied preferred drop with `controller.max_drop_c` (default **1.5°C**).
    It does not constrain away cooling. Permanent settings are reported in the UI;
-   change them in options, then use **Data & settings → Configuration → Check & review configuration**, inspect the diff, then choose
+   change them in options, then use **Data & settings → Connections & configuration
+   → Configuration → Check & review configuration**, inspect the diff, then choose
    **Apply reviewed configuration** (admin only).
    Browser-saved values cannot override these settings. Unknown or retired
    options prevent normal operation; use configuration recovery to correct them.
@@ -167,8 +170,10 @@ admin; see [web access](docs/configuration.md#admin-and-family-web-access).
 Changing a password applies immediately; affected direct-access tabs must use
 the new password. Clearing both and applying disables direct access while Home
 Assistant ingress remains available as admin. Direct login includes password
-visibility and **Logout** under **Configuration**. Logging out clears that tab's
-login without interrupting requested device operations. Ingress logout belongs
+visibility and **Log out** under **Configuration**. Logging out clears that tab's
+login and revokes its remembered login when present, without interrupting requested
+device operations. Optional remembered HTTPS logins retain their original expiry;
+see [remembered access](docs/configuration.md#admin-and-family-web-access). Ingress logout belongs
 to Home Assistant. If `STMQ_API_TOKEN` or `STMQ_FAMILY_API_TOKEN` overrides an
 option, change that environment override and restart to change it. Edit Supervisor-owned options through Home
 Assistant or the import above; do not edit its exported `/data/options.json`
@@ -182,36 +187,26 @@ rate coverage. Day/night applies 07:00–22:00 versus other times; seasonal wint
 daytime applies November–March, Monday–Saturday 07:00–22:00.
 
 The main chart defaults to today's complete Finnish calendar day. Choose a start
-date to view one day immediately; the second date picker extends the inclusive
-range immediately. Both pickers remain available in chart inspection mode. **Yesterday + today**, **Today**,
-**Today + next 2 days** shortcuts keep both observations and forecasts within the
-selected dates; the last shortcut shows today and the following two days. The
-small outer arrows move the shown window one calendar day back or forward while
-preserving its length. The **Left axis** drawer offers
-Power, phase currents, home temperatures, live heating integral,
-solar radiation and all four historical learning metrics. **Average indoor**, Garage, outdoor temperature and prices remain
-available on the right with their existing colours. Average indoor is the configured
-sensor average used by the house model, with equal weights for Upstairs, Bedroom
-and Downstairs when all three are configured with defaults. Missing contributing
-readings remain gaps; imported learning keeps its original Upstairs measurement.
-**Home and garage temperatures** in the left drawer adds the three individual room
-readings and Garage front with synchronized air-temperature scales. Garage remains available on
-the right axis. For rare sensor replacements, moves or calibrations, open **Home →
-Heating configuration → Home learning → Model inputs → Average indoor → Sensor changes**. Its
-**Reason** field describes the saved history; it does not alter the learning effect.
-Whole-house and EV power estimates use recorded
-phase-energy increments divided by their actual intervals. Equivalent chart
-currents use the applicable recorded per-phase voltage estimates and assume
-unity power factor. Older current-only CSV history uses the first usable
-voltage estimates retrospectively where no earlier estimate exists; missing
-voltage leaves the derived power unavailable. H66 AUX power is a red fill derived from the
-configured rated power (9 kW by default), with Charger 1 and Charger 2 stacked
-above it. Compressor space heating is yellow, hot-water heating blue, and heat-off
-requests use a light crossed hatch. Red DHWR requests occupy their own strip
-below the chart; saved legend choices persist. A separate strip
-shows observed native operating mode.
+date to view one day; the second date extends the inclusive range. The shortcuts
+and outer arrows change that selection in Finnish calendar time. The top-right
+selection button opens **Views** for named comparisons or **All series** for
+individual measurements and supported calculations. The adjacent chart button
+opens the fullscreen-capable inspection view with zoom and gesture navigation.
+See [chart exploration](docs/recording.md#chart-exploration-and-fullscreen) for
+current controls, legend behavior and activity rows, and
+[chart evidence](docs/recording.md#chart-curves-and-popup-meanings) for original
+clocks, gaps and estimates.
 
-The chart's **Energy cost comparisons** fold contains **Heating**, **Charging**
+Average indoor uses the fixed configured membership and weights: with the three
+default rooms, Bedroom contributes 50%, Upstairs 25% and Downstairs 25%. Missing
+contributing readings leave gaps rather than redistributing weights. Original
+learning inputs keep their historical interpretation. For a sensor replacement,
+move or calibration, open **Home → Home heat model → Model inputs → Average indoor
+→ Sensor changes**. Its **Reason** describes the saved history without changing
+the learning effect. See the [temperature policy](docs/temperature-sensors.md).
+
+The chart's [Energy cost comparisons](docs/recording.md#energy-cost-comparisons)
+fold contains **Heating**, **Charging**
 and **Fireplace**. Heating starts on **Home** and **Model estimate**, unless a
 previous **Timing cost** choice was saved. It offers **Home**, **Garage** and
 **Total** scopes. Charging offers **Charger 1**, **Charger 2** and **Total** for
@@ -298,7 +293,7 @@ permanent settings. See the
 [configuration guide](docs/configuration.md) for reviewed changes, password
 roles, electricity rates and the controls that retain independent intent.
 
-Home uses Automatic/Pause and scoped manual heating; Garage uses persistent
+Home uses Automatic/Paused and scoped manual heating; Garage uses persistent
 Normal/Away targets with independent local frost protection. Each charging
 integration and Caravan Automatic power has its own permission. Opening a
 connection or selecting live input does not enable all controls.
@@ -321,8 +316,10 @@ production. H66 restoration needs a reachable application and gateway; there is
 no documented device-local expiry. Compressor-only reduction can skip the
 native 14-day high-temperature water cycle under the current control design.
 Read the [learning and control limits](docs/learning-and-control.md) before live
-commissioning. The planned SONOFF floor interface remains unsupported, so floor
-activation and commissioning are unavailable.
+commissioning. The [floor controller](docs/floor-preheat.md) supports the custom
+Sonoff lease firmware. Its commissioning and enablement flags default to false;
+activation requires the configured identity, fresh feedback and installation-specific
+physical checks. GPIO readback does not establish valve movement or heat delivery.
 
 Normal tests are offline. The separately invoked [live diagnostics](docs/live-testing.md)
 check configured APIs without starting the controller or connecting to MQTT;

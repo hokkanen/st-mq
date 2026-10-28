@@ -4,6 +4,25 @@ Start with [AGENTS.md](AGENTS.md) for the project's foundations and working rule
 Current feature guides in [docs/](docs/) define the detailed behavior. Existing
 code or a passing test does not override those contracts.
 
+## Repository layout
+
+| Location | Responsibility |
+| --- | --- |
+| `src/` | Shared application, domain rules, acquisition, control, storage and paired operation; `src/main.js` is the runtime entrypoint. |
+| `chart/` | Dashboard source and styles; Vite builds these into ignored `dist/`. |
+| `docs/` | Current operating and engineering contracts; the [README guide table](README.md#guides) routes by topic. |
+| `scripts/` | Setup, deployment, history tools and validation; shared helpers live in `scripts/lib/` and optional measurements in `scripts/benchmarks/`. |
+| `test/` | Routine `*.test.js` files, synthetic fixtures and helpers; `extended/`, `browser/`, `container/` and `live/` have separate invocation and authority boundaries. |
+| `integrations/` | Companion device/HA sources, templates and reviewed patches, with their upstream notices. |
+| `assets/branding/`, `deploy/` | Maintained image source/export instructions and the public example address-helper policy. |
+| `.github/workflows/`, `.githooks/` | Automated validation and publication secret guards. |
+| Root packaging files | Home Assistant manifest, repository metadata, translations, images, Dockerfile and user installation/release documents. Their root locations are required by app discovery. |
+
+Keep private installation configuration and runtime state outside the checkout.
+Generated builds, dependencies, temporary test receipts and household exports are
+not source files. Retain exact upstream fixture bytes and licenses when their
+provenance is part of a test contract.
+
 ## Setup and checks
 
 Use Node.js 22.19 or newer:
@@ -19,6 +38,11 @@ hooks setup instead of replacing it. See [development validation](docs/developme
 for extended tests, isolated browser fixtures, container checks and the pinned
 Home Assistant Supervisor validator. Run the checks relevant to a change and
 report any skips or limitations.
+
+`npm run check:docs` checks local Markdown links, images and heading/HTML anchors
+against versioned files. It is part of `npm run check` and CI; external URLs are
+not fetched. Review wording, commands and behavior against their owning source
+as well, since a valid link does not establish semantic accuracy.
 
 The pre-commit hook runs `node scripts/check-secrets.js --staged` on the index.
 Pre-push and CI audit reachable history automatically against the fixed private-blob

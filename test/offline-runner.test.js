@@ -6,6 +6,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { offlineTestProfile, testLatencyLimit, testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const execute = promisify(execFile);
@@ -137,6 +138,19 @@ test('offline runner preserves name filters, skip filters and the selected repor
   });
   const output = await execute(process.execPath, command({ files: f.paths, timeout: 1000,
     args: ['--test-name-pattern=included|skipped', '--test-skip-pattern=skipped', '--test-reporter=tap'] }), { timeout: 10000 });
+  assert.match(output.stdout, /TAP version 13/);
+  assert.match(output.stdout, /included synthetic case/);
+});
+
+test('direct file invocations preserve name and skip filters before importing tests', async t => {
+  const f = await fixture(t, {
+    filtered: `import test from 'node:test';
+      test('included synthetic case', () => {});
+      test('skipped synthetic case', () => { throw Error('skip filter ignored'); });
+      test('unmatched synthetic case', () => { throw Error('name filter ignored'); });`,
+  });
+  const output = await execute(process.execPath, [fileURLToPath(runner), '--file', f.paths[0], '1000',
+    '--test-name-pattern=included|skipped', '--test-skip-pattern=skipped', '--test-reporter=tap'], { timeout: 10000 });
   assert.match(output.stdout, /TAP version 13/);
   assert.match(output.stdout, /included synthetic case/);
 });

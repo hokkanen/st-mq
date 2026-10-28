@@ -383,6 +383,9 @@ interface/address pair. Its root-owned policy is
 }
 ```
 
+The public [example policy](../deploy/pair-vip.example.json) uses a documentation-only
+address. The installer generates the real private policy from reviewed network choices.
+
 The helper adds/removes only that address and announces ownership with
 gratuitous ARP. Its policy must be a regular file owned by root and not writable
 by group or other users. Network changes require host networking privileges;

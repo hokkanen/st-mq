@@ -346,7 +346,8 @@ test('controller-only reload retains provider snapshots and rate-limit backoff',
   const { app, write, post } = await setup(t, options, { clock: () => now, providerOptions: { automatic: false } });
   const market = { source: 'elering', fetchedAt: now, intervals: [] };
   const weather = { source: 'openmeteo', fetchedAt: now, forecast: [], acquisitionIdentity: weatherAcquisitionIdentity(app.engine.config.connections) };
-  const backoff = { failures: 1, nextAttemptAt: now + 3600_000, error: 'HTTP-429', shared: true };
+  const backoff = { failures: 1, nextAttemptAt: now + 3600_000, error: 'HTTP-429', shared: true,
+    status: 'error', inherited: false, job: 'weather', lastAttemptAt: now, lastCheckedAt: now };
   app.store.setState('provider:market', market);
   app.store.setState('provider:weather', weather);
   const health = app.store.getState('providers:health');

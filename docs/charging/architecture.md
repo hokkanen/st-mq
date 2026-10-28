@@ -258,7 +258,8 @@ last-change clocks and physical confirmation boundaries still force publication.
 Startup validates the current manifest, every required field, content hashes and
 references for all input environments, including inactive ones. Missing records,
 unreferenced fragments, invalid nested state and older aggregate formats fail
-before writable setup. Physical schema 32 retains this charging representation.
+before writable setup. The [current physical schema](../reconstruction-and-versioning.md#current-formats-and-installation-exceptions)
+retains this charging representation.
 Ordinary startup rejects incompatible installations with fresh-start guidance;
 it never resets or converts them. The separately authorized chart-index operation
 is outside startup and preserves the current journaled data layout.

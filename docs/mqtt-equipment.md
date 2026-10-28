@@ -14,8 +14,8 @@ or switch to another source when a device stops responding.
 
 The MQTT device entries and topic defaults live in the public `config.json`
 `options.equipment` section. Broker credentials remain in the private configuration
-file shown by **Data & settings → Configuration**. Device topics do not
-need to be repeated in that file. A private `equipment.devices` override replaces
+file shown by **Data & settings → Connections & configuration → Configuration**.
+Device topics do not need to be repeated in that file. A private `equipment.devices` override replaces
 the complete public list; arrays are not merged by device ID.
 
 ## Device entries

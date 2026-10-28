@@ -28,7 +28,8 @@
     "setup:linux": "node scripts/setup-linux.js",
     "deploy:linux": "node scripts/deploy-linux.js",
     "history": "node scripts/history.js",
-    "check": "npm run build && npm test"
+    "check:docs": "node scripts/check-docs.js",
+    "check": "npm run check:docs && npm run build && npm test"
   },
   "type": "module",
   "devDependencies": {

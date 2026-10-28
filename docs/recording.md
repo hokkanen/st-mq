@@ -935,7 +935,7 @@ unobserved chart options or mix exact contacts into the adaptive table.
 - Current state includes phase-voltage estimator checkpoints, Caravan probe
   power-restoration obligations and device-bound Automatic power choices, and
   paired MQTT source context. Their update dates and current-entry counts are
-  separate from retained observation history. Home Automatic/Pause changes and
+  separate from retained observation history. Home Automatic/Paused changes and
   scheduled Pause expiry have their own event history; they are permission
   changes, not physical heating measurements.
 
@@ -1925,6 +1925,9 @@ energy interval. Chart queries use bounded worker queues and temporary caches;
 history reconstruction and response serialization run outside the control event
 loop. An independent archive worker preserves the configured recent cache during broad
 history requests.
+
+## Energy cost comparisons
+
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. Its **Comparison period** has independent start/end
 calendars with the same behavior as the chart and Recorded energy checks. Selecting
@@ -2942,7 +2945,7 @@ Firewood comparisons resume both thermal alternatives and their validation
 accumulators from sparse, disposable checkpoints. A missing checkpoint or changed
 current model reports preparing while bounded background turns reconstruct it.
 Full reconstruction remains history-dependent; routine requests do not wait for
-that archive traversal. Manual-firewood control and status use schema 34's indexed
+that archive traversal. Manual-firewood control and status use indexed
 time windows and independent removal-target lookups. Retrospective source
 corrections still reconcile the affected historical learning and assessments.
 
@@ -2961,9 +2964,10 @@ The chronological chart-coverage index is not created by a chart request or by o
 For this chronological chart-coverage index only, the owner approved a one-time controlled installation upgrade
 on 2026-10-15, preserving all table rows, journal/checkpoint identity and learning
 history, with verified backups, strict current validation and rollback. This adds
-no general migration or startup repair. Journaled data layout 30 and its genesis/hash interpretation are unchanged;
-the physical schema identifier does not redefine journal hashes. The schema also
-restricts the journal record index to model-checkpoint/epoch/selection reversal
+no general migration or startup repair. That conversion preserved its then-current
+journaled layout 30 and genesis/hash interpretation; the physical schema identifier
+does not redefine journal hashes. The [current database format](reconstruction-and-versioning.md#current-formats-and-installation-exceptions)
+also restricts the journal record index to model-checkpoint/epoch/selection reversal
 and the recovery-energy index to rows with interval ends. Other journal reverse
 queries retain their complete results without indexing every recorder or charger
 receipt. The earlier index exception does not authorize later installed conversions.

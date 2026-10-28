@@ -47,11 +47,12 @@ An illustrative partial configuration uses a deliberately invented identifier:
 ```
 
 Both `providers` and `mqtt` input support H66. Preserve the installation's chosen
-live input and keep Home heating on **Pause** while commissioning; it does
+live input and keep Home heating on **Paused** while commissioning; it does
 not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save
-add-on options in Home Assistant. Choose **Data & settings → Configuration → Check & review configuration**. H66 device selection and
+app options in Home Assistant. Choose **Data & settings → Connections & configuration
+→ Configuration → Check & review configuration**. H66 device selection and
 broker changes reconnect without an ST-MQ restart when input is already live.
 Changing from `simulated` or `offline` to a live input requires a restart. See
 [configuration application](../DOCS.md) for private imports and restart settings.

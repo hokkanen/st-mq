@@ -15,7 +15,7 @@ node scripts/benchmarks/adaptive-journal.js
 node scripts/benchmarks/adaptive-journal.js --peer-mode=coalesced --offline-cycles=5760
 node scripts/benchmarks/adaptive-journal.js --cycles=30240 --workloads=constant,nearly-constant --peer-mode=coalesced --offline-cycles=30240
 node scripts/benchmarks/adaptive-journal.js --cycles=128 --workloads=constant --peer-mode=coalesced --history-rows=131072
-node --test --test-timeout=180000 test/extended/adaptive-journal-scale.test.js
+node scripts/test-offline.js --file test/extended/adaptive-journal-scale.test.js 180000
 node --test test/journal-admission.test.js test/history-import-worker.test.js
 ```
 

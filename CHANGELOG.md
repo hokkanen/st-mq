@@ -6,6 +6,19 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Refresh the locked Vite build tool and transitive IP-address parser to patched
+  releases. Validate local documentation links in routine checks and CI; retain
+  test receipts for both Node runtimes and use current CI action runtimes. Correct
+  setup guidance for chart navigation, fixed indoor weights, floor commissioning
+  and the current configuration and Home model controls.
+
+- Honor test name and skip filters in direct offline test-file runs, matching
+  the normal runner without changing case deadlines or application signals.
+
+- Preserve installed helper and service-file permissions when Linux setup runs
+  with a restrictive umask. Keep paired desktop cards aligned at their natural
+  height, and show paused charging separately from its next scheduled start.
+
 - Identify the affected provider and its primary or backup role in Sources
   needing attention for outdoor temperature, weather forecasts and published
   electricity prices. Show current feed availability separately, retain each
@@ -21,7 +34,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   dashboard. Keep reopened time, priority and cost-comparison windows and nested
   calendars usable when an earlier close event arrives late. Explain malformed
   or interrupted chart responses in the same way as other dashboard reads,
-  without displaying raw response content.
+  without displaying raw response content. Preserve keyboard focus, pairing-reset
+  reviews and the guided charging time chooser during quick navigation.
 
 - Keep charger-native firmware-update tasks and unrecognized jobs from blocking
   Charger 2 scheduling or vehicle identification. Detect charging schedules from
@@ -36,10 +50,6 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Describe restored charging identity as “Vehicle identity confirmed again” in
   the event log and session report. Keep the original loss and confirmation
   events, with their historical meaning, instead of repeating the loss headline.
-
-- Preserve reopened windows when an earlier close event arrives late. Keep
-  keyboard focus, expanded-state announcements, pairing-reset reviews and the
-  guided charging time chooser intact during quick navigation.
 
 - Keep garage door Open, Close and configured Stop, live status and command
   confirmation available during recording delays or writer failure, including
