@@ -229,8 +229,10 @@ try {
   })()`);
   await until("document.querySelector('#selector-fixture-select + .app-select-trigger') !== null");
   const clickLabel = async selector => {
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({ block: 'center' })`);
+    await settle();
     const point = await evaluate(`(() => {
-      const label = document.querySelector(${JSON.stringify(selector)}); label.scrollIntoView({ block: 'center' });
+      const label = document.querySelector(${JSON.stringify(selector)});
       const range = document.createRange(); range.selectNodeContents(label.firstChild); const rect = range.getBoundingClientRect();
       return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     })()`);
@@ -316,15 +318,17 @@ try {
   // Authentication changes can hide the owning dashboard while an overlay is in the body.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   await click('#away-until');
+  assert.equal(await evaluate("Boolean(document.querySelector('.date-picker:not([hidden])')?.checkVisibility())"), true);
   await evaluate("document.body.dataset.authenticated = 'false'");
-  assert.equal(await evaluate("document.querySelector('.date-picker:not([hidden])').checkVisibility()"), false,
+  assert.equal(await evaluate("Boolean(document.querySelector('.date-picker:not([hidden])')?.checkVisibility())"), false,
     'Signed-out UI never exposes an existing date/time popup');
   await evaluate("document.body.dataset.authenticated = 'true'"); await key('Escape');
   await evaluate(`document.body.append(document.getElementById('selector-fixture'));
     document.getElementById('selector-fixture-dialog').remove()`);
   await settle(); await click(fixtureTrigger);
+  assert.equal(await evaluate("Boolean(document.querySelector('.app-select-popup:not([hidden])')?.checkVisibility())"), true);
   await evaluate("document.body.dataset.authenticated = 'false'");
-  assert.equal(await evaluate("document.querySelector('.app-select-popup:not([hidden])').checkVisibility()"), false,
+  assert.equal(await evaluate("Boolean(document.querySelector('.app-select-popup:not([hidden])')?.checkVisibility())"), false,
     'Signed-out UI never exposes an existing body-level select popup');
   await evaluate("document.body.dataset.authenticated = 'true'"); await key('Escape');
   assert.deepEqual(await evaluate('selectorFixture.mutations'), [], 'Choosing draft settings does not send device or configuration commands');
