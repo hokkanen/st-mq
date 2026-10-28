@@ -118,6 +118,10 @@ test('standby assessment requires current coverage and reports gaps and missing 
   assert.throws(() => standbyAssessment('weather', weather, START + HOUR));
   assert.throws(() => standbyAssessment('outdoor', [{ source: 'openmeteo', signal: 'outdoor_temperature', value: 0,
     unit: 'degC', sourceTime: START - 31 * MINUTE }], START));
+  for (const value of [-60, 50]) assert.equal(standbyAssessment('outdoor', [{ source: 'openmeteo',
+    signal: 'outdoor_temperature', value, unit: 'degC', sourceTime: START - 30 * MINUTE }], START).status, 'ok');
+  for (const value of [-60.1, 50.1, 55]) assert.throws(() => standbyAssessment('outdoor', [{ source: 'openmeteo',
+    signal: 'outdoor_temperature', value, unit: 'degC', sourceTime: START }], START));
 });
 
 test('outdoor standby classification requires the selected primary, live evidence, matching units and policy', () => {

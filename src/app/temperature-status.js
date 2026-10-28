@@ -1,6 +1,6 @@
 import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
-import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { OUTDOOR_MAX_AGE_MS, outdoorTemperatureInRange } from '../domain/reading-freshness.js';
 import { indoorReadingUsable } from './indoor-readings.js';
 import { goodQuality } from '../control/learning.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
@@ -67,7 +67,9 @@ export function temperatureFailureReasons(observation, now) {
     && !reasons.length) reasons.push('unverified-h66');
   if (Number.isFinite(observation.value)) {
     const outside = observation.signal === 'garage_temperature' ? observation.value < -60 || observation.value > 70
-      : held ? observation.value <= 2 || observation.value >= 40 : observation.value < -60 || observation.value > 50;
+      : held ? observation.value <= 2 || observation.value >= 40
+        : observation.signal === 'outdoor_temperature' ? !outdoorTemperatureInRange(observation.value)
+          : observation.value < -60 || observation.value > 50;
     if (outside) reasons.push('out-of-range');
   }
   return unique(reasons);

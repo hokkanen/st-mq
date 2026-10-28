@@ -62,6 +62,29 @@ recorded checks and make no live-readiness claim. Easee, vehicle feeds, the
 electricity-price prediction service and FMI station selection keep their
 existing behavior.
 
+Recording details' **Sources needing attention** names each affected public
+provider and its primary/backup role, separately from the availability and source
+of the current feed. Outdoor temperature, weather (including solar radiation)
+and published spot prices share this presentation. Both providers can have their
+own warning; usable cached data or a working fallback does not erase a failed
+request. A real newer success clears that provider's earlier failure. Skipping a
+request during backoff creates no new check clock, and a shared provider cooldown
+does not claim another route was polled. Missing primary credentials in a supported
+keyless installation and unpublished tomorrow prices do not invent outages.
+An overdue scheduled standby check warns about unconfirmed backup readiness;
+it does not declare the current feed stale. Weather radiation keeps its own
+provider and publication/acquisition age even inside a fresh temperature forecast.
+
+The panel combines observed measurement warnings with bounded acquisition and
+standby diagnostics. Provider checks do not inflate the observed/usable stream
+counts. An unhealthy outdoor stream and its newer provider failure share one
+warning, retaining the original measurement timestamp and identifying the latest
+provider-check clock. Unused historical Open-Meteo observations do not override a
+newer completed backup check. Other measurement warnings, including unavailable
+Garage estimates, remain independent. These read-only projections do not select
+providers, ingest standby results or renew cached evidence; replicas continue to
+show recorded history rather than live recording health.
+
 The shared provider HTTP transport keeps its original finite request deadline
 through response-body consumption. Caller cancellation, provider shutdown and
 that deadline also cancel an admitted body reader after headers arrive. A
@@ -1667,8 +1690,11 @@ An old Open-Meteo outdoor stream is labelled **Standby** while the committed
 outdoor provider selects FMI and a same-unit/policy FMI observation from this run
 is fresh. Its original stale status and timestamps remain in the recorder;
 it does not raise a current-feed exception during that replacement. Expired FMI
-evidence restores source warnings immediately. Backup readiness/failures belong
-to Backup checks, separately from current recording health. `standbyStreams`
+evidence restores source warnings immediately. Completed backup failures/partial
+checks also appear in **Sources needing attention**, naming the affected provider
+and primary/backup role while separately describing current feed availability.
+**Backup checks** retains the hourly schedule, completed outcome and check dates.
+`standbyStreams`
 counts that observed standby evidence separately, without declaring it fresh;
 the source-count explanation identifies the expected standby gap. Individual FMI
 station streams and other independent measurements keep their existing rules.
@@ -1680,15 +1706,17 @@ or invalid evidence remains visible, and physical readback keeps its own limits.
 Stream labels preserve their measurement and unit, with links to the applicable
 recording details, without exposing private source identifiers. **Last source check** dates a source polling attempt, including
 an unavailable result, and does not claim a saved measurement or successful write.
-The expanded Recording fold separates **Activity** from **Observed sources**.
+The expanded Recording fold separates **Activity** from **Source health**.
 Activity dates the last completed loop update and source polling attempt. Source
-counts distinguish observed streams, usable evidence and streams needing attention;
+counts distinguish observed streams, usable evidence and source issues needing attention;
 unknown statuses are identified separately within the attention count. These are
 not additive categories: held evidence can remain usable while needing attention.
 Each unavailable, stale, failed, unknown or held-attention stream has its own name,
 unit, status, reason, source-observation time, polling-attempt time and details link.
-Counts describe observed streams, not all configured sources: a never-seen source
-can be absent. Source checks retain their own timestamps; unchanged readings and
+Observed/usable counts describe measurement streams, not all configured sources:
+a never-seen measurement can be absent, while a concrete provider request failure
+can still appear without any recorded measurement. Provider-only issues have their
+own count and do not inflate measurement counts. Source checks retain their own timestamps; unchanged readings and
 open energy intervals need no new observation rows. Storage health separately dates
 the last successful storage write, which can save settings or events as well as
 measurements. This summary is an early warning, not an integrity check or proof

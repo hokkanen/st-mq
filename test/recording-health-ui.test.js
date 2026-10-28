@@ -17,9 +17,39 @@ test('recording counts explain expected standby evidence without calling it usab
     observedStreams: 2, usableStreams: 1, attentionStreams: 0, unknownStreams: 0, standbyStreams: 1, issues: [],
   } } }), undefined, now);
   assert.equal(view.recording.observed, '2'); assert.equal(view.recording.usable, '1'); assert.equal(view.recording.attention, '0');
-  assert.match(view.recording.coverage, /outdoor backup is on standby/);
+  assert.match(view.recording.coverage, /backup reading on standby/);
   assert.match(view.recording.coverage, /Backup checks/);
   assert.equal(view.recording.issues.length, 0);
+});
+
+test('provider checks add source attention without inventing observed or usable measurement streams', () => {
+  const view = recordingHealthView(health({ recording: { sources: {
+    observedStreams: 0, usableStreams: 0, attentionStreams: 0, providerAttentionCount: 2, attentionCount: 2,
+    unknownStreams: 0, issues: [],
+  } } }), undefined, now);
+  assert.equal(view.recording.observed, '0'); assert.equal(view.recording.usable, '0');
+  assert.equal(view.recording.attention, '2'); assert.equal(view.recording.tone, 'warning');
+  assert.match(view.recording.evidence, /2 source issues need attention.*2 provider checks/);
+  assert.match(view.recording.sourcesEmpty, /2 source issues need attention/);
+  assert.match(view.recording.coverage, /Needs attention also includes provider checks/);
+});
+
+test('known provider issues remain visible when measurement metadata is unavailable without claiming complete counts', () => {
+  const view = recordingHealthView(health({ recording: { state: 'unknown', sources: {
+    observedStreams: null, usableStreams: null, attentionStreams: null, unknownStreams: null,
+    metadataKnown: false, providerAttentionCount: 1, attentionCount: 1,
+    issues: [{ id: 'known-provider', label: 'Published electricity prices', kind: 'provider', sourceLabel: 'Elering', status: 'failed' }],
+  } } }), undefined, now);
+  assert.equal(view.recording.observed, 'Unknown'); assert.equal(view.recording.usable, 'Unknown');
+  assert.equal(view.recording.attention, 'At least 1');
+  assert.match(view.recording.evidence, /At least 1 source issue needs attention/);
+  assert.match(view.recording.coverage, /other source issues may be unknown/);
+  assert.equal(view.recording.issues.length, 1);
+  const noKnownIssues = recordingHealthView(health({ recording: { sources: {
+    metadataKnown: false, attentionCount: 0, providerAttentionCount: 0,
+  } } }), undefined, now);
+  assert.equal(noKnownIssues.recording.attention, 'Unknown');
+  assert.equal(noKnownIssues.recording.sourcesEmpty, 'Source attention status is not known.');
 });
 
 test('backup age is factual, not an invented schedule or present verification', () => {
@@ -65,7 +95,7 @@ test('recording separates completed updates, attempted source checks, observed c
   assert.match(view.element('recording-recording-coverage').textContent, /never reported are outside.*held reading can be usable and still need attention/);
   assert.match(view.element('recording-performance-lastWrite').textContent, /2 min ago/);
   assert.equal(view.element('recording-recording-sources').children.length, 1);
-  assert.match(view.element('recording-recording-sources').children[0].children[2].children[1].textContent, /15 min ago/);
+  assert.match(view.element('recording-recording-sources').children[0].children[3].children[1].textContent, /15 min ago/);
   assert.equal(view.element('recording-performance-state').textContent, 'Caught up', 'Simulation monitors its own writer');
 });
 
@@ -1230,17 +1260,17 @@ test('source exceptions retain distinct evidence clocks and reach the matching r
   assert.equal(view.element('recording-health-badge').hidden, false);
   assert.equal(view.element('recording-recording-card').dataset.tone, 'warning');
   const [adaptive, exact] = view.element('recording-recording-sources').children;
-  assert.equal(adaptive.children[3].dataset.recordingOpen, 'recording-adaptive-details');
-  assert.equal(exact.children[3].dataset.recordingOpen, 'recording-overview-details');
+  assert.equal(adaptive.children[4].dataset.recordingOpen, 'recording-adaptive-details');
+  assert.equal(exact.children[4].dataset.recordingOpen, 'recording-overview-details');
   assert.equal(adaptive.children[0].children[0].textContent, 'Outdoor temperature');
   assert.equal(adaptive.children[0].children[1].textContent, 'Out of date');
   assert.match(adaptive.children[1].textContent, /out of date/);
-  assert.equal(adaptive.children[2].children[0].textContent, 'Source observation');
-  assert.match(adaptive.children[2].children[1].textContent, /15 min ago/);
-  assert.equal(adaptive.children[2].children[2].textContent, 'Last polling attempt');
-  assert.match(adaptive.children[2].children[3].textContent, /just now/);
+  assert.equal(adaptive.children[3].children[0].textContent, 'Source observation');
+  assert.match(adaptive.children[3].children[1].textContent, /15 min ago/);
+  assert.equal(adaptive.children[3].children[2].textContent, 'Last polling attempt');
+  assert.match(adaptive.children[3].children[3].textContent, /just now/);
   assert.equal(exact.children[0].children[1].textContent, 'Source check failed');
-  assert.equal(exact.children[2].children[1].textContent, 'Not known', 'Missing source evidence stays explicit beside its own clock label');
+  assert.equal(exact.children[3].children[1].textContent, 'Not known', 'Missing source evidence stays explicit beside its own clock label');
 });
 
 test('source counts distinguish unknown, no observed streams, overlapping attention and recorded history', () => {
@@ -1268,7 +1298,7 @@ test('source counts distinguish unknown, no observed streams, overlapping attent
   assert.equal(view.element('recording-recording-sources-title').hidden, false);
   assert.equal(view.element('recording-recording-sources-empty').hidden, true);
   assert.equal(view.element('recording-recording-sources-note').hidden, false);
-  assert.match(view.element('recording-recording-sources-note').textContent, /Additional observed stream exceptions are omitted/);
+  assert.match(view.element('recording-recording-sources-note').textContent, /Additional source issues are omitted/);
   view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only' } }) });
   assert.equal(view.element('recording-recording-counts').hidden, true);
   assert.equal(view.element('recording-recording-unknown').hidden, true);
@@ -1290,24 +1320,67 @@ test('structured source rows preserve focus and dated evidence through reorder, 
   view.element('recording-recording-card').append(summary);
   update();
   const [outdoor, bedroom] = view.element('recording-recording-sources').children;
-  const focusedLink = outdoor.children[3]; focusedLink.focus();
+  const focusedLink = outdoor.children[4]; focusedLink.focus();
   assert.equal(outdoor.children[0].children[0].textContent, 'Outdoor temperature (°C)');
   sources.issues.reverse(); update();
   assert.deepEqual(view.element('recording-recording-sources').children, [bedroom, outdoor]);
   assert.equal(view.document.activeElement, focusedLink);
-  assert.equal(outdoor.children[3], focusedLink);
-  const observed = outdoor.children[2].children[1].textContent;
+  assert.equal(outdoor.children[4], focusedLink);
+  const observed = outdoor.children[3].children[1].textContent;
   await view.panel.refresh();
   assert.equal(view.document.activeElement, focusedLink);
-  assert.equal(outdoor.children[2].children[1].textContent, observed, 'A failed health request cannot renew source dates');
+  assert.equal(outdoor.children[3].children[1].textContent, observed, 'A failed health request cannot renew source dates');
   assert.match(view.element('recording-recording-detail').textContent, /^Last known status\. Writes have resumed.*Earlier gaps may remain/);
   sources.issues = []; sources.attentionStreams = 0; sources.usableStreams = 3; update();
   assert.equal(view.document.activeElement, summary, 'A disappearing focused source returns to its recording fold');
   assert.equal(view.element('recording-recording-sources').hidden, true);
   assert.equal(view.element('recording-recording-sources-title').hidden, true);
   assert.equal(view.element('recording-recording-sources-empty').hidden, false);
-  assert.equal(view.element('recording-recording-sources-empty').textContent, 'No attention flags among the observed streams.');
+  assert.equal(view.element('recording-recording-sources-empty').textContent, 'No source issues need attention.');
   assert.equal(view.element('recording-recording-detail').textContent, detail);
+});
+
+test('source issue cards name each provider and its role separately from current feed availability', () => {
+  const view = panelFixture();
+  const issues = [
+    { id: 'fmi', kind: 'stream', label: 'Outdoor temperature', unit: 'degC', status: 'stale',
+      sourceLabel: 'FMI', sourceRole: 'primary', sourceObservedAt: now - 3600000, lastCheckedAt: now,
+      reason: 'The latest observation is out of date.', feed: { label: 'Outdoor temperature', status: 'available', sourceLabel: 'Open-Meteo' } },
+    { id: 'elering', kind: 'provider', label: 'Published electricity prices', status: 'failed',
+      sourceLabel: 'Elering', sourceRole: 'backup', sourceObservedAt: now - 7200000, lastCheckedAt: now,
+      destination: 'provider-market', reason: 'The backup check failed.', feed: { label: 'Published electricity prices', status: 'available', sourceLabel: 'ENTSO-E' } },
+  ];
+  const update = () => view.panel.update({ recordingHealth: health({ recording: { sources: {
+    observedStreams: 1, usableStreams: 0, attentionStreams: 1, providerAttentionCount: 1, attentionCount: 2, unknownStreams: 0, issues,
+  } } }) });
+  update();
+  const [fmi, elering] = view.element('recording-recording-sources').children;
+  assert.equal(fmi.children[0].children[2].textContent, 'FMI · Primary feed');
+  assert.equal(elering.children[0].children[2].textContent, 'Elering · Backup feed');
+  assert.equal(fmi.children[2].textContent, 'Current feed: available · Open-Meteo.');
+  assert.equal(elering.children[2].textContent, 'Current feed: available · ENTSO-E.');
+  assert.equal(elering.children[4].dataset.recordingOpen, 'provider-market-details');
+  assert.equal(elering.children[4].textContent, 'Published price feed details');
+  assert.equal(fmi.children[3].children[0].textContent, 'Source observation');
+  assert.equal(elering.children[3].children[0].textContent, 'Source observation', 'The source clock is never relabelled as a successful request');
+  assert.equal(elering.children[3].children[2].textContent, 'Last provider check');
+  issues[0].checkKind = 'acquisition'; update();
+  assert.equal(fmi.children[3].children[0].textContent, 'Source observation');
+  assert.equal(fmi.children[3].children[2].textContent, 'Last provider check');
+  issues[1].status = 'overdue'; update();
+  assert.equal(elering.children[0].children[1].textContent, 'Check overdue');
+  assert.equal(elering.children[2].textContent, 'Current feed: available · ENTSO-E.', 'An overdue backup check does not turn a healthy primary feed unavailable');
+  issues[0].feed = { label: 'Outdoor temperature', status: 'unavailable', sourceLabel: null };
+  issues[1].feed = { label: 'Published electricity prices', status: 'partial', sourceLabel: 'Elering' };
+  update();
+  assert.equal(fmi.children[2].textContent, 'Current feed: unavailable.');
+  assert.equal(elering.children[2].textContent, 'Current feed: partly available · Elering.');
+  assert.match(fmi.children[3].children[1].textContent, /1 h ago/, 'Feed changes do not renew original source evidence');
+  issues[0].sourceLabel = null; issues[0].sourceRole = null; issues[0].feed = null; update();
+  assert.equal(fmi.children[0].children[2].hidden, true);
+  assert.equal(fmi.children[2].hidden, true, 'Unidentified native/custom sources gain no invented provider or feed');
+  view.panel.update({ recordingHealth: health({ scope: 'snapshot', recording: { state: 'read-only', sources: { issues } } }) });
+  assert.equal(elering.children[2].textContent, 'Recorded feed: partly available · Elering.', 'Saved context never claims current acquisition');
 });
 
 test('a failed saved-copy recheck supersedes creation evidence and reaches collapsed warnings', async () => {

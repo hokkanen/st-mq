@@ -92,7 +92,9 @@ test('weather/current chains independently fall back and sanitize provider failu
   for (const fetcher of [fetchWeather, fetchOutdoorTemperature]) {
     const result = await fetcher({ connections, now: at, clock: () => at, http });
     assert.deepEqual(result.acquisition, { primary: 'fmi', selected: 'openmeteo', fallbackUsed: true,
-      attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429', retryAfterMs: 120_000 }, { source: 'openmeteo', status: 'ok', error: null }],
+      attempts: [{ source: 'fmi', status: 'error', error: 'HTTP-429', retryAfterMs: 120_000, attemptedAt: at, checkedAt: at },
+        { source: 'openmeteo', status: 'ok', error: null, attemptedAt: at, checkedAt: at,
+          ...(fetcher === fetchWeather ? { healthStatus: 'ok', solarStatus: 'available' } : {}) }],
       ...(fetcher === fetchWeather ? { solarSource: 'openmeteo' } : {}) });
   }
   assert.equal(primary, 2); assert.equal(backup, 2);
@@ -104,6 +106,9 @@ test('FMI temperature survives missing solar, supplemented only at matching inte
   assert.deepEqual(result.forecast.map(row => [row.outdoorC, row.solarRadiationWm2]), [[10.5, 0], [13, 250], [14, 400]]);
   assert.ok(result.forecast.every(row => row.source === 'fmi' && row.solar.source === 'openmeteo' && row.solar.fetchedAt === at && row.solar.issuedAt === null));
   assert.equal(result.acquisition.selected, 'fmi'); assert.equal(result.acquisition.solarSource, 'openmeteo'); assert.equal(result.acquisition.fallbackUsed, true);
+  assert.equal(result.acquisition.attempts[0].healthStatus, 'partial');
+  assert.equal(result.acquisition.attempts[0].solarStatus, 'unavailable');
+  assert.equal(result.acquisition.attempts[1].healthStatus, 'ok');
 });
 
 test('failed or backed-off solar backup retains good FMI temperatures and missing-solar metadata', async () => {

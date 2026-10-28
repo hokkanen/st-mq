@@ -40,7 +40,11 @@ async function weatherFallback(options, forecast) {
       let result = await fetcher(options);
       if (signal?.aborted) throw weatherError(null, 'Weather acquisition cancelled');
       options.onSourceResult?.({ source, result, attemptedAt });
-      acquisition.attempts.push({ source, status: 'ok', error: null });
+      acquisition.attempts.push({ source, status: 'ok', error: null, attemptedAt,
+        checkedAt: (options.clock ?? Date.now)(), ...(forecast ? {
+          healthStatus: solarStatus(result.forecast) === 'available' ? 'ok' : 'partial',
+          solarStatus: solarStatus(result.forecast),
+        } : {}) });
       if (forecast && source === 'fmi' && solarStatus(result.forecast) !== 'available') {
         primary = result; continue;
       }
@@ -54,7 +58,7 @@ async function weatherFallback(options, forecast) {
       if (signal?.aborted) throw weatherError(null, 'Weather acquisition cancelled');
       options.onSourceResult?.({ source, error, attemptedAt });
       lastError = error;
-      acquisition.attempts.push({ source, status: 'error',
+      acquisition.attempts.push({ source, status: 'error', attemptedAt, checkedAt: (options.clock ?? Date.now)(),
         error: Number.isInteger(error?.status) ? `HTTP-${error.status}` : 'provider-request-failed',
         ...(Number.isFinite(error?.retryAfterMs) ? { retryAfterMs: error.retryAfterMs } : {}) });
     }

@@ -35,10 +35,31 @@ test('a provider in normal use is labelled in use, including solar supplementati
   }
 });
 
+test('a selected backup retains failed and partial check outcomes instead of claiming current availability', () => {
+  const providers = { outdoor: { source: 'openmeteo', standby: standby({ status: 'error' }) },
+    weather: { source: 'fmi', acquisition: { solarSource: 'openmeteo' }, standby: standby({ status: 'partial' }) },
+    market: { source: 'elering', standby: standby({ source: 'elering', status: 'error' }) } };
+  const rows = standbyCheckRows(providers, ['outdoor', 'weather', 'market'], options);
+  assert.deepEqual(rows.map(row => row.state), ['Check failed', 'Partial coverage', 'Check failed']);
+  assert(rows.every(row => row.attention));
+  assert(rows.every(row => row.detail.includes('selected for the current feed')));
+  assert(rows.every(row => !row.detail.includes('is contributing')));
+});
+
+test('malformed diagnostic metadata cannot enter the backup detail or format an invalid date', () => {
+  const [row] = standbyCheckRows({ weather: { source: 'fmi', standby: standby({
+    coverage: { knownUntil: 'private-invalid-date', gaps: false }, solarStatus: 'private-invalid-status',
+  }) } }, ['weather'], options);
+  assert.doesNotMatch(row.detail, /private-invalid/);
+  assert.doesNotThrow(() => standbyCheckRows({ outdoor: { standby: standby({
+    coverage: { knownUntil: Number.MAX_VALUE }, nextAttemptAt: Number.MAX_VALUE,
+  }) } }, ['outdoor'], options));
+});
+
 test('recorded backup diagnostics remain neutral snapshots and preserve original check dates', () => {
   const providers = { market: { source: 'entsoe', standby: standby({ source: 'elering', status: 'error' }) } };
   const [row] = standbyCheckRows(providers, ['market'], { ...options, recorded: true });
-  assert.equal(row.state, 'Recorded check'); assert.equal(row.attention, false); assert.equal(row.tone, 'pending');
+  assert.equal(row.state, 'Recorded · Check failed'); assert.equal(row.attention, false); assert.equal(row.tone, 'pending');
   assert.match(row.evidence, /09:18/); assert.match(row.detail, /does not check live backup feeds/);
   assert(!row.detail.includes('Next standby check'));
 });
@@ -54,5 +75,5 @@ test('backup checks join existing provider groups without changing active-feed s
   assert.equal(market.standbyChecks[0].attention, true);
   status.readOnly = true;
   assert(groups.length > 0);
-  assert(dashboardProviders(status, options).every(group => group.standbyChecks.every(row => row.state === 'Recorded check')));
+  assert(dashboardProviders(status, options).every(group => group.standbyChecks.every(row => row.state.startsWith('Recorded · '))));
 });

@@ -1,7 +1,9 @@
-import { OUTDOOR_MAX_AGE_MS } from './reading-freshness.js';
+import { OUTDOOR_MAX_AGE_MS, outdoorTemperatureInRange, recordingSourceUsable } from './reading-freshness.js';
 
 export const STANDBY_CHECK_MS = 60 * 60_000;
 export const STANDBY_SOURCES = Object.freeze({ outdoor: 'openmeteo', weather: 'openmeteo', market: 'elering' });
+export const standbyCheckOverdue = (check, now) => Number.isFinite(check?.nextAttemptAt)
+  && check.nextAttemptAt >= 0 && now - check.nextAttemptAt > 60_000;
 
 /** Assess a decoded response, not mere HTTP reachability. These diagnostics
  * never become observations, forecast snapshots or selected market intervals. */
@@ -9,8 +11,8 @@ export function standbyAssessment(name, result, now) {
   const source = STANDBY_SOURCES[name];
   if (name === 'outdoor') {
     const row = result?.find?.(row => row.source === source && row.signal === 'outdoor_temperature');
-    if (!row || !Number.isFinite(row.value) || row.unit !== 'degC' || !Number.isFinite(row.sourceTime)
-      || row.sourceTime > now || now - row.sourceTime >= OUTDOOR_MAX_AGE_MS) throw new Error('Invalid standby outdoor reading');
+    if (!row || !outdoorTemperatureInRange(row.value) || row.unit !== 'degC' || !Number.isFinite(row.sourceTime)
+      || row.sourceTime > now || now - row.sourceTime > OUTDOOR_MAX_AGE_MS) throw new Error('Invalid standby outdoor reading');
     return { status: 'ok', sourceObservedAt: row.sourceTime, coverage: null, solarStatus: null };
   }
   if (result?.source !== source) throw new Error('Unexpected standby source');
@@ -39,9 +41,7 @@ export function outdoorStandbyStatus(recording, provider, now) {
   const rows = recording.parameters ?? [];
   const primary = provider?.source === 'fmi' && (provider.acquisition?.selected ?? provider.source) === 'fmi'
     ? rows.filter(row => row.source === 'fmi' && row.signal === 'outdoor_temperature'
-    && row.observedThisRun === true && row.freshness?.status === 'fresh'
-    && Number.isFinite(row.freshness.sourceObservedAt) && row.freshness.sourceObservedAt <= now
-    && now - row.freshness.sourceObservedAt < row.freshness.maxAgeMs) : [];
+    && row.observedThisRun === true && row.freshness?.status === 'fresh' && recordingSourceUsable(row, now)) : [];
   return { ...recording, parameters: rows.map(row => row.source === 'openmeteo' && row.signal === 'outdoor_temperature'
     ? { ...row, standby: primary.some(candidate => candidate.unit === row.unit && candidate.policy === row.policy) } : row) };
 }

@@ -7,6 +7,8 @@ import { storageOperationHealth } from '../storage/operation-health.js';
 import { recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { SIGNAL_INFO } from '../domain/history-series.js';
 import { verificationFailureEvidence } from './database-verification.js';
+import { recordingSourceUsable as usableSource } from '../domain/reading-freshness.js';
+import { sourceFeedHealth, publicSourceLabel, outdoorSourceRole } from './source-feed-health.js';
 
 const MINUTE = 60_000, DAY = 86_400_000, GIB = 1024 ** 3;
 const RECEIPT_KEY = 'storage:backup-health';
@@ -75,27 +77,20 @@ function recordingParameters(recording, now) {
   return active;
 }
 
-function usableSource(row, now) {
-  const freshness = row.freshness;
-  if (!freshness) return false;
-  if (['last-reported', 'held', 'held-attention'].includes(freshness.status)) return true;
-  if (freshness.status === 'recorded-interval') return Number.isFinite(row.lastPollAt) && now - row.lastPollAt <= 5 * MINUTE;
-  return freshness.status === 'fresh' && (freshness.maxAgeMs === null
-    || Number.isFinite(freshness.sourceObservedAt) && now - freshness.sourceObservedAt < freshness.maxAgeMs);
-}
-
-/** Observed streams only. This is not a census of configured or never-seen sources.
- * Signal labels are from the public catalogue; arbitrary device identities and
- * provider strings never leave this independent health endpoint. */
-function sourceSummary(parameters, now) {
-  if (parameters === null) return null;
-  const issues = parameters.filter(row => !(row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature')
-    && (!usableSource(row, now) || row.freshness?.status === 'held-attention'));
-  return { observedStreams: parameters.length, usableStreams: parameters.filter(row => usableSource(row, now)).length,
-    attentionStreams: issues.length, unknownStreams: issues.filter(row => !row.freshness).length,
-    standbyStreams: parameters.filter(row => row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature').length,
-    complete: false, truncated: issues.length > 50,
-    issues: issues.slice(0, 50).map((row, index) => {
+/** Observed-stream warnings and independent provider diagnostics. Stream counts
+ * are not a census of configured or never-seen sources. Labels come from public
+ * catalogues; arbitrary identities never leave this health endpoint. */
+function sourceSummary(parameters, now, providers) {
+  if (parameters === null && !providers.issues.length) return null;
+  const backupCheck = providers.backupChecks.outdoor;
+  const issues = (parameters ?? []).filter(row => {
+    const backup = row.source === 'openmeteo' && row.signal === 'outdoor_temperature';
+    const checkedBackup = backup && backupCheck && backupCheck.lastCheckedAt >= (row.lastPollAt ?? Infinity)
+      && (backupCheck.status !== 'ok' || providers.feeds.outdoor?.status === 'available');
+    return !(backup && (row.standby === true || checkedBackup))
+      && (!usableSource(row, now) || row.freshness?.status === 'held-attention');
+  });
+  const streamIssues = issues.map((row, index) => {
       const info = typeof row.signal === 'string' ? recordedSignalInfo(row.signal) : null;
       const publicLabel = info && info.label !== row.signal.replaceAll('_', ' ');
       const status = ['fresh', 'recorded-interval'].includes(row.freshness?.status) && !usableSource(row, now)
@@ -104,6 +99,9 @@ function sourceSummary(parameters, now) {
       const caravanReason = row.signal === 'caravan_dehumidifier_state' && Array.isArray(row.freshness?.reasons)
         ? row.freshness.reasons.find(reason => ['location-unconfirmed', 'state-evidence-unavailable'].includes(reason)) : null;
       return {
+        kind: 'stream', sourceLabel: publicSourceLabel(row.source),
+        sourceRole: row.signal === 'outdoor_temperature' ? outdoorSourceRole(row.source) : null,
+        feed: row.signal === 'outdoor_temperature' && outdoorSourceRole(row.source) ? providers.feeds.outdoor ?? null : null,
         id: typeof row.streamId === 'string' && /^[a-f0-9]{12}$/.test(row.streamId) ? row.streamId : `observed-${index}`,
         label: publicLabel ? info.label : 'Recorded measurement',
         status, policy, unit: publicUnits.has(row.unit) ? row.unit : '',
@@ -117,7 +115,25 @@ function sourceSummary(parameters, now) {
         lastCheckedAt: receiptTime(row.lastPollAt) ? row.lastPollAt : null,
         sourceObservedAt: sourceTime(row.freshness?.sourceObservedAt) ? row.freshness.sourceObservedAt : null,
       };
-    }) };
+    });
+  const providerIssues = providers.issues.filter(issue => {
+    const matching = issue.feed.label === 'Outdoor temperature' ? streamIssues.filter(stream =>
+      stream.feed?.label === issue.feed.label && stream.sourceLabel === issue.sourceLabel) : [];
+    if (!matching.length) return true;
+    for (const stream of matching) if (issue.lastCheckedAt !== null && issue.lastCheckedAt >= (stream.lastCheckedAt ?? -1)) {
+      Object.assign(stream, { status: issue.status, reason: issue.reason, lastCheckedAt: issue.lastCheckedAt,
+        checkKind: 'acquisition' });
+    }
+    return false;
+  });
+  const combined = [...streamIssues, ...providerIssues];
+  return { observedStreams: parameters?.length ?? null,
+    usableStreams: parameters?.filter(row => usableSource(row, now)).length ?? null,
+    attentionStreams: parameters === null ? null : streamIssues.length,
+    unknownStreams: parameters === null ? null : issues.filter(row => !row.freshness).length,
+    standbyStreams: parameters?.filter(row => row.standby === true && row.source === 'openmeteo' && row.signal === 'outdoor_temperature').length ?? null,
+    providerAttentionCount: providerIssues.length, attentionCount: combined.length, metadataKnown: parameters !== null,
+    complete: false, truncated: combined.length > 50, issues: combined.slice(0, 50) };
 }
 
 export function diskSpaceStatus(stats, checkedAt) {
@@ -273,7 +289,10 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     catch { recording = null; }
     const parameters = recordingParameters(recording, now);
     base.lastLoopCompletedAt = receiptTime(tickAt) && tickAt <= now ? tickAt : null;
-    base.sources = sourceSummary(parameters, now);
+    let providers;
+    try { providers = sourceFeedHealth({ store, parameters, outdoorCandidates: engine?.outdoorCandidates, now }); }
+    catch { providers = { feeds: {}, issues: [], backupChecks: {} }; }
+    base.sources = sourceSummary(parameters, now, providers);
     base.lastSourceCheckAt = parameters?.reduce((latest, row) => receiptTime(row.lastPollAt) && row.lastPollAt <= now
       ? Math.max(latest ?? 0, row.lastPollAt) : latest, null) ?? null;
     const healthy = parameters?.some(row => usableSource(row, now));
@@ -374,9 +393,11 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
           ? 'Database writes are failing' : recording.state === 'write-waiting' ? 'Waiting for storage' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
       else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
-      if (recording.state === 'ok' && recording.sources?.attentionStreams > 0) attention.push({ id: 'recording-sources',
-        severity: 'warning', title: `${recording.sources.attentionStreams} observed source${recording.sources.attentionStreams === 1 ? ' needs' : 's need'} attention`,
-        detail: 'Monitoring remains active, but some observed streams are unavailable or have a source warning. Review their individual evidence.' });
+      if (recording.sources?.attentionCount > 0 && (recording.state === 'ok'
+        || recording.sources.providerAttentionCount > 0
+        || recording.sources.issues.some(issue => issue.checkKind === 'acquisition'))) attention.push({ id: 'recording-sources',
+        severity: 'warning', title: `${recording.sources.attentionCount} source${recording.sources.attentionCount === 1 ? ' needs' : 's need'} attention`,
+        detail: 'Review the affected sources and the current availability of each feed.' });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });
       if (backup.failedChecks || backup.changedChecks) attention.push({ id: 'backup-check', severity: 'warning',
         title: 'Saved-copy checks need attention', detail: `${backup.failedChecks} failed check${backup.failedChecks === 1 ? '' : 's'} and ${backup.changedChecks} changed cop${backup.changedChecks === 1 ? 'y' : 'ies'} were observed in this application run. Review Backups for the dated results.` });

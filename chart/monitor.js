@@ -640,7 +640,7 @@ function renderProviders(s) {
     if (!row) {
       row = document.createElement('li'); row.className = 'source-overview';
       row.dataset.provider = key; row.dataset.sourceKey = key;
-      const fold = document.createElement('details'); fold.className = 'provider-fold';
+      const fold = document.createElement('details'); fold.className = 'provider-fold'; fold.id = `provider-${key}-details`;
       const summary = document.createElement('summary');
       const heading = document.createElement('span'); heading.className = 'provider-heading';
       const title = document.createElement('strong'); title.className = 'provider-category-title';

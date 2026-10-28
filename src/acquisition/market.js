@@ -219,14 +219,14 @@ export async function fetchMarket({ connections, now, http, signal, skipSources 
       const result = await fetcher({ connections, now, http, signal });
       onSourceResult?.({ source, result, attemptedAt });
       const incomplete = result.coverage.gaps || !result.coverage.completeToday;
-      attempts.push({ source, status: incomplete ? 'incomplete' : 'ok',
+      attempts.push({ source, status: incomplete ? 'incomplete' : 'ok', attemptedAt, checkedAt: clock(),
         error: incomplete ? 'incomplete-market-coverage' : null });
       if (source === 'entsoe') primary = result; else backup = result;
       if (!incomplete) break;
     } catch (error) {
       if (signal?.aborted) throw new ProviderError('provider-request-aborted');
       onSourceResult?.({ source, error, attemptedAt });
-      lastError = error; attempts.push(attemptFailure(source, error));
+      lastError = error; attempts.push({ ...attemptFailure(source, error), attemptedAt, checkedAt: clock() });
     }
   }
   const selected = !primary ? backup : !backup ? primary

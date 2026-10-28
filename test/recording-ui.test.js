@@ -4,6 +4,14 @@ import { recordingRows, recordingStatus, inventoryItemSummary, inventoryDateSpan
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 
+test('standby recording preserves original evidence without hard-coding a provider or measurement', () => {
+  const status = recordingStatus({ standby: true });
+  assert.equal(status.label, 'Standby');
+  assert.match(status.detail, /fresh primary source supplies the current feed/);
+  assert.match(status.detail, /keeps its original observation time/);
+  assert.doesNotMatch(status.detail, /FMI|Open-Meteo|outdoor/);
+});
+
 test('recording status distinguishes periodic report freshness from saved-value age and saving cadence',()=>{
   const now=3*86400_000,reportAt=now-17*60_000-1;
   const row={status:'fresh',hour:{averageIntervalMs:300000},freshness:{status:'stale',reasons:['missing-report'],

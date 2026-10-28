@@ -111,7 +111,9 @@ test('complete FMI primary never calls the keyless Open-Meteo backup', async () 
   for (const fetcher of [fetchWeather, fetchOutdoorTemperature]) {
     const result = await fetcher({ connections, now: at, clock: () => at, http });
     assert.deepEqual(result.acquisition, { primary: 'fmi', selected: 'fmi', fallbackUsed: false,
-      attempts: [{ source: 'fmi', status: 'ok', error: null }], ...(fetcher === fetchWeather ? { solarSource: 'fmi' } : {}) });
+      attempts: [{ source: 'fmi', status: 'ok', error: null, attemptedAt: at, checkedAt: at,
+        ...(fetcher === fetchWeather ? { healthStatus: 'ok', solarStatus: 'available' } : {}) }],
+      ...(fetcher === fetchWeather ? { solarSource: 'fmi' } : {}) });
   }
 });
 

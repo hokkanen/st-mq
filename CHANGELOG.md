@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Identify the affected provider and its primary or backup role in Sources
+  needing attention for outdoor temperature, weather forecasts and published
+  electricity prices. Show current feed availability separately, retain each
+  provider's failed or partial check until recovery, and keep old idle backup
+  measurements separate from hourly backup readiness.
+
 - Check unused Open-Meteo outdoor/forecast feeds and Elering published prices
   hourly. Show dated backup readiness separately from the current feed, and
   identify old Open-Meteo outdoor readings as standby while fresh FMI data is

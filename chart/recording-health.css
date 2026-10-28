@@ -89,7 +89,9 @@
 .recording-source-status { font-size: 11px; line-height: 1.5; color: var(--muted); }
 .recording-source-status[data-tone="warning"] { color: var(--stale); }
 .recording-source-status::before { content: '•'; margin-inline-end: 5px; }
+.recording-source-origin { flex-basis: 100%; color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .recording-source-reason { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.recording-source-feed { margin: 6px 0 0; color: var(--text); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .recording-source-clocks { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr); gap: 4px 12px; margin: 10px 0 4px; font-size: 11px; line-height: 1.6; }
 .recording-source-clocks dt { color: var(--muted); }
 .recording-source-clocks dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }

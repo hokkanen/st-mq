@@ -120,6 +120,10 @@ function acquisitionInfo(raw) {
     attempts: raw.attempts.slice(0, 4).filter(row => SOURCES.has(row?.source)).map(row => ({
       source: row.source, status: ['ok', 'error', 'not-configured', 'incomplete', 'backoff'].includes(row.status) ? row.status : 'error',
       error: row.error ? safeFailure(row.error) : null, retryAfterMs: boundedDelay(row.retryAfterMs),
+      ...(row.status !== 'backoff' && validSourceTime(row.attemptedAt) ? { attemptedAt: row.attemptedAt } : {}),
+      ...(row.status !== 'backoff' && validSourceTime(row.checkedAt) ? { checkedAt: row.checkedAt } : {}),
+      ...(['ok', 'partial'].includes(row.healthStatus) ? { healthStatus: row.healthStatus } : {}),
+      ...(['available', 'partial', 'unavailable'].includes(row.solarStatus) ? { solarStatus: row.solarStatus } : {}),
     })) };
   if (['fmi', 'openmeteo', 'mixed'].includes(raw.solarSource)) info.solarSource = raw.solarSource;
   if (raw.coverage) info.coverage = {
@@ -130,7 +134,7 @@ function acquisitionInfo(raw) {
   return info;
 }
 
-function noteAcquisition(state, raw, now, { select = true } = {}) {
+function noteAcquisition(state, raw, now, { select = true, job } = {}) {
   const info = acquisitionInfo(raw);
   if (!info) return;
   for (const attempt of info.attempts) {
@@ -138,6 +142,8 @@ function noteAcquisition(state, raw, now, { select = true } = {}) {
     else if (['error', 'incomplete'].includes(attempt.status)) {
       const failures = Math.min(10, (state.sourceBackoff[attempt.source]?.failures ?? 0) + 1);
       state.sourceBackoff[attempt.source] = { failures, error: attempt.error ?? 'provider-request-failed',
+        status: attempt.status, job, lastAttemptAt: attempt.attemptedAt ?? state.lastAttemptAt ?? null,
+        lastCheckedAt: attempt.checkedAt ?? now,
         nextAttemptAt: now + backoff(failures, attempt.error, attempt.retryAfterMs),
         shared: /HTTP-(401|403|429)/.test(attempt.error ?? '') || attempt.retryAfterMs > 0 };
     }
@@ -270,6 +276,11 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         SOURCES.has(source) && Number.isFinite(state?.nextAttemptAt) && state.nextAttemptAt <= now + 24 * 60 * MINUTE)
         .map(([source, state]) => [source, { failures: Math.min(10, Math.max(0, state.failures ?? 0)),
           nextAttemptAt: state.nextAttemptAt, error: safeFailure(state.error),
+          status: state.status === 'incomplete' ? 'incomplete' : 'error',
+          inherited: state.inherited === true,
+          ...(['outdoor', 'weather', 'market'].includes(state.job) ? { job: state.job } : {}),
+          lastAttemptAt: validSourceTime(state.lastAttemptAt) && state.lastAttemptAt <= now ? state.lastAttemptAt : null,
+          lastCheckedAt: validSourceTime(state.lastCheckedAt) && state.lastCheckedAt <= now ? state.lastCheckedAt : null,
           shared: state.shared === true || /HTTP-(401|403|429)/.test(safeFailure(state.error)) }])) };
     if (job.enabled && STANDBY_SOURCES[name] && (name !== 'market' || marketLocation(connections).country)) {
       const prior = previous?.standby?.source === STANDBY_SOURCES[name] ? previous.standby : null;
@@ -382,7 +393,12 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     // Provider-wide access/rate limits apply equally to acquisition and checks.
     for (const other of Object.values(health)) for (const [source, blocked] of Object.entries(other.sourceBackoff)) {
       if (job.sources?.includes(source) && blocked.shared && blocked.nextAttemptAt > at
-        && blocked.nextAttemptAt > (state.sourceBackoff[source]?.nextAttemptAt ?? 0)) state.sourceBackoff[source] = { ...blocked };
+        && blocked.nextAttemptAt > (state.sourceBackoff[source]?.nextAttemptAt ?? 0)) {
+        const local = state.sourceBackoff[source];
+        state.sourceBackoff[source] = { ...blocked, inherited: true,
+          ...(local?.job === name && local.inherited !== true ? { job: name, inherited: false,
+            lastAttemptAt: local.lastAttemptAt, lastCheckedAt: local.lastCheckedAt, status: local.status } : {}) };
+      }
     }
     return Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
   }
@@ -430,7 +446,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       // any, will replace this diagnostic; cancellation is not a feed failure.
       if (state.standby === checking) state.standby = previous;
     } else {
-      noteAcquisition(state, (error ?? result)?.acquisition, clock(), { select: false });
+      noteAcquisition(state, (error ?? result)?.acquisition, clock(), { select: false, job: name });
       standbyOutcome(name, outcome ?? { result, error, attemptedAt: at }, clock());
     }
     await write(() => store.setState('providers:health', health));
@@ -460,7 +476,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         throw Object.assign(new Error('Electrical acquisition was interrupted'), { code: 'provider-request-aborted' });
       if (name === 'weather') result.acquisitionIdentity = weatherIdentity;
       if (name === 'outdoor') for (const row of result) row.raw = { ...row.raw, acquisitionIdentity: weatherIdentity };
-      noteAcquisition(state, result?.acquisition, clock());
+      noteAcquisition(state, result?.acquisition, clock(), { job: name });
       if (!standbyResult && state.standby && (result.source ?? result[0]?.source) === state.standby.source)
         standbyResult = { result, attemptedAt: at };
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
@@ -572,7 +588,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         catch { /* Failed diagnostics must not interrupt provider recovery. */ }
       }
       if (closed || !canControl()) return;
-      noteAcquisition(state, error?.acquisition, clock());
+      noteAcquisition(state, error?.acquisition, clock(), { job: name });
       retryAfterMs = boundedDelay(error?.retryAfterMs);
       state.status = 'error'; failure = errorCode(error);
       if (name === 'easee') {

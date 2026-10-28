@@ -162,13 +162,13 @@ test('Elering retains all actual UTC intervals in short and long Finnish DST day
 
 test('a healthy ENTSO-E day needs one GET; unpublished tomorrow does not trigger fallback or invented prices', async () => {
   let calls = 0;
-  const result = await fetchMarket({ connections: configured, now: at, http: {
+  const result = await fetchMarket({ connections: configured, now: at, clock: () => at, http: {
     text: async () => { calls++; return fullDayXml(); }, json: async () => { throw new Error('Fallback must not run'); },
   } });
   assert.equal(calls, 1);
   assert.equal(result.source, 'entsoe');
   assert.equal(result.intervals.at(-1).end, dayEnd);
-  assert.deepEqual(result.acquisition.attempts, [{ source: 'entsoe', status: 'ok', error: null }]);
+  assert.deepEqual(result.acquisition.attempts, [{ source: 'entsoe', status: 'ok', error: null, attemptedAt: at, checkedAt: at }]);
   assert.equal(result.acquisition.fallbackUsed, false);
   assert.equal(result.coverage.completeToday, true);
 });
@@ -232,8 +232,9 @@ test('per-source backoff suppresses requests and rate-limit diagnostics retain o
   let keyedRequests = 0;
   const http = { text: async () => { keyedRequests++; throw Object.assign(new ProviderError('provider-http-error', 429), { retryAfterMs: 7200_000 }); },
     json: async () => eleringDay() };
-  let result = await fetchMarket({ connections: configured, now: at, http });
-  assert.deepEqual(result.acquisition.attempts[0], { source: 'entsoe', status: 'error', error: 'HTTP-429', retryAfterMs: 7200_000 });
+  let result = await fetchMarket({ connections: configured, now: at, clock: () => at, http });
+  assert.deepEqual(result.acquisition.attempts[0], { source: 'entsoe', status: 'error', error: 'HTTP-429', retryAfterMs: 7200_000,
+    attemptedAt: at, checkedAt: at });
   result = await fetchMarket({ connections: configured, now: at, http, skipSources: ['entsoe'] });
   assert.equal(keyedRequests, 1);
   assert.equal(result.acquisition.attempts[0].status, 'backoff');

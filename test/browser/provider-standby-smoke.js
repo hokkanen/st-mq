@@ -72,15 +72,43 @@ try {
     globalThis.setInterval = (callback, delay, ...args) => {
       if (delay === 15_000) globalThis.refreshStandbySmoke = () => callback(...args);
       return schedule(callback, delay, ...args);
+    };
+    const transport = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async (...args) => {
+      const response = await transport(...args);
+      if (!String(args[0]).includes('/api/status') || !globalThis.standbySmokeMode) return response;
+      const status = await response.json();
+      for (const [key, source, outcome] of [['outdoor','openmeteo','error'],['weather','openmeteo','partial'],['market','elering','error']]) {
+        if (globalThis.standbySmokeMode === 'missing') delete status.providers[key].standby;
+        else { status.providers[key].source = source; status.providers[key].standby.status = outcome; }
+      }
+      return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
     };` });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   for (let i = 0; i < 200 && !await evaluate("document.querySelectorAll('.provider-standby-list > li').length === 3"); i++) await pause(25);
   assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li').length"), 3);
+  // Seeded backup diagnostics may render before the initial market acquisition.
+  for (let i = 0; i < 200 && !await evaluate("document.querySelector('[data-provider=market] .provider-category-state')?.textContent === 'Available'"); i++) {
+    await evaluate('globalThis.refreshStandbySmoke()'); await pause(25);
+  }
   await evaluate("document.querySelectorAll('#providers .provider-fold').forEach(node => node.open = ['market','main-temperatures'].includes(node.closest('[data-provider]').dataset.provider))");
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.provider-standby-state')].map(node => node.textContent)"),
     ['Check failed', 'Usable at last check', 'Partial coverage']);
   assert.equal(await evaluate("document.querySelector('[data-provider=market] .provider-category-state').textContent"), 'Available');
   assert.match(await evaluate("document.querySelector('[data-provider=market] .provider-category-meta').textContent"), /Backup check needs attention/);
+  await evaluate(`document.getElementById('recording-details').open = true;
+    document.getElementById('recording-recording-card').open = true;
+    document.getElementById('provider-market-details').open = false;`);
+  assert.equal(await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]')?.textContent"),
+    'Published price feed details', 'Provider warnings link to their live feed details');
+  await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]').focus()");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  assert.equal(await evaluate("document.getElementById('provider-market-details').open"), true);
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#provider-market-details > summary')"), true,
+    'Provider warning navigation opens the right feed and focuses its summary');
+  await evaluate("document.getElementById('recording-details').open = false");
   await evaluate("document.querySelector('[data-check=outdoor] .status-detail-trigger').focus()");
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
     nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
@@ -92,6 +120,29 @@ try {
   await evaluate("globalThis.standbyFocus = document.activeElement; globalThis.refreshStandbySmoke()");
   assert.equal(await evaluate('document.activeElement === globalThis.standbyFocus'), true, 'Refresh retains focused check trigger');
   assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] details').open"), true);
+  await evaluate("globalThis.standbySmokeMode = 'selected-failure'; globalThis.refreshStandbySmoke()");
+  for (let i = 0; i < 200 && !await evaluate("document.querySelector('[data-check=outdoor] .provider-standby-state').textContent === 'Check failed'"); i++) await pause(25);
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.provider-standby-state')].map(node => node.textContent)"),
+    ['Check failed', 'Check failed', 'Partial coverage'], 'A remembered selected backup does not conceal its failed or partial latest check');
+  assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li[data-state=attention]').length"), 3);
+  await evaluate("document.querySelector('[data-check=outdoor] .status-detail-trigger').click()");
+  assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /selected for the current feed/);
+  await evaluate("globalThis.standbySmokeMode = 'missing'; globalThis.refreshStandbySmoke()");
+  for (let i = 0; i < 200 && await evaluate("document.querySelectorAll('.provider-standby-list > li').length > 0"); i++) await pause(25);
+  assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li').length"), 0);
+  assert.equal(await evaluate("document.getElementById('status-detail-popover').hidden"), true, 'Removing an open check closes its explanation');
+  assert.equal(await evaluate("document.activeElement === document.querySelector('[data-provider=main-temperatures] .provider-fold > summary')"), true,
+    'Removing a check returns focus to its visible feed summary');
+  await evaluate("globalThis.standbySmokeMode = null; globalThis.refreshStandbySmoke()");
+  for (let i = 0; i < 200 && !await evaluate("document.querySelectorAll('.provider-standby-list > li').length === 3"); i++) await pause(25);
+  assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li').length"), 3);
+  await evaluate("document.querySelector('[data-check=outdoor] .status-detail-trigger').click(); document.querySelector('#provider-market-details > summary').focus()");
+  await evaluate("globalThis.standbySmokeMode = 'missing'; globalThis.refreshStandbySmoke()");
+  for (let i = 0; i < 200 && await evaluate("document.querySelectorAll('.provider-standby-list > li').length > 0"); i++) await pause(25);
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#provider-market-details > summary')"), true,
+    'Removing an open check does not steal focus after the user has moved elsewhere');
+  await evaluate("globalThis.standbySmokeMode = null; globalThis.refreshStandbySmoke()");
+  for (let i = 0; i < 200 && !await evaluate("document.querySelectorAll('.provider-standby-list > li').length === 3"); i++) await pause(25);
   for (const theme of ['light', 'dark']) for (const width of [320, 375, 480, 800, 1280, 1440]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: width < 500 });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
@@ -112,7 +163,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'provider-standby-smoke-passed', themes: 2, widths: 6, artifacts,
-    checks: ['three scoped feeds', 'separate active and backup status', 'keyboard details', 'focus and disclosure preservation', 'responsive layout'] }));
+    checks: ['three scoped feeds', 'separate active and backup status', 'provider warning navigation', 'selected backup failure', 'keyboard details', 'focus and disclosure preservation', 'disappearing check focus', 'responsive layout'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
