@@ -101,6 +101,12 @@ try {
     document.getElementById('provider-market-details').open = false;`);
   assert.equal(await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]')?.textContent"),
     'Published price feed details', 'Provider warnings link to their live feed details');
+  await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]').closest('details').querySelector('summary').focus()");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  assert.equal(await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]').checkVisibility()"), true,
+    'Opening the source disclosure makes its provider navigation reachable');
   await evaluate("document.querySelector('#recording-recording-sources a[data-recording-open=provider-market-details]').focus()");
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
     nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' });
