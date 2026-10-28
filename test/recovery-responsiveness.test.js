@@ -116,24 +116,40 @@ test('a full supported cycle provenance graph eventually recovers while unrelate
   donor.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
     .run(cycle.id, 'mqtt', cycle.startedAt, cycle.endedAt, cycle.status, JSON.stringify(cycle));
   const snapshot = await f.snapshot(donor);
-  let writes = 0, largestGap = 0, last = performance.now();
-  const pending = new Set();
-  const timer = setInterval(() => {
-    const now = performance.now(); largestGap = Math.max(largestGap, now - last); last = now;
-    const saved = f.master.runWrite(() => f.master.event('synthetic-independent-event', { sequence: ++writes }), { signal: t.signal });
-    pending.add(saved); void saved.finally(() => pending.delete(saved)).catch(() => {});
+  await f.master.startWriter();
+  let writes = 0, largestGap = 0, last = performance.now(), ticks = 0, phase = null, slowestPhase = null;
+  let pendingWrite = null, writeError = null;
+  const beat = () => {
+    const now = performance.now();
+    if (now - last > largestGap) { largestGap = now - last; slowestPhase = phase; }
+    last = now;
+  };
+  const heartbeat = setInterval(() => { beat(); ticks++; }, 10);
+  const producer = setInterval(() => {
+    if (pendingWrite) return;
+    pendingWrite = f.master.runWrite(() => f.master.event('synthetic-independent-event', { sequence: writes + 1 }), { signal: t.signal })
+      .then(() => { writes++; }, error => { writeError ??= error; })
+      .finally(() => { pendingWrite = null; });
   }, 10);
-  const stop = () => clearInterval(timer);
+  const stop = () => { clearInterval(heartbeat); clearInterval(producer); };
   t.signal.addEventListener('abort', stop, { once: true });
   try {
-    const result = await recover(f, snapshot);
+    const result = await recover(f, snapshot, { onProgress(value) { phase = value.phase; } });
+    beat(); stop();
+    const writesDuringRecovery = writes;
+    await pendingWrite;
+    assert.ifError(writeError);
     assert.equal(result.report.counts.skipped, 0);
     assert.equal(result.report.tables.find(value => value.name === 'learning_cycles').missing, 1);
     const saved = JSON.parse(f.master.db.prepare('SELECT payload FROM learning_cycles').get().payload);
     assert.equal(saved.observations.length, 3001, 'all supported frozen evidence is retained');
-    assert(writes > 1);
-    assert(largestGap < 1500, `supported provenance must not stall recording (${largestGap} ms)`);
-  } finally { stop(); t.signal.removeEventListener('abort', stop); await Promise.allSettled([...pending]); }
+    assert(writesDuringRecovery > 1, 'independent writes complete before recovery finishes');
+    assert(ticks > 1, 'the heartbeat progresses independently of write completion');
+    assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-independent-event'").get().n, writes,
+      'every completed independent write remains durable');
+    t.diagnostic(JSON.stringify({ writesDuringRecovery, writes, heartbeatTicks: ticks, maxHeartbeatGapMs: largestGap, slowestPhase }));
+    assert(largestGap < testLatencyLimit(1500), `supported provenance must not stall recording (${largestGap} ms)`);
+  } finally { stop(); t.signal.removeEventListener('abort', stop); await pendingWrite; }
 });
 
 test('an unchanged future pending-energy receipt becoming eligible during restoration requires a fresh review', async t => {

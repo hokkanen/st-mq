@@ -990,6 +990,10 @@ five-second admission deadline is unchanged. Held firewood-cache proofs use the
 declared synthetic latency allowance for foreground queries and worker retirement;
 proof cancellation, immutable retired files and worker-generation fencing remain
 exact. All these standard-profile bounds remain unchanged.
+The complete-cycle provenance fixture uses the runtime writer and one outstanding
+independent save, with a separate heartbeat. It retains all 3,001 supported evidence
+entries, proves durable writes completed during recovery and reports its measured
+heartbeat gap under the same declared latency allowance.
 The GiB reset fixture records generation and per-scenario preparation separately
 from reset latency. Its existing ten-minute parent budget uses the declared bulk
 completion allowance on HA, and each of the three independent reset scenarios
