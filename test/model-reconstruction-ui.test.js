@@ -85,14 +85,14 @@ test('exact model mismatch diagnostics remain bounded and separate from matching
     streams: [{ input: 'mqtt', modelMatched: false, historyMatched: true,
       differences: { count: 12, numericCount: 11, otherCount: 1, maxAbsoluteDelta: 2.220446049250313e-16,
         maxRelativeDelta: 1.1102230246251565e-15, paths, truncated: true } }],
-    runtime: { node: '24.15.0', v8: '13.6.233.10-node.29', arch: 'arm64', platform: 'linux' } };
+    runtime: { node: '22.23.4', v8: '12.4.254.21-node.57', arch: 'arm64', platform: 'linux' } };
   const view = reconstructionView({...matched,lastVerification:result});
   assert.equal(view.summary,'Verification mismatch');
   assert.match(view.verification,/Complete model: differed\. All four coefficient histories: matched/);
   assert.match(view.verification,/12 model differences \(11 numeric, 1 other\).*2.22e-16 absolute, 1.11e-15 relative/);
   assert.match(view.verification,/samples\.7\.inputSegments\.0\.fireplaceKgPerHour; more omitted/);
   assert.doesNotMatch(view.verification,/samples\.(?:8|9|10|11)\./);
-  assert.match(view.verification,/Replay runtime: Node 24\.15\.0; V8 13\.6\.233\.10-node\.29; linux\/arm64/);
+  assert.match(view.verification,/Replay runtime: Node 22\.23\.4; V8 12\.4\.254\.21-node\.57; linux\/arm64/);
   assert.match(view.verification,/Exact comparison applies no tolerance.*does not establish its cause/);
   assert.doesNotMatch(view.verification,/2\.220446049250313/,'The UI displays concise deltas, never raw model values');
 });

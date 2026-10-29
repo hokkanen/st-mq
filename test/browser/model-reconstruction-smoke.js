@@ -119,13 +119,13 @@ document.getElementById('database-verification-schedule').textContent='The next 
       maxAbsoluteDelta:2.220446049250313e-16,maxRelativeDelta:1.1102230246251565e-15,truncated:true,
       paths:Array.from({length:12},(_,index)=>`samples.${index}.inputSegments.0.fireplaceKgPerHour`),
       expected:'private-saved-value',actual:'private-replayed-value'}}],
-    runtime:{node:'24.15.0',v8:'13.6.233.10-node.29',arch:'arm64',platform:'linux'}};
+    runtime:{node:'22.23.4',v8:'12.4.254.21-node.57',arch:'arm64',platform:'linux'}};
   await evaluate('panel.refresh()');
   const mismatch = await evaluate(`${id('result')}.textContent`);
   assert.match(mismatch,/Complete model: differed.*All four coefficient histories: matched.*12 model differences.*2.22e-16 absolute/);
   assert.match(mismatch,/samples\.7\.inputSegments\.0\.fireplaceKgPerHour; more omitted/);
   assert.doesNotMatch(mismatch,/samples\.(?:8|9|10|11)\.|private-(?:saved|replayed)-value/);
-  assert.match(mismatch,/Replay runtime: Node 24\.15\.0.*linux\/arm64.*Exact comparison applies no tolerance/);
+  assert.match(mismatch,/Replay runtime: Node 22\.23\.4.*linux\/arm64.*Exact comparison applies no tolerance/);
   for (const theme of ['light','dark']) for (const width of [320,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:width<500});
     await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
