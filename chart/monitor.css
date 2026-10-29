@@ -1168,7 +1168,9 @@ details details { margin-inline-start: var(--ui-inset); }
   .controller-column { display: contents; }
   #home-control { order: 1; }
   #garage-control { order: 2; }
-  #providers-controls { order: 3; }
+  /* This card precedes Garage in DOM order but follows it visually. Exclude
+     it as an anchor so opening Garage cannot pull the viewport down to it. */
+  #providers-controls { order: 3; overflow-anchor: none; }
   .panel { padding-block: 20px; margin-bottom: 16px; }
   .plot { height: 420px; }
   .chart-range-controls { gap: 12px; }

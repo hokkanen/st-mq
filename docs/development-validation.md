@@ -1579,6 +1579,18 @@ synthetic hardware, not actual charger or BMW response.
 
 ## Browser suites
 
+`node test/browser/fold-scroll-smoke.js` uses an isolated simulated application to
+check native disclosure activation at 320, 390 and 1440 px in both themes, plus
+keyboard activation on desktop. Real touch input separately checks Home equipment,
+Garage equipment and Connections before changing the fixture. The catalogue sweep
+reveals conditional markup and adds synthetic body height to expose scroll jumps
+even in unconfigured folds and keep modal size changes from recentering the test
+surface. It checks opening, closing and stable page or summary position, including
+the comparison button. Intentional provider-grid reflow and modal recentering may
+move a header without scrolling the page. Pass widths as arguments to select a subset, for example
+`node test/browser/fold-scroll-smoke.js 390`. This does not qualify an installed
+phone browser.
+
 Build first with `npm run build`. Browser sweeps are extended/manual checks,
 separate from both Node commands; run the relevant suite for UI changes. All
 browser scripts create isolated application servers and temporary databases.

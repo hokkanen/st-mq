@@ -87,6 +87,10 @@ Horizontal hierarchy is separate from vertical rhythm, touch targets, page-edge
 gutters, chart geometry, icon/checkbox space and list-marker gutters. Do not replace
 those dimensions with the inset or remove a safety message to make a layout fit.
 Role and access changes alter content and permissions, never the spacing token.
+On narrow screens, Connections follows Garage visually but precedes it in DOM
+order for the desktop columns. Exclude that reordered card from browser scroll
+anchoring so opening Garage does not anchor to the card below it.
+
 Preserve keyboard focus, disclosure state, scroll, native arrows and readable
 wrapping during refreshes and role transitions.
 

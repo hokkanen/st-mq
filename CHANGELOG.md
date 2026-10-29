@@ -6,6 +6,9 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Opening Garage’s Sensors & More equipment fold on a phone keeps the current
+  scroll position.
+
 - Ubuntu and Home Assistant default to Node 26 LTS (26.13.0). Main validation
   uses Node 26; Node 22 remains deprecated with maintained Ubuntu and HA
   compatibility suites. Node 24 application testing and support are removed.
