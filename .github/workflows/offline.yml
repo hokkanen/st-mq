@@ -36,7 +36,20 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Protect the test runtime for privileged installer fixtures
+        run: |
+          stmq_ci_runtime="/opt/stmq-ci-node-${{ matrix.node }}"
+          stmq_setup_runtime=$(dirname "$(dirname "$(command -v node)")")
+          sudo install -d -o root -g root -m 0755 "$stmq_ci_runtime"
+          sudo cp -a "$stmq_setup_runtime/." "$stmq_ci_runtime/"
+          sudo chown -R root:root "$stmq_ci_runtime"
+          sudo chmod -R go-w "$stmq_ci_runtime"
+          echo "$stmq_ci_runtime/bin" >> "$GITHUB_PATH"
       - run: npm ci
+      - name: Check privileged installer runtime prerequisites
+        run: |
+          node scripts/test-offline.js --file test/linux-setup-platform.test.js 60000
+          node scripts/test-offline.js --file test/linux-vip-helper.test.js 60000
       - run: npm run check:docs
       - run: npm run build
       - run: npm test -- --report=${{ runner.temp }}/routine.jsonl

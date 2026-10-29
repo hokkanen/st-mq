@@ -1225,7 +1225,10 @@ Raspberry Pi filesystem performance or an isolated fsync cause.
 
 Pushes and pull requests run routine tests and builds on Node 22 and 24, the
 secret-history audit and the pinned Home Assistant Supervisor contract check
-below. Both Node jobs also run the deterministic learning-publication and
+below. Routine jobs copy the complete selected Node/npm installation to a
+root-owned protected path before exercising privileged installer fixtures;
+GitHub's runner-writable tool cache cannot qualify as a trusted root runtime.
+The installer and VIP helper prerequisites are checked before the full suite. Both Node jobs also run the deterministic learning-publication and
 circulation-restoration process-death matrices: real child processes are killed
 at transaction/command boundaries and reopened against the same files. These
 checks compare complete prior/published state and retained physical duties;
