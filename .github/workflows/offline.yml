@@ -38,12 +38,13 @@ jobs:
           cache: npm
       - name: Protect the test runtime for privileged installer fixtures
         run: |
-          stmq_ci_runtime="/opt/stmq-ci-node-${{ matrix.node }}"
+          stmq_ci_runtime="/stmq-ci-node-${{ matrix.node }}"
           stmq_setup_runtime=$(dirname "$(dirname "$(command -v node)")")
           sudo install -d -o root -g root -m 0755 "$stmq_ci_runtime"
           sudo cp -a "$stmq_setup_runtime/." "$stmq_ci_runtime/"
           sudo chown -R root:root "$stmq_ci_runtime"
           sudo chmod -R go-w "$stmq_ci_runtime"
+          "$stmq_ci_runtime/bin/node" --input-type=module -e 'import assert from "node:assert/strict"; import { trustedNode } from "./scripts/lib/linux-setup-platform.js"; assert.equal(trustedNode(process.execPath), process.execPath);'
           echo "$stmq_ci_runtime/bin" >> "$GITHUB_PATH"
       - run: npm ci
       - name: Check privileged installer runtime prerequisites
