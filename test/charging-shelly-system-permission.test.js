@@ -520,6 +520,8 @@ test('a failed ownership save cannot dispatch a due SYS retry', async t => {
 });
 
 test('a native false/true cycle between reconciles records resolution after its Stop edge', async t => {
+  // This case owns native polling around the complete between-reconcile batch.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const f = await ordinaryFixture(t, { initiallyPermitted: true, autoCharge: true });
   f.advance(1000); f.permission(false); f.advance(1000); f.permission(true);
   await f.update();
@@ -580,6 +582,7 @@ test('late SYS false and true preserve an existing minimum-current attempt witho
 
 for (const delivery of ['between reconciles', 'across reconciles'])
 test(`repeated SYS cycles ${delivery} preserve the original attempt and physical observations`, async t => {
+  if (delivery === 'between reconciles') t.mock.timers.enable({ apis: ['setInterval'] });
   const f = await startedFixture(t), before = f.item().controller.status(), attempt = structuredClone(f.item().identification);
   for (let cycle = 0; cycle < 3; cycle++) {
     f.advance(2200); f.permission(false);
