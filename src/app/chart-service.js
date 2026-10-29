@@ -19,7 +19,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
   if (!store?.db || !store.path) throw new TypeError('A history store is required');
   storageOperationHealth.register('history-query'); storageOperationHealth.register('storage-inventory');
   let nextId = 1, closed = false, maintenanceTimer, pinned = false, warming = warmCache;
-  let settings = { cacheDays, cacheBytes };
+  let settings = { cacheDays, cacheBytes }, configurationRevision = 0;
   let projectionRetryAt=0,projectionFailures=0;
   let projectionRequested=false,projectionWritable=true,projectionRetirement=null,projectionRetireAck=null; const projectionInputs=new Set(),projectionDemands=new Map(),anchorFlights=new Set();
   const projectionCacheId=derivedCacheId(projectionCachePath,cacheIdentity);
@@ -83,7 +83,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
         const storageSignal = new Int32Array(new SharedArrayBuffer(4));
         lane.requestSignal = new Int32Array(new SharedArrayBuffer(4));
         lane.worker = new Worker(new URL('./chart-worker.js', import.meta.url), {
-          workerData: { dbPath: store.path, projectionCachePath, projectionCacheId, projectionWritable:projectionWritable&&lane.name==='resident', anchorAvailable:Boolean(anchor), resident: lane.name === 'resident', settings,
+          workerData: { dbPath: store.path, projectionCachePath, projectionCacheId, projectionWritable:projectionWritable&&lane.name==='resident', anchorAvailable:Boolean(anchor), resident: lane.name === 'resident', settings, configurationRevision,
             storageSignal: storageSignal.buffer, requestSignal: lane.requestSignal.buffer, storageLeaseMs: 25 },
         });
         attachStorageAdmission(lane.worker, storageSignal, (operation, { maintenance }) => store.runStorageTask(operation, { kind: maintenance ? 'chart-cache' : 'history' }));
@@ -119,6 +119,9 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
           }
           if (message.storage) return;
           if (message.cacheStatus) {
+            // A configuration change can overtake an admitted warming turn.
+            // Its receipt describes the old cache and cannot republish status.
+            if (message.configurationRevision !== configurationRevision) return;
             lane.cacheStatus=message.cacheStatus;
             const firewood=message.cacheStatus.firewood;
             if(firewood?.failed) projectionRetryAt=Date.now()+Math.min(30_000,1000*2**Math.min(5,projectionFailures++));
@@ -266,9 +269,9 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
     configure(value = DEFAULT_CHART_CACHE) {
       if (!validSettings(value)) throw new TypeError('Invalid chart cache settings');
       if (value.cacheDays === settings.cacheDays && value.cacheBytes === settings.cacheBytes) return;
-      settings = { cacheDays: value.cacheDays, cacheBytes: value.cacheBytes };
+      settings = { cacheDays: value.cacheDays, cacheBytes: value.cacheBytes }; configurationRevision++;
       clearTimeout(maintenanceTimer); maintenanceTimer = null; if (warming) startWarming();
-      for (const lane of Object.values(lanes)) { lane.cacheStatus = null; lane.worker?.postMessage({ configure: settings }); }
+      for (const lane of Object.values(lanes)) { lane.cacheStatus = null; lane.worker?.postMessage({ configure: settings, configurationRevision }); }
     },
     cacheStatus() { return { ...settings, resident: lanes.resident.cacheStatus ?? null }; },
     queryWire(args, options = {}) { return query(args, { ...options, wire: options.format ?? 'json' }); },

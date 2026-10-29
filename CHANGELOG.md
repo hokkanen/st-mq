@@ -9,6 +9,8 @@ Versions follow Semantic Versioning.
 - Ubuntu and Home Assistant default to Node 26 LTS (26.13.0). Main validation
   uses Node 26; Node 22 remains deprecated with maintained Ubuntu and HA
   compatibility suites. Node 24 application testing and support are removed.
+- Late chart-warming responses no longer restore cache status from an earlier
+  configuration after cache settings change.
 
 ## 0.9.5 — 2026-10-29
 

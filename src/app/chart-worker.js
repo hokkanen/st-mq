@@ -92,6 +92,7 @@ function maintainFirewood(now,inputs=[],demands=[]) {
 const contexts = new Map();
 const cache = new Map(); let cacheBytes = 0;
 let settings = workerData.settings ?? DEFAULT_CHART_CACHE;
+let configurationRevision = workerData.configurationRevision;
 let cacheLimitBytes;
 const sourceCache = workerData.resident ? new ChartSourceCache(db) : null;
 store.chartSource = sourceCache;
@@ -185,7 +186,7 @@ function sourceCoverageFingerprint(args,range) {
   }
   return JSON.stringify(spans);
 }
-parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration,retireProjection }) => {
+parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: configuration,configurationRevision: nextConfigurationRevision,retireProjection }) => {
   if(retireProjection) {
     projectionWritable=false;
     const opened=Boolean(store.firewoodProjection);
@@ -193,7 +194,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
     store.firewoodProjection=null;if(opened) openFirewoodProjection();
     parentPort.postMessage({type:'projection-retired'});return;
   }
-  if (configuration) { configure(configuration); return; }
+  if (configuration) { configure(configuration); configurationRevision = nextConfigurationRevision; return; }
   currentChartRequestId=id;
   setStorageMaintenance(operation === 'maintain');
   setStorageRequestActive(operation !== 'maintain');
@@ -215,7 +216,7 @@ parentPort.on('message', ({ id, args, operation, wire, checkpoint, configure: co
       // A preparing response cannot remain a completed historical response-cache
       // hit after its derived prefix has become available.
       for(const [key,entry] of cache) if(chartAssessmentPending(entry.result)) {cache.delete(key);cacheBytes-=entry.bytes;}
-      parentPort.postMessage({ id, cacheStatus: { ...sourceCache?.status(), complete: (!settings.cacheDays || status?.complete === true) && firewood.complete, firewood } });
+      parentPort.postMessage({ id, configurationRevision, cacheStatus: { ...sourceCache?.status(), complete: (!settings.cacheDays || status?.complete === true) && firewood.complete, firewood } });
       parentPort.postMessage({ id, result: { ready: sourceCache?.ready ?? false } }); return;
     }
     db.exec('BEGIN');

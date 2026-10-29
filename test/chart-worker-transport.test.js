@@ -370,6 +370,25 @@ test('warming can wait for startup and a zero-day configuration schedules no res
  await new Promise(resolve=>setTimeout(resolve,300));assert.equal(service.cacheStatus().resident,null);
 });
 
+test('a late warming receipt cannot restore cache status after configuration changes', async t => {
+ const {store,service}=fixture(t,{warmCache:false});
+ let release,entered,deadline;
+ const waiting=new Promise(resolve=>{release=resolve}),started=new Promise((resolve,reject)=>{
+  deadline=setTimeout(()=>reject(new Error('Warming did not reach storage admission')),6000);
+  entered=()=>{clearTimeout(deadline);resolve();};
+ });
+ const run=store.runStorageTask.bind(store);let held=false;
+ store.runStorageTask=(operation,options)=>{
+  if(!held){held=true;entered();return waiting.then(()=>run(operation,options));}
+  return run(operation,options);
+ };
+ t.after(()=>{clearTimeout(deadline);release();});
+ service.startWarming();await started;
+ service.configure({cacheDays:0,cacheBytes:64*1024*1024});
+ release();await service.pin();
+ assert.equal(service.cacheStatus().resident,null);
+});
+
 test('queued chart requests retain their own checkpoint after the service default advances', async t => {
  const {store,service}=fixture(t,{warmCache:false});
  let release,entered;const waiting=new Promise(resolve=>{release=resolve}),started=new Promise(resolve=>{entered=resolve});
