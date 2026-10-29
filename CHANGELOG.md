@@ -12,8 +12,9 @@ below describe the complete transition from 0.7.5 to 0.9.5.
 
 ### Installation and access
 
-- One Node.js application serves the dashboard and runs monitoring, recording
-  and authorized control on standalone Ubuntu and Home Assistant OS. Home
+- A unified Node.js application replaces the separately scheduled monitoring,
+  MQTT and chart-server scripts on standalone Ubuntu and Home Assistant OS. It
+  serves the dashboard and runs monitoring, recording and authorized control. Home
   Assistant supports amd64 and aarch64; Node.js 22.19 or newer is required.
 - The Ubuntu setup wizard installs a managed systemd runtime, imports private
   configuration and verifies startup. Deployment tools update committed source
@@ -105,25 +106,25 @@ below describe the complete transition from 0.7.5 to 0.9.5.
 - Pairing provides verified synchronization, explicit handover, protected-history
   recovery and archived reset choices. Native device readiness and MQTT/OCPP
   continuity remain separate from a completed role transfer.
-- The responsive dashboard adds Home, Garage and charging controls, equipment
-  setup, history recovery and role-aware actions, with light/dark themes,
-  keyboard navigation and layouts for narrow screens.
-- Interactive charts support quantity-specific views, date ranges, zoom, touch,
-  fullscreen and evidence details. Background chart work and bounded history
-  reads preserve responsiveness and source gaps.
+- The CSV chart page becomes a dashboard with Home, Garage and charging controls,
+  equipment setup, history recovery and role-aware actions. It retains date
+  selection and light/dark themes alongside keyboard navigation and layouts for
+  narrow screens.
+- SQLite-backed charts add quantity-specific views, recorded model-coefficient
+  histories and source/coverage details. Background chart work and bounded
+  history reads preserve responsiveness and source gaps.
 - Source health separates current feed availability from primary/backup provider
   readiness for outdoor temperature, weather and electricity prices. Cached
   readings and reconnects do not create fresh evidence.
-- The event log presents recorded instructions and outcomes with filters,
-  pagination and stable reading position. Explicit Refresh, filter and paging
-  actions can read while the viewport observer still reports the panel offscreen;
-  automatic offscreen polling remains paused. The original intermittent Home
-  Assistant background read-failure trigger remains unconfirmed.
+- A new event log presents recorded instructions and outcomes with filters,
+  pagination, refresh and stable reading position.
 
 ### Compatibility and operating limits
 
 - Home Assistant marks 0.9.5 as a breaking update; automatic updates do not cross
   this boundary. Review compatibility and update manually.
+- Home Assistant builds support only 64-bit amd64 and aarch64 systems. The armhf,
+  armv7 and i386 builds offered by 0.7.5 are no longer provided.
 - **0.7.5 requires a fresh current configuration and database.** Preserve its
   installation settings, backups and original CSV exports before replacement,
   then optionally import the two supported CSV formats. The old MQTT heating
@@ -143,10 +144,11 @@ below describe the complete transition from 0.7.5 to 0.9.5.
   installation/update, AppArmor/network enforcement, host backup/restore and
   physical equipment behavior remain installation-specific acceptance work. See
   [development validation](docs/development-validation.md).
-- A native Tuya observation withdrawal is not established as resolved by software
-  fixtures. A repeated native Shelly Stop while already automatically paused may
-  be unobservable; see the maintained [charging limitations](docs/charging/integrations/shelly.md)
-  and [Caravan guidance](docs/caravan-dehumidifier.md).
+- Caravan control requires fresh native appliance and meter evidence; unavailable
+  observations cannot establish readiness. A repeated native Shelly Stop while
+  already automatically paused may be unobservable; see the maintained
+  [charging limitations](docs/charging/integrations/shelly.md) and
+  [Caravan guidance](docs/caravan-dehumidifier.md).
 
 ## 0.7.5
 

@@ -71,9 +71,13 @@ A release uses matching package, lockfile, app and container versions. Tag relea
 as `v<version>` only as part of an authorized publication and publish the release
 commit on `main`. Home Assistant follows its configured repository branch and
 reads the app manifest version; a Git tag alone does not publish an app update.
-Release notes compare the current release with the preceding published release,
-consolidating development changes into the final supported behavior. Record
-validation results and remaining installation limits with the release.
+Release notes compare the current release with the preceding stable version's
+tagged source and documentation, consolidating development changes into the final
+supported behavior. Describe a feature introduced during the release cycle as a
+new capability; do not present its development fixes as fixes to the preceding
+release. Distinguish retained capabilities from additions, and keep development
+and audit narratives in commit/PR evidence. Record validation results and remaining
+installation limits with the release.
 
 ## Issue triage
 

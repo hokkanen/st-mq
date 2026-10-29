@@ -415,6 +415,9 @@ Home Assistant marks 0.9.5 as a breaking update, so automatic updates do not
 cross this boundary. Review compatibility and perform the update manually after
 preserving the previous installation.
 
+Home Assistant builds require a 64-bit amd64 or aarch64 system. The armhf, armv7
+and i386 builds offered by 0.7.5 are not provided for 0.9.5.
+
 The 0.7.5 runtime and configuration are not upgrade inputs. Configure the current
 version from its current options and use a fresh database, then optionally import
 the supported original [0.7.5 CSV files](docs/csv-import.md). Unknown or retired
