@@ -53,7 +53,7 @@ Setup installs prerequisites, accepts a complete `secrets.json` from a password
 manager or file, configures services and pairing, and verifies startup. It offers
 a minimal starter for fresh installations. See [Linux installation](docs/linux-deployment.md)
 for the wizard, defaults and optional HA configuration. For development or manual
-foreground operation with Node.js **22.19 or newer**, see
+foreground operation with Node.js **26.13 or newer within major 26** (LTS), see
 [standalone startup](docs/startup.md).
 
 Shared defaults live in `config.json.options`. Keep credentials, private device

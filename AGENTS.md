@@ -18,9 +18,11 @@ report verified outcomes and remaining limits.
 
 ## Commands and checks
 
-Node.js **22.19 or newer** is required. These commands are available checks, not a
-sequence required for every task. Choose checks relevant to the change; reuse
-valid results for unchanged inputs.
+Use Node.js **26.13 or newer within major 26** (LTS) for development and primary
+validation. Node 22.19+ within major 22 is deprecated but maintained in Ubuntu
+and HA compatibility suites. Node 24 is unsupported. These commands are available
+checks, not a sequence required for every task. Choose checks relevant to the
+change; reuse valid results for unchanged inputs.
 
 | Purpose | Command |
 | --- | --- |

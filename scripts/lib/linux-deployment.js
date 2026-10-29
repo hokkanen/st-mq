@@ -299,7 +299,7 @@ export async function main(mode, args, dependencies = {}) {
   if (!/^[a-f0-9]{40}$/.test(target) || await git(source, 'status', '--porcelain')) fail('Commit changes and leave the source checkout clean before deployment.');
   const nodeVersion = await command(c.node_path, ['-p', 'process.versions.node']);
   const [major, minor] = nodeVersion.split('.').map(Number);
-  if (!(major > 22 || major === 22 && minor >= 19)) fail('The configured Node executable must be version 22.19 or newer.');
+  if (!(major === 26 && minor >= 13 || major === 22 && minor >= 19)) fail('The configured Node executable must be Node 26.13 or newer within major 26, or deprecated Node 22.19 or newer within major 22.');
   const sourceUnchanged = async () => {
     if (await git(source, 'rev-parse', 'HEAD') !== target || await git(source, 'status', '--porcelain')
       || privateFile(c.environment_file, source, runtime) !== environmentText) fail('Source or environment changed during preparation.');

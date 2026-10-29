@@ -527,5 +527,5 @@ do not establish freedom from vulnerabilities or every future vendor change.
 
 Official references: [Tailscale HTTPS](https://tailscale.com/docs/how-to/set-up-https-certificates),
 [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking),
-[Node TLS](https://nodejs.org/docs/latest-v22.x/api/tls.html),
+[Node TLS](https://nodejs.org/docs/latest-v26.x/api/tls.html),
 [Home Assistant ingress](https://contributors.home-assistant.io/apps/guides/ingress/).

@@ -324,7 +324,7 @@ physical checks. GPIO readback does not establish valve movement or heat deliver
 Normal tests are offline. The separately invoked [live diagnostics](docs/live-testing.md)
 check configured APIs without starting the controller or connecting to MQTT;
 API access does not commission physical equipment. The Dockerfile uses an
-explicit Node 22 Alpine base, a finite frontend build and `npm ci`, with no
+explicit Node 26 LTS Alpine base, a finite frontend build and `npm ci`, with no
 `BUILD_FROM` argument or retired `build.yaml`. See
 [development validation](docs/development-validation.md) for the independent
 browser, container and Supervisor boundaries.

@@ -121,7 +121,7 @@ function receiverChannel(config, generation, options) {
 export async function createSourceSnapshot({ dbPath, destination, signal }) {
   if (signal?.aborted) throw signal.reason;
   // Let Node inherit only worker-supported options. Explicitly replaying all
-  // process flags also forwards V8/process-only defaults in Node 24 test runs.
+  // process flags also forwards V8/process-only defaults in test runs.
   // An inline module launcher needs a clean file-worker argument list instead.
   const observation = storageOperationHealth.begin('replication-worker', { scope: 'shared' });
   let observedResult, observedFailure = false, worker;

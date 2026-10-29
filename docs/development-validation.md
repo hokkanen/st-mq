@@ -1223,7 +1223,8 @@ authenticated health and recording UI tests check the current public fields and
 honest checkpoint/sync labels. Synthetic waits establish timing boundaries, not
 Raspberry Pi filesystem performance or an isolated fsync cause.
 
-Pushes and pull requests run routine tests and builds on Node 22 and 24, the
+Pushes and pull requests run routine tests and builds on primary Node 26.13.0
+and deprecated Node 22.23.4, the
 secret-history audit and the pinned Home Assistant Supervisor contract check
 below. Routine jobs copy the complete selected Node/npm installation to a
 root-owned protected path before exercising privileged installer fixtures;
@@ -1234,16 +1235,19 @@ at transaction/command boundaries and reopened against the same files. These
 checks compare complete prior/published state and retained physical duties;
 they do not simulate hardware power cuts. The **Extended validation** workflow runs weekly on Monday
 at 03:27 UTC or manually using `workflow_dispatch`; it runs the extended Node
-suite on both versions and the amd64/arm64 container checks. Run it before a
+suite on both versions, HA-profile routine and extended suites in isolated Alpine
+containers on both versions, and amd64/arm64 app container checks on both versions.
+Deprecated jobs remain required validation cases; failure is not ignored. Run it before a
 release and after changes to recovery, mirroring or packaging. This workflow
 installs and requires mirror and MQTT broker prerequisites and a second supported
-Node executable for real cross-runtime replication. Each matrix job retains the
+Node executable for real Node 26/22 cross-runtime replication. Each matrix job retains the
 other runtime's absolute path before selecting its primary runtime. A missing
 required tool fails instead of silently skipping coverage. Local extended runs
 report missing tools as skips unless their corresponding requirement is enabled.
 
-Both workflows use Node 24 action runtimes independently of the selected Node
-22/24 application test runtime, with read-only repository permissions. A failed
+GitHub Actions manage their own internal runtimes independently of the selected
+Node 26/22 application test runtime. Workflows have read-only repository permissions.
+There is no Node 24 application validation. A failed
 matrix job does not cancel the other runtime's validation. Routine and extended
 jobs upload the offline runner's JSONL receipts even after test failure, retaining
 them for 14 days under the matching Node version. Receipts identify the tested
@@ -1955,7 +1959,7 @@ bash scripts/test-homeassistant-supervisor.sh
 # bash scripts/test-homeassistant-supervisor.sh /tmp/stmq-supervisor-2026.09.3
 ```
 
-This needs Node.js 22.19 or newer, Git, Docker and network access to fetch public
+This needs Node.js 26.13 or newer within major 26 (LTS), Git, Docker and network access to fetch public
 sources and build the validator image. It pins released Supervisor **2026.09.3** at
 [`64ea3be4322537fd5dcfbf620c4dc25490c1f56d`](https://github.com/home-assistant/supervisor/tree/64ea3be4322537fd5dcfbf620c4dc25490c1f56d)
 and rejects a supplied checkout with another revision or local changes. The

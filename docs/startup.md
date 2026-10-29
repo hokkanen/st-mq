@@ -15,8 +15,10 @@ tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
 
 ## Run locally
 
-Use Node.js 22.19 or newer. The container baseline is Node 22; CI also checks
-Node 24. SQLite is built into Node. From the repository root:
+Use Node.js 26.13 or newer within major 26 (LTS). Ubuntu setup and Home
+Assistant images default to 26.13.0. Node 22.19 or newer within major 22 is
+deprecated but maintained in Ubuntu and HA compatibility tests. Node 24 is
+unsupported. SQLite is built into Node. From the repository root:
 
 ```sh
 npm ci

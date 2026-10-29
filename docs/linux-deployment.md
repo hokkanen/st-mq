@@ -18,8 +18,10 @@ bash scripts/setup-linux.sh
 Run as the ordinary account that will own the application, with sudo access.
 The installer requests sudo authentication through sudo itself. An internet
 connection is needed for missing packages, Node and locked npm dependencies.
-Setup reuses a suitable trusted Node installation or installs a checksum-verified
-official runtime under `/opt/st-mq`. Node and npm do not need to be installed
+Setup reuses a suitable trusted Node 26 LTS installation or installs a checksum-verified
+official 26.13.0 runtime under `/opt/st-mq`. Direct Node-based setup/deployment
+retains deprecated Node 22.19+ (major 22) compatibility; the bootstrap selects
+Node 26.13+ (major 26). Node 24 is unsupported. Node and npm do not need to be installed
 before running the shell command.
 If Node is missing, this bootstrap prerequisite is installed before the wizard;
 application configuration and services change only after the wizard's review.

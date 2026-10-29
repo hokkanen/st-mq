@@ -4,6 +4,12 @@ Release notes describe changes relevant to users. Detailed implementation and
 validation history is available in Git; unfinished work belongs in GitHub issues.
 Versions follow Semantic Versioning.
 
+## Unreleased
+
+- Ubuntu and Home Assistant default to Node 26 LTS (26.13.0). Main validation
+  uses Node 26; Node 22 remains deprecated with maintained Ubuntu and HA
+  compatibility suites. Node 24 application testing and support are removed.
+
 ## 0.9.5 — 2026-10-29
 
 This release expands the MQTT electricity-price signalling and Easee CSV

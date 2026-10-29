@@ -25,7 +25,9 @@ provenance is part of a test contract.
 
 ## Setup and checks
 
-Use Node.js 22.19 or newer:
+Use Node.js 26.13 or newer within major 26 (LTS); `.nvmrc` selects 26.13.0.
+Node 22.19+ within major 22 is deprecated but maintained in Ubuntu and HA
+compatibility suites. Node 24 is unsupported.
 
 ```sh
 npm ci

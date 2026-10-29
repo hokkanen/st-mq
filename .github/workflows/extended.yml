@@ -7,16 +7,19 @@ permissions:
   contents: read
 jobs:
   extended:
+    name: Ubuntu extended Node ${{ matrix.node }} (${{ matrix.status }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         include:
-          - node: 22
-            peer-node: 24
-          - node: 24
-            peer-node: 22
+          - node: 26.13.0
+            peer-node: 22.23.4
+            status: primary
+          - node: 22.23.4
+            peer-node: 26.13.0
+            status: deprecated
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -53,12 +56,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   containers:
+    name: HA ${{ matrix.arch }} Node ${{ matrix.node }} (${{ matrix.status }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
+        node: [26.13.0, 22.23.4]
+        include:
+          - node: 26.13.0
+            status: primary
+          - node: 22.23.4
+            status: deprecated
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
@@ -67,7 +77,42 @@ jobs:
         with:
           context: .
           platforms: linux/${{ matrix.arch }}
+          build-args: NODE_VERSION=${{ matrix.node }}
           push: false
           load: true
-          tags: st-mq:addon-ci-${{ matrix.arch }}
-      - run: bash scripts/test-addon-container.sh st-mq:addon-ci-${{ matrix.arch }} linux/${{ matrix.arch }}
+          tags: st-mq:addon-ci-${{ matrix.arch }}-${{ matrix.node }}
+      - run: bash scripts/test-addon-container.sh st-mq:addon-ci-${{ matrix.arch }}-${{ matrix.node }} linux/${{ matrix.arch }}
+  ha-suites:
+    name: HA suites Node ${{ matrix.node }} (${{ matrix.status }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 26.13.0
+            status: primary
+          - node: 22.23.4
+            status: deprecated
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build isolated HA qualification image
+        run: docker build -f test/Dockerfile.qualification --build-arg NODE_VERSION=${{ matrix.node }} -t stmq-ha-tests .
+      - name: Run routine and extended HA suites
+        run: |
+          mkdir -p "$RUNNER_TEMP/ha-receipts"
+          docker run --rm -v "$RUNNER_TEMP/ha-receipts:/qualification" stmq-ha-tests
+      - name: Restore runner ownership of HA receipts
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/ha-receipts" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/ha-receipts"
+          fi
+      - name: Retain HA receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ha-node-${{ matrix.node }}
+          path: ${{ runner.temp }}/ha-receipts/
+          if-no-files-found: warn
+          retention-days: 14

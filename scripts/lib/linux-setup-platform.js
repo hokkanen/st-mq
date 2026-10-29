@@ -69,7 +69,7 @@ export async function inspectPlatform({ run = runCommand, readFile = readFileSyn
   if (!trusted) fail('Run bash scripts/setup-linux.sh to select a trusted root-owned Node installation.');
   const versionText = await run(trusted, ['-p', 'process.versions.node'], { signal, timeout: 10000 });
   const [nodeMajor, nodeMinor] = versionText.split('.').map(Number);
-  if (!(nodeMajor > 22 || nodeMajor === 22 && nodeMinor >= 19))
+  if (!(nodeMajor === 26 && nodeMinor >= 13 || nodeMajor === 22 && nodeMinor >= 19))
     fail('Run bash scripts/setup-linux.sh to install a supported Node runtime.');
   const group = await run('id', ['-gn', user], { signal, timeout: 10000 });
   if (!/^[a-z_][a-z0-9_-]*$/.test(user) || user === 'root' || !/^[a-z_][a-z0-9_-]*$/.test(group))

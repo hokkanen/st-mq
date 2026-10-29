@@ -20,7 +20,7 @@ const fakeStat = path => ({ uid: 0, mode: path === '/usr/bin/node' ? 0o100755 : 
   isSymbolicLink: () => false, isFile: () => path === '/usr/bin/node', isDirectory: () => path !== '/usr/bin/node' });
 const defaultInspect = overrides => inspectPlatform({ platform: 'linux', arch: 'x64', nodePath: '/usr/bin/node', user: 'operator',
   realpath: path => path, stat: fakeStat, readFile: () => 'ID=ubuntu\nVERSION_ID="22.04"\n', exists: () => true,
-  run: async (exe, args) => exe === '/usr/bin/node' ? '24.22.1' : exe === 'id' ? 'operator'
+  run: async (exe, args) => exe === '/usr/bin/node' ? '26.13.0' : exe === 'id' ? 'operator'
     : exe === 'systemctl' ? 'inactive' : platformPackages.map(name => `${name} installed`).join('\n'), ...overrides });
 
 for (const version of ['22.04', '24.04', '26.04']) {
@@ -43,7 +43,8 @@ test('Node executable and every ancestor must be protected and root owned', () =
   }
 });
 test('old Node and untrusted Node are rejected with the bootstrap command', async () => {
-  await assert.rejects(defaultInspect({ run: async () => '22.18.0' }), /bash scripts\/setup-linux.sh/);
+  for (const version of ['22.18.0', '24.22.1', '25.0.0', '26.12.0', '27.0.0'])
+    await assert.rejects(defaultInspect({ run: async () => version }), /bash scripts\/setup-linux.sh/);
   await assert.rejects(defaultInspect({ stat: () => { throw Error(); } }), /trusted root-owned Node/);
 });
 test('missing package list and managed broker are detected without root mutations', async () => {
@@ -340,6 +341,9 @@ test('dependency installation failure retains private diagnostics without exposi
   }
 });
 test('the actual bootstrap path strips Node injection and inherited runtime settings before Node executes', async t => {
+  if (Number(process.versions.node.split('.')[0]) !== 26) {
+    t.skip('Native bootstrap selects Node 26 LTS; exercised by the primary runtime suite.'); return;
+  }
   if (!existsSync('/run/systemd/system') || !/^ID=ubuntu$/m.test(readFileSync('/etc/os-release', 'utf8'))) {
     t.skip('Native bootstrap execution requires a supported Ubuntu systemd host.'); return;
   }

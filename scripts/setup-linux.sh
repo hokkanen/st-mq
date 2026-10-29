@@ -26,11 +26,11 @@ if [[ $setup_id != ubuntu || ! $setup_version =~ ^([0-9]+)\.([0-9]+)$ ]] || (( B
   exit 1
 fi
 case $(uname -m) in
-  x86_64) setup_arch=x64; setup_hash=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6 ;;
-  aarch64|arm64) setup_arch=arm64; setup_hash=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e ;;
+  x86_64) setup_arch=x64; setup_hash=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997 ;;
+  aarch64|arm64) setup_arch=arm64; setup_hash=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92 ;;
   *) printf '%s\n' 'Setup supports amd64 and arm64.' >&2; exit 1 ;;
 esac
-setup_node_version=24.22.1
+setup_node_version=26.13.0
 setup_node_root=/opt/st-mq/node-v${setup_node_version}-linux-${setup_arch}
 setup_trusted_node() {
   local candidate path owner mode
@@ -45,7 +45,7 @@ setup_trusted_node() {
     path=$(dirname -- "$path")
   done
   [[ -f $(dirname -- "$candidate")/npm ]] || return 1
-  "$candidate" -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=19)?0:1)' >/dev/null 2>&1 || return 1
+  "$candidate" -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a===26&&b>=13?0:1)' >/dev/null 2>&1 || return 1
   setup_node=$candidate
 }
 setup_node=
@@ -80,7 +80,7 @@ if [[ -z $setup_node ]]; then
   timeout --foreground --kill-after=5s 300 sudo -n bash -s -- "$setup_temporary/node.tar.xz" "$setup_node_root" "$setup_hash" <<'ROOT'
 set -euo pipefail
 archive=$1 destination=$2 expected=$3
-[[ $destination == /opt/st-mq/node-v24.22.1-linux-x64 || $destination == /opt/st-mq/node-v24.22.1-linux-arm64 ]] || exit 1
+[[ $destination == /opt/st-mq/node-v26.13.0-linux-x64 || $destination == /opt/st-mq/node-v26.13.0-linux-arm64 ]] || exit 1
 for component in /opt /opt/st-mq; do
   [[ ! -L $component ]] || exit 1
   if [[ -e $component ]]; then

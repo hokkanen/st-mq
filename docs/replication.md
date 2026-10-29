@@ -54,7 +54,8 @@ control authority.
 ## Set up two standalone Linux computers
 
 Install ST-MQ and build its UI on both computers using the normal installation
-instructions. Both need Node.js 22.19 or newer. The master needs an SSH client;
+instructions. Both use Node.js 26.13+ within major 26 (LTS); Node 22.19+ within major 22
+remains deprecated compatibility coverage. The master needs an SSH client;
 the slave needs an SSH server and an account that can run Node.js and write its
 dedicated snapshot directory. Neither the slave viewer nor synchronization needs
 MQTT or provider credentials.
