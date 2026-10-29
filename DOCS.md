@@ -18,8 +18,7 @@ the independent feature controls and Garage local temperature regulation.
 
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
    `https://github.com/hokkanen/st-mq` and install the app from that repository.
-   The default branch, `main`, contains the
-   integrated H66 work and the 0.9.5 release. An existing
+   The default branch, `main`, publishes 0.9.5. An existing
    repository configured with `#H66` needs the default repository source for
    this release.
    A Git tag or GitHub release does not change the branch installed by HA.
@@ -400,7 +399,7 @@ successfully imported values.
 ## Moving from an earlier version
 
 Back up the installed app, its options and any original CSV exports before
-replacing it. The current development prerelease is available from `main` in the
+replacing it. The 0.9.5 release is available from `main` in the
 default repository; it does not convert an existing installation's saved options or
 database. An app configured with `#H66` needs the default repository source for
 this release; publishing a tag does not change that setting.

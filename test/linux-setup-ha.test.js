@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { connectSetupHA, prepareConfigurationForHost, savedOptionsProgram, promotionProgram, pairBrokerPort, HASetupError, HASetupUnavailableError } from '../scripts/lib/linux-setup-ha.js';
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
-const app = { slug: 'synthetic_st-mq', repository: 'synthetic', version: '0.9.5-dev.4', state: 'started',
+const app = { slug: 'synthetic_st-mq', repository: 'synthetic', version: '0.9.5', state: 'started',
   options: { controller: { input: 'mqtt', topology: 'pair' }, mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-user', pw: 'synthetic-private-secret' },
     pair: { pair_id: 'synthetic-pair', token: 'synthetic-pair-token-12345678901234567890' } } };
 const pair = { nodeId: '11111111-1111-4111-8111-111111111111', pairId: 'synthetic-pair', bootstrapPending: true, canControl: false,

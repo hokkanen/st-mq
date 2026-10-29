@@ -32,7 +32,7 @@ test('shell quoting preserves substitution syntax and apostrophes literally', ()
   assert.equal(output, value);
 });
 
-const app = { slug: 'synthetic_st-mq', state: 'stopped', version: '0.9.5-dev.3', repository: 'synthetic', options: { enabled: false } };
+const app = { slug: 'synthetic_st-mq', state: 'stopped', version: '0.9.5', repository: 'synthetic', options: { enabled: false } };
 
 test('deployment requires a stopped app with valid identity and matching manifest version', () => {
   const manifest = { version: app.version };

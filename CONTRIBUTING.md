@@ -67,13 +67,13 @@ runtime aliases, development migrations or silent resets.
 Use GitHub issues for actionable unfinished work. Use commit/PR descriptions for
 implementation detail and test evidence, and `CHANGELOG.md` for changes users
 need to know about. Do not recreate completed-task diaries in the repository.
-A release uses matching package, lockfile, app and container versions; development
-prereleases advance as `0.9.5-dev.1`, `0.9.5-dev.2`, and so on. Tag releases as
-`v<version>` only as part of an authorized publication. Publish the release commit
-on `main`, and mark `-dev.N` GitHub releases as prereleases. Home Assistant follows
-its configured repository branch and reads the app manifest version; a Git tag
-alone does not publish an app update. Record validation results and remaining
-installation limits with the release.
+A release uses matching package, lockfile, app and container versions. Tag releases
+as `v<version>` only as part of an authorized publication and publish the release
+commit on `main`. Home Assistant follows its configured repository branch and
+reads the app manifest version; a Git tag alone does not publish an app update.
+Release notes compare the current release with the preceding published release,
+consolidating development changes into the final supported behavior. Record
+validation results and remaining installation limits with the release.
 
 ## Issue triage
 
@@ -108,9 +108,10 @@ reports, comments and dated evidence. Keep the current summary accurate, mark
 superseded history, and explain the closure's fixed/mitigated scope, remaining
 limits and reopening criteria, including closure without a current reproducer.
 
-## Existing clones after the 0.9.5-dev.1 publication
+## Existing clones after the 2026-10-03 history repair
 
-The release replaces the former `main` ancestry with the sanitized H66 history.
+The 2026-10-03 publication replaced the former `main` ancestry with the sanitized
+H66 history.
 Keep local work, but do not merge or pull the former `main` history into the
 published branch. Use a fresh clone, or fetch the published history and create
 a separate worktree for review:

@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
+import { SCHEMA_VERSION } from '../../src/storage/schema.js';
+import { LEARNING_ALGORITHM } from '../../src/domain/learning-contract.js';
 import { uiSpacingFailures } from '../../scripts/lib/ui-spacing-checks.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'history-recovery-browser-'));
@@ -22,7 +24,7 @@ const retainedSignals = ['return_temperature','supply_temperature','brine_in_tem
   'brine_pump_speed','room_setting','dhw_stop_setting','dhw_start_setting','operating_mode','room_influence',
   'heating_curve','maximum_supply_setting','heat_stop_setting','tariff_reduction_setting','alarm_active','alarm_code'];
 const preview = { previewId, status: 'checked',
-  sourceSoftware: { format: 1, exportedAt: now - 1000, applicationVersion: '0.9.5-dev.4', schemaVersion: 24, learningAlgorithm: 'fixture-v1' },
+  sourceSoftware: { format: 1, exportedAt: now - 1000, applicationVersion: '0.9.5', schemaVersion: SCHEMA_VERSION, learningAlgorithm: LEARNING_ALGORITHM },
   tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
   'provider_snapshot_contents', 'provider_snapshot_fetches', 'annotations', 'counters', 'fireplace_events',
   'learning_cycles', 'events', 'energy_audits', 'learning_journal', 'recorder_pending_energy', 'charging_session_keys']
@@ -225,7 +227,7 @@ try {
   await until(`!${$('history-recovery-apply')}.hidden && !${$('history-recovery-apply')}.disabled`);
   assert.match(await evaluate(`${$('history-recovery-preview')}.textContent.replace(/\\s+/g, ' ')`), /Observations:\s*57/);
   assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /History date ranges/);
-  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Backup exported by application version 0.9.5-dev.4/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Backup exported by application version 0.9.5/);
   assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), false);
   await evaluate("document.querySelector('.history-recovery-coverage details').open=true;true");
   assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Charger 2 energy/);

@@ -38,12 +38,12 @@ function fixture(t) {
   const addonConfig = join(directory, 'addon-config');
   for (const path of [root, runtime, addonConfig]) mkdirSync(path, { mode: 0o700 });
   const oldManifest = {
-    version: '0.9.5-dev.4',
+    version: '0.9.5',
     schema: { api_secret: 'str?', enabled: 'bool', retired: 'str?' },
     options: { enabled: false, retired: 'old-default' },
   };
   const manifest = {
-    version: '0.9.5-dev.4',
+    version: '0.9.5',
     schema: { api_secret: 'str?', enabled: 'bool', added: 'int' },
     options: { enabled: false, added: 7 },
   };

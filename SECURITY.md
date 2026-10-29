@@ -16,8 +16,8 @@ using synthetic data. No response-time guarantee is currently offered.
 
 ## Supported versions and deployment
 
-This is a development prerelease. Fixes target the current development version;
-older 0.7.5 runtime installations are not maintained by the CSV import support.
+Security fixes target the current 0.9.5 release. Older 0.7.5 runtime installations
+are not maintained by the CSV import support.
 There is no promise of compatibility with earlier development databases or
 configuration formats.
 

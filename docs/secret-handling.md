@@ -59,7 +59,7 @@ were not rewritten. The private old-to-new commit map remains at
 `.git/security-audit/h66-repair.json`. Do not merge unsanitized ancestry back into
 H66; deleting a secret from the tip does not remove earlier copies.
 
-For the 2026-10-03 publication of `v0.9.5-dev.1`, the owner approved replacing
+For the 2026-10-03 publication, the owner approved replacing
 `main` with H66's sanitized history using an exact `--force-with-lease` guard.
 The sanitized equivalent of the former main tip has the same files and is
 already an ancestor of H66. This integrates the development work without
