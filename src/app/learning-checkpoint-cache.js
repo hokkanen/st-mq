@@ -2,7 +2,7 @@ import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { sensorRevision } from './sensor-inputs.js';
 import { validLearningCheckpoint } from './committed-learning.js';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 
 const failureMessage = 'Learning checkpoint cache could not be saved; committed learning remains available for replay.';
 const sameFences = (left, right) => left && right
@@ -183,7 +183,7 @@ export class LearningCheckpointCache {
     if (this.cancellation) Atomics.store(this.cancellation, 0, 1);
     this.worker = null; this.ready = false;
     worker.ref();
-    this.stopping = Promise.resolve().then(() => worker.terminate()).catch(() => {}).finally(() => {
+    this.stopping = Promise.resolve().then(() => terminateStorageWorker(worker)).catch(() => {}).finally(() => {
       observation?.finish('cancelled', { reason: 'cancelled' });
       this.stopping = null; this.active = null; this.pump(); this.idle();
     });

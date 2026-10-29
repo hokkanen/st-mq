@@ -1,6 +1,6 @@
 import { storageOperationHealth, observeStorageOperation } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 import { randomUUID } from 'node:crypto';
 import { learningVersion } from '../app/committed-learning.js';
 import { publishLearning } from '../app/learning-publication.js';
@@ -92,7 +92,7 @@ async function workerJob(workerData, { onProgress, onReady, onYield, signal,onSt
       worker.postMessage({ type: 'close' });
       // Publication has a separate writer worker and owns the runtime adoption
       // barrier. Revocation must join it too before reporting recovery stopped.
-      void Promise.allSettled([worker.terminate(), publication]).then(([, published]) => {
+      void Promise.allSettled([terminateStorageWorker(worker), publication]).then(([, published]) => {
         // Cancellation can arrive after COMMIT but before its worker reply.
         // A joined, verified publication takes precedence over that late abort.
         if (published.status === 'fulfilled' && published.value) resolve(published.value);

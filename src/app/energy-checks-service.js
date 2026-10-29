@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 import { energyCheckSummaries } from './energy-checks.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { validCheckpoint } from '../storage/journal.js';
@@ -56,7 +56,7 @@ export function createEnergyChecksService({ store, clock = Date.now,
     clearTimeout(idleTimer); idleTimer = null;
     const previous = worker; worker = null;
     if (!previous) return retiring ?? Promise.resolve();
-    const termination = previous.terminate().catch(() => {});
+    const termination = terminateStorageWorker(previous).catch(() => {});
     retiring = termination.finally(() => { if (retiring === joined) retiring = null; });
     const joined = retiring;
     return joined;

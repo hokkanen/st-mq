@@ -416,7 +416,10 @@ between background turns, release only after worker exit, frozen peer staging
 under concurrent writes, admitted urgent saves during mirror export and FULL
 durability with runtime-owned checkpoints. Chart cancellation also covers a
 terminated worker whose storage admission is still queued, followed by a real
-urgent save. Existing queue, writer, peer, chart,
+urgent save. `test/storage-worker-admission.test.js` deterministically covers a
+late startup request after termination was requested and checks that both queued
+and admitted reservations remain held until exit. All forced shutdown paths for
+admitted workers share that cancellation/wake behavior. Existing queue, writer, peer, chart,
 cache, recovery and pairing tests retain their current transaction/publication
 contracts. These tests do not establish a maximum installed filesystem-sync time;
 live trials must measure complete save latency, checkpoint duration, background

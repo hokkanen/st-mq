@@ -1290,7 +1290,11 @@ checkpoints and mirroring. No chart navigation prediction or companion prefetch
 runs. Cancelling a recent selection cooperatively releases its read snapshot
 without destroying the resident window; obsolete archive work can retire its own
 independent worker. Pinned replica readers also cancel cooperatively to retain
-their file handles. Finished historical responses survive new observations after their selected
+their file handles. Forced shutdown cancels and wakes the worker's storage-admission
+wait before requesting termination. A worker still starting up receives the same
+cancellation if it requests admission afterward; it cannot queue fresh storage
+work. Existing reservations remain owned until their normal release or actual
+worker exit. Finished historical responses survive new observations after their selected
 period; late overlapping energy, voltage, source coverage, imports and recovery
 changes still invalidate affected results. Receipt-clock checks follow the selected
 period: readings arriving during a queued request do not discard unrelated finished

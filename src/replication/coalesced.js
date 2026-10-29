@@ -7,7 +7,7 @@ import { ownedDirectory, GENERATION_PATTERN, replicationError } from './publicat
 import { acquireReceiverLock } from './receiver.js';
 import { PEER_TRANSFER_VERSION, PEER_TRANSFER_FIELDS, validPeerSourceClocks } from './peer-transfer-contract.js';
 import { sameCheckpoint, validCheckpoint } from './incremental.js';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 
 export const CHANGE_CHUNK_BYTES = 256 * 1024;
 
@@ -22,13 +22,13 @@ export function peerOperation(operation,{dbPath,signal,onYield,onStorage,managed
   attachStorageAdmission(worker,storageSignal,onStorage);
   return new Promise((resolve,reject)=>{
     let result,error;
-    const abort=()=>{error=signal.reason;void worker.terminate();};
+    const abort=()=>{error=signal.reason;void terminateStorageWorker(worker);};
     signal?.addEventListener('abort',abort,{once:true});
     worker.on('message',message=>{
       if(message.storage) return;
       if(message.type==='yield') {
         setImmediate(()=>{Promise.resolve().then(()=>onYield?.()).then(()=>{if(!error)worker.postMessage({type:'continue',id:message.id});})
-          .catch(failure=>{error=failure;void worker.terminate();});});
+          .catch(failure=>{error=failure;void terminateStorageWorker(worker);});});
       } else result=message;
     });
     worker.once('error',()=>{error??=replicationError('verification_failed');});

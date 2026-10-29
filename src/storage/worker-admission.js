@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 // Workers request a storage turn synchronously, without blocking the controller.
 // Release is acknowledged by the parent queue only after the native work ends.
+const admissions = new WeakMap();
 let sequence = 0, depth = 0, requestActive = false;
 const cancellation = workerData?.requestSignal ? new Int32Array(workerData.requestSignal) : null;
 export function setStorageRequestActive(value) { requestActive = value; }
@@ -59,22 +60,35 @@ function storageCleanup(operation) {
 export function attachStorageAdmission(worker, signal, run) {
   if (!signal) return;
   const pending = new Map();
-  let exited = false;
+  let exited = false, retiring = false;
+  const cancelWait = () => { Atomics.store(signal, 0, -1); Atomics.notify(signal, 0); };
+  admissions.set(worker, () => { retiring = true; cancelWait(); });
   worker.on('message', message => {
     if (!['acquire', 'release'].includes(message?.storage) || !Number.isSafeInteger(message.id) || message.id < 1) return;
     if (message.storage === 'release') { pending.get(message.id)?.(); return; }
+    // A worker can finish startup and request admission after terminate().
+    // Wake that late wait too; it must never acquire fresh storage permission.
+    if (retiring || exited) { cancelWait(); return; }
     let release;
     const finished = new Promise(resolve => { release = resolve; });
     pending.set(message.id, release);
     void Promise.resolve().then(()=>run(async () => {
       if (exited) return;
-      Atomics.store(signal, 0, 1); Atomics.notify(signal, 0);
+      if (retiring) cancelWait();
+      else { Atomics.store(signal, 0, 1); Atomics.notify(signal, 0); }
       await finished;
     }, { maintenance: message.maintenance === true })).catch(() => {
       if (!exited) { Atomics.store(signal, 0, -1); Atomics.notify(signal, 0); }
     }).finally(() => pending.delete(message.id));
   });
-  worker.once('exit', () => { exited = true; for (const release of pending.values()) release(); });
+  worker.once('exit', () => { exited = true; admissions.delete(worker); for (const release of pending.values()) release(); });
+}
+
+/** Cancel admission before requesting termination, including a late startup wait.
+ * Already admitted work retains its reservation until the actual exit event. */
+export function terminateStorageWorker(worker) {
+  admissions.get(worker)?.();
+  return worker.terminate();
 }
 
 /** Read-only SQL retains its original snapshot, but yields storage admission

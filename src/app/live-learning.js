@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 import { takeImmutableValue } from '../domain/immutable.js';
 import { readCoefficientCoverage, createCoefficientGeneration, appendCoefficientEvents, discardCoefficientGeneration } from '../storage/coefficient-history.js';
 
@@ -140,7 +140,7 @@ export class LiveLearning {
     if (worker !== this.worker) return;
     this.active?.reject(this.closed ? cancelled() : failed()); this.active = null;
     this.worker = null; this.ready = false; this.digest = undefined;
-    this.stopping = Promise.all([this.stopping, worker?.terminate().catch(() => {})]).then(() => this.cleanupCoefficientGenerations());
+    this.stopping = Promise.all([this.stopping, worker ? terminateStorageWorker(worker).catch(() => {}) : undefined]).then(() => this.cleanupCoefficientGenerations());
   }
   beginShutdown() {
     if (this.closed) return;

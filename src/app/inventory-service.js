@@ -1,7 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { getDatabaseCatalogue, getDatabaseFileMetrics } from './database-overview.js';
 import { readDatabaseInventory } from './inventory-reader.js';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { validCheckpoint } from '../storage/journal.js';
 
@@ -39,7 +39,7 @@ export function createInventoryService({ store, clock = Date.now, WorkerClass = 
     const previous = worker; worker = null;
     if (requestSignal) Atomics.store(requestSignal, 0, 1);
     if (previous) {
-      stopping = Promise.resolve(previous.terminate()).catch(() => {}).finally(() => { stopping = null; });
+      stopping = Promise.resolve(terminateStorageWorker(previous)).catch(() => {}).finally(() => { stopping = null; });
       await stopping;
     }
     if (active(job)) finish('cancelled');

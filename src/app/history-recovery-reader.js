@@ -1,6 +1,6 @@
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 
 const unavailable = 'Previous recoveries are unavailable. Refresh to retry.';
 function validate(input, options) {
@@ -26,7 +26,7 @@ export function createRecoveryHistoryReader(store, { WorkerClass = Worker, clock
     while (cache.size > 8) cache.delete(cache.keys().next().value);
   }
   function terminate(current) {
-    const completion = Promise.resolve(current.terminate()).catch(() => {});
+    const completion = Promise.resolve(terminateStorageWorker(current)).catch(() => {});
     terminating.add(completion);
     void completion.finally(() => terminating.delete(completion));
     return completion;

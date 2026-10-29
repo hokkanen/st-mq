@@ -8,7 +8,7 @@ import { getChartData, chartRequestRange } from './chart-data.js';
 import { createInventoryService } from './inventory-service.js';
 import { createEnergyChecksService } from './energy-checks-service.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
 
@@ -58,7 +58,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000, cache
       // Admission cleanup must observe release/exit through termination. The
       // service's own handlers already ignore this retired worker generation.
       const observations = [...lane.observations.values()]; lane.observations.clear();
-      lane.retiring = previous.terminate().finally(() => {
+      lane.retiring = terminateStorageWorker(previous).finally(() => {
         for (const entry of observations) entry.observation?.finish(outcome, { reason });
         lane.retiring = null; if(lane.name==='resident') {projectionRetireAck?.();projectionRetireAck=null;} pump();
       });

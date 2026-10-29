@@ -1,5 +1,5 @@
 import { Worker } from 'node:worker_threads';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 import { readEventLog, changedEventLog, advancedEventLog } from './event-log.js';
 import { validTime } from './event-log-presentation.js';
 
@@ -39,7 +39,7 @@ export function createEventLogService({ store, idleMs = 60000, requestTimeoutMs 
     clearTimeout(idleTimer); idleTimer = null;
     const previous = worker; worker = null;
     if (!previous) return retiring ?? Promise.resolve();
-    const joined = previous.terminate().catch(() => {}).finally(() => {
+    const joined = terminateStorageWorker(previous).catch(() => {}).finally(() => {
       if (retiring === joined) { retiring = null; pump(); }
     });
     retiring = joined; return joined;

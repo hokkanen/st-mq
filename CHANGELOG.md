@@ -6,6 +6,9 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Background worker shutdown cancels late startup storage waits, preventing a
+  chart cancellation race from hanging shutdown.
+
 - Opening Garage’s Sensors & More equipment fold on a phone keeps the current
   scroll position.
 

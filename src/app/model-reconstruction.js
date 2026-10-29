@@ -10,7 +10,7 @@ import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext } from './sensor-inputs.js';
 import { learningVersion } from './committed-learning.js';
 import { checkpointAt, matchingCheckpoint } from '../storage/journal.js';
-import { attachStorageAdmission } from '../storage/worker-admission.js';
+import { attachStorageAdmission, terminateStorageWorker } from '../storage/worker-admission.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const actions = ['verify', 'pause', 'resume', 'cancel', 'discard'];
@@ -136,7 +136,7 @@ export function createModelReconstruction({ directory, acquire, clock = Date.now
           // Only a read-only source worker is terminated. Its last complete
           // local SQLite checkpoint remains usable after interrupted writes.
           owner.forcedStop = true;
-          await owner.worker.terminate(); resolve();
+          await terminateStorageWorker(owner.worker); resolve();
         }, stopTimeoutMs);
       })]);
       await completion;
