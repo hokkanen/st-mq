@@ -36,11 +36,11 @@ The normal server serves the completed UI build.
 
 ## Moving from an earlier version
 
-`main` includes the H66 development work. To evaluate the published development
-prerelease in a separate checkout, select its tag explicitly:
+`main` includes the H66 development work. To evaluate the published
+release in a separate checkout, select its tag explicitly:
 
 ```sh
-git clone --branch v0.9.5-dev.4 https://github.com/hokkanen/st-mq.git st-mq-dev
+git clone --branch v0.9.5 https://github.com/hokkanen/st-mq.git st-mq-dev
 cd st-mq-dev
 npm ci
 npm run build

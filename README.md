@@ -6,7 +6,7 @@
 ST-MQ is a local household energy controller for Home Assistant OS and standalone
 Linux. The repository and installation slug are `st-mq`.
 
-**0.9.5-dev.4 is the current development prerelease.** It is
+**0.9.5 is the current release.** It is
 intended for evaluation and installation-specific commissioning. Default startup
 uses simulated devices with Home heating paused. Live input and each feature's
 control permission are separate choices.
@@ -35,7 +35,7 @@ control permission are separate choices.
 Add `https://github.com/hokkanen/st-mq` under **Settings → Apps → Install app →
 ⋮ → Repositories** in Home Assistant OS, then select the app from the `st-mq`
 repository. The default branch, `main`, includes the integrated H66 development work
-and publishes this development prerelease. Installations configured with `#H66`
+and publishes this release. Installations configured with `#H66`
 need the default repository source for this release; a tag does not change their
 configured source.
 Follow [Home Assistant setup](DOCS.md) for installation, saved options, ingress,
@@ -127,7 +127,7 @@ container. To build locally:
 docker build -t st-mq:development .
 ```
 
-Home Assistant builds from the configured repository branch. A GitHub prerelease
+Home Assistant builds from the configured repository branch. A GitHub release
 tag alone does not change that branch or update an installed app. See
 [deployment validation](docs/development-validation.md) for container and
 Supervisor checks and their installation limits. Both

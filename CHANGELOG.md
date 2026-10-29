@@ -4,7 +4,25 @@ Release notes describe changes relevant to users. Detailed implementation and
 validation history is available in Git; unfinished work belongs in GitHub issues.
 Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
-## Unreleased
+## 0.9.5 — 2026-10-29
+
+This release brings together the heating, charging, recording, pairing and
+responsive dashboard work since 0.9.5-dev.4. Defaults still use simulated input
+with Home heating paused; live input and each feature's control permission must
+be configured separately.
+
+**Installation compatibility:** the current database schema is 36. Earlier
+incompatible development databases and retired configuration fields are rejected;
+there is no automatic migration or reset. Preserve installation configuration and
+backups outside the checkout before updating. Current-format restart,
+backup/restore and reconstruction remain supported; only the v0.7.5 `st-mq.csv`
+and `easee.csv` files have historical read-only import support. See the
+[installation guidance](DOCS.md#moving-from-an-earlier-version).
+
+Software validation uses isolated fixtures. Installation-specific commissioning,
+physical equipment behavior and native Raspberry Pi storage performance remain
+separate acceptance work. Publishing this release does not deploy it.
+
 
 - Support Tuya Local 2026.10.0 in the Caravan observation adapter. Add an optional
   HA update guard that preserves the adapter and custom device profile after

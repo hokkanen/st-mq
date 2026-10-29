@@ -8,7 +8,7 @@ this repository, with installation slug `st-mq`. It is not installed through HAC
 or as a Home Assistant Core integration.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.5-dev.4 development prerelease starts with simulated devices and Home
+The 0.9.5 release starts with simulated devices and Home
 heating paused. Default startup launches no live controller or provider. Live
 automation is enabled separately in each feature after configuring its connection.
 See [learning and control](docs/learning-and-control.md)
@@ -19,10 +19,10 @@ the independent feature controls and Garage local temperature regulation.
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
    `https://github.com/hokkanen/st-mq` and install the app from that repository.
    The default branch, `main`, contains the
-   integrated H66 work and the 0.9.5-dev.4 development prerelease. An existing
+   integrated H66 work and the 0.9.5 release. An existing
    repository configured with `#H66` needs the default repository source for
    this release.
-   A Git tag or GitHub prerelease does not change the branch installed by HA.
+   A Git tag or GitHub release does not change the branch installed by HA.
    Home Assistant builds the image locally; the host needs network access for
    the build and enough free storage. If the repository does not appear, refresh
    the app store and inspect **Settings → System → Logs → Supervisor**.
