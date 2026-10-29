@@ -235,7 +235,12 @@ try {
   assert.equal(chart.range.startDate, chart.range.endDate);
   assert.equal(chart.range.timeZone, 'Europe/Helsinki');
   assert.ok(chart.series.all_in_price.length > 0);
-  app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 3_600_000).toISOString() });
+  const pauseResponse = await fetch(`${base}/api/temporary`, {
+    method: 'POST', headers: { ...headers, Origin: base, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pauseUntil: new Date(app.engine.clock() + 3_600_000).toISOString() }),
+  });
+  assert.equal(pauseResponse.status, 200, 'Pause is committed through runtime writer admission before restart');
+  await pauseResponse.json();
 } finally { await app.close(); }
 app = await start({ config });
 try { assert.equal(app.engine.status().automation.home.enabled, false); assert(app.engine.status().override.expiresAt > Date.now()); }
