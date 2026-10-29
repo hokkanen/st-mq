@@ -47,7 +47,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   let context = null, rows = [], nextBefore = null, hasNewEvents = false, hasSuccessfulCheck = false;
   let browsingHistory = false, failed = false, historyNotice = false;
   let enabled = false, inView = !IntersectionObserverClass;
-  const readable = () => enabled && inView && !document.hidden && !closed;
+  const readable = (manual = false) => enabled && (manual || inView) && !document.hidden && !closed;
 
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -194,8 +194,8 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     historyNotice = false;
     controls();
   }
-  async function load(kind = 'refresh') {
-    if (!readable()) return;
+  async function load(kind = 'refresh', { manual = false } = {}) {
+    if (!readable(manual)) return;
     if (pending) return pending;
     if (kind === 'older' && !nextBefore) return;
     const captured = epoch, controller = cancellation = new AbortController();
@@ -210,7 +210,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
       if (kind === 'older' && error?.code === 'event_log_context_changed') {
         invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; historyNotice = true;
         showMessage('The selected history changed. Loading its current events…');
-        return load('latest');
+        return load('latest', { manual });
       }
       failed = true;
       showMessage(rows.length ? 'Event history could not be refreshed. Showing the last successfully fetched events. Try Refresh again.'
@@ -224,7 +224,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   function changeFilter() {
     invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
     status.textContent = 'Loading this view…'; coverage.textContent = '';
-    void load();
+    void load('refresh', { manual: true });
   }
   function visibilityChanged() {
     if (!readable()) { invalidate(); controls(); return; }
@@ -238,14 +238,16 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   observer?.observe($('event-log-panel'));
   document.addEventListener?.('visibilitychange', visibilityChanged);
   view.addEventListener('change', changeFilter); area.addEventListener('change', changeFilter);
-  refreshButton.addEventListener('click', () => { void load(); });
-  olderButton.addEventListener('click', () => { void load('older'); });
+  // Explicit actions need not wait for a viewport observer to catch up after
+  // backgrounding. Hidden documents and unavailable history remain fenced.
+  refreshButton.addEventListener('click', () => { void load('refresh', { manual: true }); });
+  olderButton.addEventListener('click', () => { void load('older', { manual: true }); });
   newerButton.addEventListener('click', () => {
     // Recheck the head when it is opened: a report may have expired or been
     // deleted since the new-events notice first appeared.
     if (!pending) {
       const captured = epoch;
-      void load('latest').then(() => {
+      void load('latest', { manual: true }).then(() => {
         if (!closed && captured === epoch && !failed) list.focus({ preventScroll: true });
       });
     }

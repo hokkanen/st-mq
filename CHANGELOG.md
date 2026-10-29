@@ -24,6 +24,10 @@ physical equipment behavior and native Raspberry Pi storage performance remain
 separate acceptance work. Publishing this release does not deploy it.
 
 
+- Let explicit event-log Refresh, filter and paging actions read while the
+  viewport observer still reports the panel offscreen after backgrounding.
+  Automatic offscreen polling remains paused.
+
 - Support Tuya Local 2026.10.0 in the Caravan observation adapter. Add an optional
   HA update guard that preserves the adapter and custom device profile after
   compatible HACS updates, and reports changed upstream code for review.

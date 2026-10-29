@@ -248,3 +248,39 @@ test('event evidence uses literal text and complete DST-distinguishable timestam
   assert.match(f.list.querySelector('time').dateTime, /^2026-10-25T/);
   f.panel.close();
 });
+
+
+test('explicit event refresh retries a failed read while the viewport observer still reports offscreen', async () => {
+  let visibility;
+  class Observer {
+    constructor(callback) { visibility = visible => callback([{ target: f.$('event-log-panel'), isIntersecting: visible }]); }
+    observe() {} disconnect() {}
+  }
+  const f = fixture({ IntersectionObserverClass: Observer });
+  await f.panel.refresh(); visibility(true); await settle();
+  f.requests[0].reject(new Error('fixture-interrupted-background-read')); await settle();
+  assert.match(f.$('event-log-message').textContent, /Event history is unavailable/);
+  visibility(false);
+  await f.panel.refresh(); assert.equal(f.requests.length, 1, 'Automatic offscreen checks stay paused');
+  f.$('event-log-refresh').dispatch('click'); await settle();
+  assert.equal(f.requests.length, 2, 'An explicit Refresh must make a fresh read even before the viewport observer catches up');
+  await f.answer([row(2)], { nextBefore: 'fixture-cursor' });
+  assert.equal(f.$('event-log-message').hidden, true);
+  assert.equal(f.list.children.length, 1);
+  f.$('event-log-older').dispatch('click'); await settle();
+  assert.equal(f.requests.length, 3);
+  await f.answer([row(1)]);
+  f.$('event-log-new').dispatch('click'); await settle();
+  assert.equal(f.requests.length, 4);
+  await f.answer([row(2)]);
+  f.$('event-log-area').value = 'home'; f.$('event-log-area').dispatch('change'); await settle();
+  assert.equal(f.requests.length, 5);
+  await f.answer([row(2)]);
+  f.document.hidden = true; f.document.dispatch('visibilitychange');
+  f.$('event-log-refresh').dispatch('click'); await settle();
+  assert.equal(f.requests.length, 5, 'A hidden document does not start reads');
+  f.panel.unavailable(); f.document.hidden = false;
+  f.$('event-log-refresh').dispatch('click'); await settle();
+  assert.equal(f.requests.length, 5, 'Explicit refresh does not bypass unavailable history ownership');
+  f.panel.close();
+});
