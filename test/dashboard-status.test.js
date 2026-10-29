@@ -114,6 +114,8 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
     access: { ingress: { enabled: true }, recovery: { enabled: true, tokenRequired: true }, https: { enabled: false }, lanHttp: { configured: false } } };
   const scope = settingsReloadScope({ settingsReload: reload });
   assert.match(scope.instructions.join(' '), /\/addon_configs\/example_st-mq\/secrets.json/);
+  assert.match(scope.instructions.join(' '), /Advanced SSH & Web Terminal/);
+  assert.match(scope.instructions.join(' '), /official Terminal & SSH app, use \/app_configs instead of \/addon_configs/);
   assert.match(scope.instructions.join(' '), /freshly saved options/);
   assert.match(scope.instructions.join(' '), /Omitted fields keep saved values, arrays replace saved arrays/);
   assert.match(scope.instructions.join(' '), /failed import keeps the file/);

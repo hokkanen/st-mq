@@ -290,8 +290,10 @@ old directories intact; choose another suffix if `fresh-1` has already been used
 
 Stop the installed `st-mq` app under **Settings → Apps** and keep it stopped while
 changing storage.
-The app's `/config` is its own app-configuration directory, exposed to suitable
-file editors or SSH environments as `/addon_configs/<actual-app-slug>`. It is
+The app's `/config` is its own app-configuration directory. The official Terminal
+& SSH app exposes it as `/app_configs/<actual-app-slug>`; Advanced SSH & Web
+Terminal uses `/addon_configs/<actual-app-slug>`. The instructions below use the
+Advanced SSH reference path; substitute `/app_configs` in the official app. It is
 not Home Assistant Core's `/config`. Find the actual installed app slug; do not
 substitute the repository name.
 
@@ -835,7 +837,9 @@ Backup archives use private permissions and are named by time and operation ID:
 
 - Configured `recording.backup_directory`, under `reset-archives/<archive>/`.
 - With the empty default, HA uses `/config/st-mq/backups/reset-archives/<archive>/`
-  inside the app, normally accessible under `/addon_configs/<actual-app-slug>/st-mq/backups/`.
+  inside the app, accessible in Advanced SSH & Web Terminal under
+  `/addon_configs/<actual-app-slug>/st-mq/backups/`; the official Terminal & SSH
+  app uses `/app_configs/<actual-app-slug>/st-mq/backups/`.
 - Linux uses `<database directory>/backups/reset-archives/<archive>/`.
 
 Raw archives preserve original database and sidecar bytes, pending replication

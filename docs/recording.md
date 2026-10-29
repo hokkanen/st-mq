@@ -1767,8 +1767,10 @@ also supplies History recovery. Manual exports and complete reset bundles use
 `recording.backup_directory`; pinned protected rejoin exports live in that root's
 `pair-exports` repository. Only pinned protected exports count as retained copies; routine
 rolling pairing snapshots and inactive working databases are not portable backups.
-On Home Assistant, **Folder** uses Configuration's verified host mapping under
-`/addon_configs/<app slug>` and **Inside app** shows the actual application path.
+On Home Assistant, **Folder** uses Configuration's Advanced SSH & Web Terminal
+mapping under `/addon_configs/<app slug>`. The official Terminal & SSH app uses
+`/app_configs/<app slug>` for the same folder. **Inside app** shows the actual
+application path.
 An unknown mapping or a configured path outside the known `/config` mount is
 explicitly unavailable; the UI never invents a host folder. Standalone Linux
 shows its actual configured folder.

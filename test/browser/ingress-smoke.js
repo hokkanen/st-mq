@@ -149,6 +149,8 @@ try {
     ['Folder', '/addon_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
       'Inside app', '/config/secrets.json']);
   assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), true);
+  assert.match(instructions, /Advanced SSH & Web Terminal/);
+  assert.match(instructions, /official Terminal & SSH app, use \/app_configs instead of \/addon_configs/);
   assert.match(instructions, /freshly saved options/);
   assert.match(instructions, /Omitted fields keep saved values/);
   assert.match(instructions, /failed import keeps the file/);

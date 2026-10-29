@@ -233,6 +233,9 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
   fetchImpl = (...args) => fetch(...args) }) {
   const environment = { ...env }, addon = env.STMQ_ADDON === '1';
   let slug = null, supervisorIngressPort;
+  // Reference mount used by Advanced SSH & Web Terminal. The official Terminal
+  // & SSH app exposes the same relative folder under /app_configs; UI guidance
+  // names both tools. Neither path changes the app's own /config import owner.
   const publicInfo = () => ({ environment: addon ? 'home-assistant' : 'ubuntu', defaultsPath: paths.defaultsPath,
     privatePath: paths.privatePath, importPath: paths.importPath, receiptPath: paths.receiptPath,
     privateFileRole: addon ? 'startup-fallback' : 'permanent-overrides',

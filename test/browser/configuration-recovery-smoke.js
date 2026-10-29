@@ -150,6 +150,8 @@ try {
   assert.equal(await evaluate("document.getElementById('access-panel').hidden"), true, 'HA does not ask for Linux access key');
   assert.equal(await evaluate("document.getElementById('external-import-path').textContent"),
     '/addon_configs/fixture_home_energy/secrets.json', 'Recovery shows the file-tool upload path and complete JSON filename');
+  assert.match(await evaluate("document.getElementById('ha-instructions').textContent"), /Advanced SSH & Web Terminal/);
+  assert.match(await evaluate("document.getElementById('ha-instructions').textContent"), /official Terminal & SSH app, use \/app_configs instead of \/addon_configs/);
   assert.equal(await evaluate("document.getElementById('import-path').textContent"), '/config/secrets.json',
     'The in-container import path remains distinct from the upload path');
   missingSlug = true;

@@ -302,7 +302,7 @@ export function createRecordingHealth({ document, request, reviewBackup, downloa
     $('recording-backup-inside').hidden = !insideApp;
     set('recording-backup-inside', insideApp ? location.insideApp : '');
     set('recording-backup-location-detail', location?.environment === 'home-assistant'
-      ? location.hostMappingKnown ? 'Folder is the Home Assistant host location. Inside app is the same folder as seen by this app.'
+      ? location.hostMappingKnown ? 'Folder is the path in Advanced SSH & Web Terminal. In the official Terminal & SSH app, use /app_configs instead of /addon_configs. Inside app is the same folder as seen by this app.'
         : 'Inside app is the container path. Its host folder is not known; do not treat it as a Home Assistant host path.' : '');
     set('recording-backup-size', catalog && adminCatalog() ? `${catalog.copies.length} cop${catalog.copies.length === 1 ? 'y' : 'ies'} listed · ${storageBytes(catalog.copies.reduce((sum, item) => sum + item.bytes, 0))}`
       : finite(health?.backup?.totalBytes) ? `${storageBytes(health.backup.totalBytes)} in listed copies` : 'Not checked');

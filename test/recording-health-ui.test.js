@@ -1480,6 +1480,8 @@ test('backup paths separate the verified Home Assistant host folder from the app
   assert.equal(view.element('recording-backup-inside').textContent, '/config/backups');
   assert.equal(view.element('recording-backup-inside-label').hidden, false);
   assert.match(view.element('recording-backup-location-detail').textContent, /same folder/);
+  assert.match(view.element('recording-backup-location-detail').textContent, /Advanced SSH & Web Terminal/);
+  assert.match(view.element('recording-backup-location-detail').textContent, /official Terminal & SSH app, use \/app_configs instead of \/addon_configs/);
   catalog.location.folder = null; catalog.location.hostMappingKnown = false;
   await view.panel.refreshCopies({ force: true });
   assert.equal(view.element('recording-backup-folder').textContent, 'Host folder mapping unavailable');

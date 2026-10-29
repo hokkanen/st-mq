@@ -46,8 +46,9 @@ the independent feature controls and Garage local temperature regulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
-   app folder. Terminal & SSH exposes it under
-   `/addon_configs/<repository-id>_st-mq/st-mq/`. Private provider token caches stay
+   app folder. The official Terminal & SSH app exposes it under
+   `/app_configs/<repository-id>_st-mq/st-mq/`; Advanced SSH & Web Terminal uses
+   `/addon_configs` for the same relative folder. Private provider token caches stay
    in `/data/st-mq/`. Both are included in the app backup; `/share` remains
    available for imports/exports. See the path and backup instructions below.
 5. Historical import is optional. The [CSV import guide](docs/csv-import.md)
@@ -123,10 +124,10 @@ automatic heating cycle ends, while Away and pause choices and learning history
 remain. Startup environment overrides still apply.
 
 You can also import private settings through the same check, review and apply
-workflow. In Terminal & SSH, upload `secrets.json` to this app's configuration
-folder. The UI displays the upload path, such as
-`/addon_configs/<actual-app-slug>/secrets.json`; inside ST-MQ it is
-`/config/secrets.json`. Use the complete filename `secrets.json`.
+workflow. The UI shows the Advanced SSH & Web Terminal path, such as
+`/addon_configs/<actual-app-slug>/secrets.json`. In the official Terminal & SSH
+app, use `/app_configs/<actual-app-slug>/secrets.json` instead. Both refer to
+ST-MQ's `/config/secrets.json`. Use the complete filename `secrets.json`.
 This is next to the `st-mq/` database folder, not inside it.
 If startup configuration is invalid, **Open Web UI** opens configuration recovery
 instead of the dashboard; see [startup and troubleshooting](#startup-and-troubleshooting).
@@ -336,16 +337,22 @@ This `/config` is ST-MQ's own app folder, not Home Assistant Core's configuratio
 folder. It is included when the `st-mq` app is selected for backup; `/share` is a separate
 backup selection.
 
-| Purpose | Inside ST-MQ | In Terminal & SSH |
+| Purpose | Inside ST-MQ | In official Terminal & SSH |
 | --- | --- | --- |
-| Active household database | `/config/st-mq/st-mq.sqlite` | `/addon_configs/<repository-id>_st-mq/st-mq/st-mq.sqlite` |
+| Active household database | `/config/st-mq/st-mq.sqlite` | `/app_configs/<repository-id>_st-mq/st-mq/st-mq.sqlite` |
 | Simulation database | `/config/st-mq/simulation.sqlite` | Same public folder, `simulation.sqlite` |
 | Options and provider tokens | `/data/options.json`, `/data/st-mq/` | Private to ST-MQ |
-| Temporary settings import | `/config/secrets.json` | `/addon_configs/<actual-app-slug>/secrets.json` |
+| Temporary settings import | `/config/secrets.json` | `/app_configs/<actual-app-slug>/secrets.json` |
 | CSV imports and exported backups | `/share/st-mq/` | `/share/st-mq/` |
 
-Use the `/addon_configs` mount in the SSH or file app; find ST-MQ with
-`ls -d /addon_configs/*_st-mq`. Locally installed apps use `local_st-mq`;
+The official Terminal & SSH app uses `/app_configs`; Advanced SSH & Web Terminal
+uses `/addon_configs`. These are tool-specific mounts of the same public app
+folders. The UI's reference paths use the Advanced SSH mount. Find ST-MQ with
+`ls -d /app_configs/*_st-mq` in the official app or
+`ls -d /addon_configs/*_st-mq` in Advanced SSH. The reviewed manifests are
+[Terminal & SSH](https://github.com/home-assistant/apps/blob/209fedd843238f8a1ac40586d7fe2498f077dc7f/ssh/config.yaml)
+and [Advanced SSH & Web Terminal](https://github.com/hassio-addons/app-ssh/blob/e3203f61779f6ea500ad914886ecf7d3647b414b/ssh/config.yaml).
+Locally installed apps use `local_st-mq`;
 a Git repository uses its repository identifier. The configuration screen
 supplies ST-MQ's actual slug in the upload path. `/share` is the shared
 import/export mount. The `st-mq` slug preserves installation identity.
@@ -442,8 +449,9 @@ The manifest maps writable `app_config` explicitly to ST-MQ's `/config` and
 `share:rw` to `/share`.
 Current [Supervisor mount handling](https://github.com/home-assistant/supervisor/blob/64ea3be4322537fd5dcfbf620c4dc25490c1f56d/supervisor/docker/app.py)
 uses `app_config`; the older `addon_config` name is deprecated. ST-MQ's own
-`/config` and stored app directory stay the same; the upload instructions use
-the file tool's `/addon_configs` mount. ST-MQ does not mount
+`/config` and stored app directory stay the same. The official Terminal & SSH
+mounts other apps' folders at `/app_configs`; Advanced SSH & Web Terminal mounts
+them at `/addon_configs`. Use the path for the selected file tool. ST-MQ does not mount
 Home Assistant Core's configuration. The historical
 `HASS_files/` folder is not part of the installation.
 

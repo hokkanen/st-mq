@@ -94,7 +94,7 @@ export function settingsReloadScope(status = {}) {
   const instructions = [], access = [];
   if (configuration?.environment === 'home-assistant') {
     instructions.push('Change and save options in the host dashboard. Check & review configuration reads those freshly saved options.');
-    if (isFilePath(configuration.externalImportPath)) instructions.push(`To import settings, upload the file to ${configuration.externalImportPath} using SSH.`);
+    if (isFilePath(configuration.externalImportPath)) instructions.push(`To import settings, use Advanced SSH & Web Terminal to upload the file to ${configuration.externalImportPath}. In the official Terminal & SSH app, use /app_configs instead of /addon_configs.`);
     instructions.push('Use a plain JSON options object without an outer options wrapper. Omitted fields keep saved values, arrays replace saved arrays, and explicit empty values clear fields.');
     instructions.push('As admin, choose Check & review configuration, inspect the changes, then Apply reviewed configuration. A successful import saves its values in the host dashboard and removes the uploaded file; a failed import keeps the file for correction.');
   } else if (configuration?.environment === 'ubuntu') {

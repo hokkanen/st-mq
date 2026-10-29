@@ -445,8 +445,9 @@ measurement basis and limits. Low disk space never authorizes automatic deletion
 empty default selects `<database directory>/backups`; Home Assistant therefore uses
 `/config/st-mq/backups`, a persistent app-configuration mount included in app backups.
 In **Recording details → Backups**, **Folder** shows the host-accessible location
-using the same verified mapping as Configuration. For this default it is
-`/addon_configs/<app slug>/st-mq/backups`; **Inside app** remains
+using the same Advanced SSH & Web Terminal mapping as Configuration. For this
+default it is `/addon_configs/<app slug>/st-mq/backups`; the official Terminal &
+SSH app uses `/app_configs/<app slug>/st-mq/backups`. **Inside app** remains
 `/config/st-mq/backups`. The app slug is discovered, never hardcoded. If that
 mapping is unavailable, or a custom directory lies outside the known `/config`
 mount, the host location is marked unavailable and the actual inside-app path
