@@ -49,7 +49,7 @@ agent use and host verification. No Home Assistant long-lived access token is
 needed. Supervisor requests run through SSH in a login shell, using the SSH
 app's local `SUPERVISOR_TOKEN`; that credential is never downloaded to Ubuntu.
 This environment requirement is documented by the
-[SSH app](https://github.com/hassio-addons/addon-ssh/blob/main/ssh/DOCS.md#running-the-ha-command-or-supervisor-api-non-interactively).
+[SSH app](https://github.com/hassio-addons/app-ssh/blob/main/ssh/DOCS.md#running-the-ha-command-or-supervisor-api-non-interactively).
 
 Deployment reads that default connection automatically:
 

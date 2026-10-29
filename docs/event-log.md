@@ -48,11 +48,13 @@ shows the source snapshot time, independently of when its events were fetched.
 A failed event read retains the last fetched evidence with an explicit message;
 it cannot undo a successful action receipt.
 
-Events are fetched only while the log panel is on screen and the browser tab is
-visible, after dashboard history becomes available. Returning to the panel checks
-again; Refresh remains available. Leaving the panel or hiding the tab cancels
-unused reads while preserving fetched rows and their original check time. This
-does not change any recording cadence, retention or charging behavior.
+Automatic checks fetch events only while the log panel is on screen and the
+browser tab is visible, after dashboard history becomes available. Returning to
+the panel checks again. Explicit Refresh, filter and paging actions can read
+without waiting for the viewport observer to report the panel on screen; hidden
+tabs and unavailable history still prevent reads. Leaving the panel or hiding
+the tab cancels unused reads while preserving fetched rows and their original
+check time. This does not change recording cadence, retention or charging behavior.
 
 Refreshing retains matching row nodes, open details, focus and reading position.
 New entries wait behind **New events** while the user reads. **Load older events**

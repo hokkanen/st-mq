@@ -122,6 +122,8 @@ below describe the complete transition from 0.7.5 to 0.9.5.
 
 ### Compatibility and operating limits
 
+- Home Assistant marks 0.9.5 as a breaking update; automatic updates do not cross
+  this boundary. Review compatibility and update manually.
 - **0.7.5 requires a fresh current configuration and database.** Preserve its
   installation settings, backups and original CSV exports before replacement,
   then optionally import the two supported CSV formats. The old MQTT heating

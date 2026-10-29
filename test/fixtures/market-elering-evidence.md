@@ -20,7 +20,7 @@ database changes or equipment commands were involved.
   hour before `2025-09-30T22:00Z`, fifteen minutes from that instant. This is
   one hour after Finnish local midnight. Missing rows do not stretch neighboring
   prices to fill the gap.
-- The [Elering homepage](https://elering.ee/) distinguishes EUR/MWh from
+- The [Elering homepage](https://www.elering.ee/) distinguishes EUR/MWh from
   cents/kWh and displays separate prices with its VAT toggle. For the first
   Estonian local hour on 2026-09-07 it displayed **26.19 EUR/MWh** before VAT and
   **32.48 EUR/MWh** with VAT. The original API's four quarter-hour values

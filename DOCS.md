@@ -331,7 +331,7 @@ browser, container and Supervisor boundaries.
 ## SSH database access and backups
 
 The folder arrangement follows Home Assistant's [public app configuration
-support](https://developers.home-assistant.io/docs/apps/configuration/#app-advanced-options).
+support](https://contributors.home-assistant.io/apps/reference/configuration/#folders).
 This `/config` is ST-MQ's own app folder, not Home Assistant Core's configuration
 folder. It is included when the `st-mq` app is selected for backup; `/share` is a separate
 backup selection.
@@ -404,6 +404,10 @@ default repository; it does not convert an existing installation's saved options
 database. An app configured with `#H66` needs the default repository source for
 this release; publishing a tag does not change that setting.
 
+Home Assistant marks 0.9.5 as a breaking update, so automatic updates do not
+cross this boundary. Review compatibility and perform the update manually after
+preserving the previous installation.
+
 The 0.7.5 runtime and configuration are not upgrade inputs. Configure the current
 version from its current options and use a fresh database, then optionally import
 the supported original [0.7.5 CSV files](docs/csv-import.md). Unknown or retired
@@ -420,7 +424,7 @@ or grant new control authority.
 
 ## Home Assistant files and permissions
 
-The [current app format](https://developers.home-assistant.io/docs/apps/configuration/)
+The [current app format](https://contributors.home-assistant.io/apps/reference/configuration/)
 still supports `config.json` and `translations/en.yaml`; renaming them is not
 required by the change from “add-ons” to “apps”.
 

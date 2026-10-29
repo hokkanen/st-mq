@@ -3,7 +3,7 @@
 Store original CSV exports outside the checkout and keep their source bytes
 intact. The only supported pre-v1.0.0 historical compatibility is read-only
 import of the two CSV formats below; this document does not provide an old runtime or database reader.
-The current development entry point is `npm start`; setup is documented in
+The current application entry point is `npm start`; setup is documented in
 [the current guide](../DOCS.md).
 
 ## st-mq CSV
@@ -35,7 +35,7 @@ charger phases L1–L3; the last three belong to Equalizer property phases L1–
 Units are amperes. These are current snapshots, not energy measurements. Charts
 estimate power using the applicable recorded phase-voltage estimates and unity
 power factor. For CSV timestamps before voltage-estimate history begins, the first
-fully established database value for each phase supplies an explicitly labelled
+valid recorded estimate for each phase supplies an explicitly labelled
 retrospective assumption. Until that evidence exists, the original current remains
 available but voltage-dependent power is unknown. Later voltage changes do not
 change the early-CSV fallback or rewrite imported source rows.

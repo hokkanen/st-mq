@@ -107,6 +107,7 @@ development databases are rejected before mutation and require a deliberate
 fresh start; there is no automatic migration or reset. Same-version backup,
 restore, restart and learning reconstruction remain supported. The two 0.7.5 CSV
 imports are the historical exception; keep original exports outside the checkout.
+Home Assistant marks 0.9.5 as a breaking update requiring manual review.
 Existing 0.7.5 installations need a fresh current configuration and database,
 with any supported CSV history imported explicitly. Review
 [Home Assistant installation changes](DOCS.md#moving-from-an-earlier-version) or

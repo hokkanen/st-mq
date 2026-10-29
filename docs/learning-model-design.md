@@ -98,11 +98,15 @@ Replay requires the saved configuration and matching algorithm version. Developm
 databases can be recreated for model changes; imported CSV formats, timestamps,
 units, duplicate handling and provenance remain unchanged.
 
-The four fitted-coefficient chart choices use the same per-entry learning operation
-in a read-only replay. They derive steps and provenance in memory without recording
-coefficient history or updating the controller checkpoint. Unsupported journal
-segments are shown as gaps, and newer model states are never backfilled into older
-dates. Initial estimates remain visibly distinct from fitted and retained values.
+The four fitted-coefficient chart choices read indexed, selected coefficient
+history from the main database. Ordered committed learning records intermediate
+changes with their quality, evidence and provenance; backups and mirroring retain
+them. Selecting a chart never starts reconstruction or updates the controller
+checkpoint. Source corrections and recovery publish the matching model and
+coefficient timeline atomically. Initial estimates remain visibly distinct from
+fitted and retained values, and genuine gaps remain gaps. The optional
+[Check saved learning audit](reconstruction-and-versioning.md#coefficient-history-and-local-verification)
+replays the complete saved model and all four histories at a fixed durable boundary.
 
 Reconstruction itself does not reduce the best achievable model quality. Lossy
 recording can: discarded excursions, source timing and unobserved equipment states
@@ -157,8 +161,11 @@ behavior; no synthetic error score establishes accuracy or economic savings for
 the installed house after its hydraulic configuration changes.
 
 Complete schedule search runs in a bounded worker and fresh control inputs are
-checked again before adoption. Routine live coefficient fitting still runs
-synchronously every twelve committed input windows. A synthetic fourteen-day
-fit took roughly 0.4–0.5 seconds on the development computer; this is not a
-Raspberry Pi timing claim. Prospective device response, native Pi latency and
-the unobserved storage topology still need installation-specific validation.
+checked again before adoption. File-backed live learning uses an admitted
+read-only worker after ordered learning inputs are committed, without holding the
+writer reservation during calculation. Simulation and in-memory fixtures retain
+the same synchronous ordered learning function. Model and coefficient-history
+publication keep their source/control fences; see the
+[reconstruction contract](reconstruction-and-versioning.md). Native Raspberry Pi
+latency, prospective device response and the unobserved storage topology still
+need installation-specific validation.

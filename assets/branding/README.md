@@ -17,7 +17,7 @@ cairosvg smart-timing.svg -o ../../icon.png --output-width 128 --output-height 1
 cairosvg smart-timing.svg -o ../../logo.png --output-width 512 --output-height 512
 ```
 
-See the [Home Assistant presentation guide](https://developers.home-assistant.io/docs/apps/presentation/#app-icon--logo)
+See the [Home Assistant presentation guide](https://contributors.home-assistant.io/apps/guides/presentation/#icon-and-logo)
 for store artwork requirements.
 
 ## Installed Android app icons
@@ -27,7 +27,7 @@ installation metadata and uses the forest green launch background. Its dedicated
 192 px and 512 px PNGs are exported from the Smart timing vector. The 512 px
 maskable variant has an opaque forest green background; the clock and bolt fit
 inside Android's central circular safe area (radius 40% of the image width).
-The browser tab and Home Assistant add-on keep their existing icons.
+The browser tab and Home Assistant app keep their existing icons.
 
 Vite serves `chart/public/` during development and copies it into `dist/` during
 the production/container build. Manifest URLs are relative to preserve a hosting

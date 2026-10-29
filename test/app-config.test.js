@@ -24,7 +24,10 @@ test('Home Assistant, npm and default container builds identify the same release
     assert.equal(entry.version, pkg.version);
   }
   assert.equal(dockerfile.match(/^ARG BUILD_VERSION=(\S+)$/m)?.[1], pkg.version);
-  if (pkg.version.includes('-')) assert.equal(manifest.stage, 'experimental');
+  assert.equal(manifest.stage, pkg.version.includes('-') ? 'experimental' : 'stable',
+    'The Home Assistant stability label must match the release version');
+  assert.deepEqual(manifest.breaking_versions, ['0.9.5'],
+    'Automatic updates must not cross the incompatible 0.7.5 installation boundary');
 });
 
 test('default startup has no global mode with simulated devices, no provider connections and no real comfort target', () => {

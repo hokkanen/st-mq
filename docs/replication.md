@@ -2,7 +2,8 @@
 
 In mirror mode, the master sends committed SQLite changes to a second Linux
 computer. The slave serves recorded history and charts, but cannot record
-measurements, change settings, learn, connect to providers, or command equipment. Its role is
+measurements, change replicated controller choices, advance live learning,
+connect to acquisition providers, or command equipment. Its role is
 machine-local configuration; copied master settings cannot activate a controller.
 Both computers select `controller.topology: "mirror"`; their local
 `mirror.role` is `master` or `slave`. This is one-way mirroring. There is no
@@ -10,12 +11,15 @@ role-change workflow, automatic control takeover or reverse database recovery.
 Use [pair mode](pairing.md) when the second computer must take control manually.
 
 The viewer keeps the dashboard cards visible with recorded values and explicit
-snapshot age. Database edits, settings changes and device commands are disabled
+snapshot age. Main-database edits, controller-choice changes and device commands are disabled
 in both the dashboard and API. History navigation and downloading a verified
 database copy remain available. Saving a new database copy on the server is a
 write action and requires the active master. Missing live device state is shown
 as unavailable, and any local configuration defaults are labeled separately
-from settings recorded by the master.
+from settings recorded by the master. Local [web access setup](https.md) and the
+optional [saved-learning verification](reconstruction-and-versioning.md#coefficient-history-and-local-verification)
+retain their separate per-computer ownership; neither changes the replicated
+model or grants equipment authority.
 
 Use the same ST-MQ release on both computers. The viewer checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already

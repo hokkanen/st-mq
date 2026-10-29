@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock
 
 from aiohttp.test_utils import make_mocked_request
 import voluptuous as vol
+from awesomeversion import AwesomeVersion
 
 from supervisor.api.apps import APIApps
 from supervisor.api.supervisor import APISupervisor
@@ -109,6 +110,18 @@ class SupervisorOptions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config['schema'], MANIFEST['schema'])
         self.assertFalse(self.config['hassio_api'])
         self.assertEqual(self.config['hassio_role'], 'default')
+
+    def test_breaking_release_blocks_automatic_update_from_older_installation(self):
+        self.assertEqual(self.config['stage'], 'stable')
+        self.assertEqual([str(value) for value in self.app.breaking_versions], ['0.9.5'])
+        candidate = SimpleNamespace(need_update=True, auto_update=True,
+                                   version=AwesomeVersion('0.7.5'),
+                                   latest_version=AwesomeVersion(self.config['version']),
+                                   breaking_versions=self.app.breaking_versions)
+        self.assertFalse(App.auto_update_available.fget(candidate))
+        candidate.breaking_versions = []
+        self.assertTrue(App.auto_update_available.fget(candidate),
+                        'The actual upstream guard must reject because of the shipped boundary')
 
     async def test_repository_discovers_only_the_root_app_manifest(self):
         # Recreate the public config.* filenames only, without mounting source

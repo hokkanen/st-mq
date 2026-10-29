@@ -266,11 +266,11 @@ check cannot establish every client's DNS or trust-store behavior.
 This failure is independent of router DNS or certificate issuance. Setup needs
 machine identity evidence before it can use a saved Tailscale identity or install
 its helper. Linux reads a supported local machine identity file. When those files
-are unavailable inside a Home Assistant add-on, it uses the host `machine_id`
+are unavailable inside a Home Assistant app, it uses the host `machine_id`
 from authenticated Supervisor `GET /info`. The raw identity and Supervisor token
 are not exposed in status or helper process environment.
 
-For Home Assistant, check Supervisor health and the add-on's Supervisor API
+For Home Assistant, check Supervisor health and the app's Supervisor API
 access, then choose **Retry setup**. For standalone Linux, restore read access to a
 supported identity source (`/etc/machine-id`, `/sys/class/dmi/id/product_uuid` or
 `/sys/firmware/devicetree/base/serial-number`), then choose **Retry setup**. Preserve the managed
@@ -414,7 +414,7 @@ Reused container PIDs cannot retain ownership. The lock uses the private directo
 filesystem device and inode, including through symlinks and bind mounts. Different
 volumes at the same container path keep separate locks; duplicate managers for the
 same directory in the same network namespace are refused
-with `https_manager_already_running`. The supported Home Assistant add-on uses
+with `https_manager_already_running`. The supported Home Assistant app uses
 host networking, and standalone Linux shares the host namespace. Do not share a
 managed directory between installations in separate network namespaces.
 
@@ -508,7 +508,7 @@ and DNS. Restoring control state follows the existing pairing/authority rules.
 For Linux recovery, use `ssh -N -L 1234:127.0.0.1:1234 user@server`, keep the
 connection active and open `http://127.0.0.1:1234` on that client. If its local port
 is occupied, choose another local forwarding port. For Home Assistant, ingress is
-the standard recovery path; another SSH add-on does not automatically share the
+the standard recovery path; another SSH app does not automatically share the
 ST-MQ container's namespace.
 
 ## Validation boundaries
@@ -521,11 +521,11 @@ never a production configuration option.
 
 Docker checks establish image behavior, not Supervisor/AppArmor policy or physical
 Raspberry Pi performance. Real Supervisor execution from persistent storage,
-backup/restore and native supported-hardware qualification remain release gates
-when those environments are unavailable. Signature acceptance and passing tests
+backup/restore and native supported-hardware qualification remain separate
+installation acceptance work. Signature acceptance and passing tests
 do not establish freedom from vulnerabilities or every future vendor change.
 
 Official references: [Tailscale HTTPS](https://tailscale.com/docs/how-to/set-up-https-certificates),
 [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking),
 [Node TLS](https://nodejs.org/docs/latest-v22.x/api/tls.html),
-[Home Assistant ingress](https://developers.home-assistant.io/docs/apps/presentation/).
+[Home Assistant ingress](https://contributors.home-assistant.io/apps/guides/ingress/).
