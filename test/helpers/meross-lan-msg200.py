@@ -4,8 +4,11 @@ import importlib.util
 import json
 from pathlib import Path
 import shutil
+import sys
 from types import SimpleNamespace as NS
 import tempfile
+
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/apply-meross-lan-msg200.py')
