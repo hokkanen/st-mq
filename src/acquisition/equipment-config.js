@@ -6,7 +6,7 @@ export const canonicalEquipmentTemperature = device => device.kind === 'temperat
 
 const KINDS = ['temperature', 'switch', 'metered_switch', 'door', 'power', 'dehumidifier'];
 const DEVICE_KEYS = ['id', 'label', 'area', 'kind', 'connection', 'enabled', 'signal', 'generation', 'switch_id', 'temperature_id',
-  'switch_control', 'cover_control', 'dehumidifier_control', 'temperature_control', 'manufacturer', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt'];
+  'switch_control', 'cover_control', 'dehumidifier_control', 'temperature_control', 'manufacturer', 'tariff_control', 'reduction_on', 'max_age_seconds', 'record', 'readings', 'mqtt', 'meross'];
 const MQTT_KEYS = ['command_topic', 'on_payload', 'off_payload', 'state_path', 'timestamp_path', 'availability_topic', 'bridge_availability_topic',
   'online_payload', 'offline_payload', 'heartbeat_topic', 'heartbeat_seconds', 'request_topic', 'request_payload',
   'open_payload', 'close_payload', 'stop_payload', 'cover_state_path'];
@@ -64,7 +64,7 @@ function reading(input, id) {
 
 export function equipmentSignature(device) {
   if (!device) return null;
-  return createHash('sha256').update(JSON.stringify({ protocol: device.protocol, connection: device.connection,
+  return createHash('sha256').update(JSON.stringify({ protocol: device.protocol, connection: device.connection, ...(device.meross ? { meross: device.meross } : {}),
     generation: device.generation, switchId: device.switchId, controlsSwitch: device.controlsSwitch,
     controlsHeat: device.controlsHeat, ...(device.controlsCover ? { controlsCover: true } : {}),
     ...(device.controlsDehumidifier ? { controlsDehumidifier: true } : {}), reductionOn: device.reductionOn, stateSignal: device.stateSignal,
@@ -91,6 +91,22 @@ export function equipmentConfiguration(input = {}) {
   if (input.devices != null && !Array.isArray(input.devices) || input.devices?.length > 100) throw new Error('Equipment devices must be an array of at most 100 entries');
   const devices = (input.devices ?? []).map(row => {
     schema(row, DEVICE_KEYS, 'equipment device');
+    let meross = null;
+    if (row.meross !== undefined) {
+      schema(row.meross, ['uuid', 'key', 'channel'], 'Meross device');
+      if (!/^[a-f0-9]{32}$/.test(row.meross.uuid) || typeof row.meross.key !== 'string'
+        || !/^[a-f0-9]{32}$/.test(row.meross.key) || row.kind !== 'door'
+        || row.connection !== `mqtt:/appliance/${row.meross.uuid}/publish`
+        || row.mqtt !== undefined || row.readings !== undefined)
+        throw new Error('Meross doors require exact native MQTT connection, key and channel without generic mappings');
+      if (!Number.isInteger(row.meross.channel) || row.max_age_seconds === 0) throw new Error('Meross doors require a channel and finite freshness');
+      meross = { uuid: row.meross.uuid, key: row.meross.key, channel: number(row.meross.channel, undefined, 1, 3, true) };
+      row = { ...row, max_age_seconds: row.max_age_seconds ?? 90, mqtt: {
+        command_topic: `/appliance/${meross.uuid}/subscribe`,
+        request_topic: `/appliance/${meross.uuid}/subscribe`, request_payload: `meross:${row.id}:get`,
+        open_payload: `meross:${row.id}:open`, close_payload: `meross:${row.id}:close`,
+        state_path: 'open', timestamp_path: 'timestamp' } };
+    }
     const id = signal(row.id, undefined), label = text(row.label, id.replaceAll('_', ' '));
     const area = row.area ?? 'home', kind = row.kind ?? 'switch', enabled = bool(row.enabled, true);
     if (!['home', 'garage'].includes(area) || !KINDS.includes(kind)) throw new Error('Invalid equipment area or kind');
@@ -142,7 +158,7 @@ export function equipmentConfiguration(input = {}) {
       if (value !== null && (typeof value !== 'string' || value.length > 4096 || value.includes('\u0000'))) throw new Error('Equipment MQTT payload mappings must be bounded strings');
     if (mqtt.heartbeatTopic && !mqtt.heartbeatMs) throw new Error('An equipment heartbeat requires a positive heartbeat interval');
     if (mqtt.requestTopic && mqtt.requestPayload === null) throw new Error('A read-only request requires an explicit payload');
-    if (mqtt.requestTopic && mqtt.requestTopic === mqtt.commandTopic) throw new Error('Read-only requests must use a separate topic from switch commands');
+    if (!meross && mqtt.requestTopic && mqtt.requestTopic === mqtt.commandTopic) throw new Error('Read-only requests must use a separate topic from switch commands');
     if (protocol === 'mqtt' && (controlsSwitch || controlsHeat) && (!mqtt.commandTopic || !nonempty(mqtt.onPayload) || !nonempty(mqtt.offPayload) || mqtt.onPayload === mqtt.offPayload))
       throw new Error('Controllable MQTT equipment needs explicit command topic and distinct ON/OFF payloads');
     const coverPayloads = [mqtt.openPayload, mqtt.closePayload, ...(mqtt.stopPayload === null ? [] : [mqtt.stopPayload])];
@@ -181,7 +197,7 @@ export function equipmentConfiguration(input = {}) {
       if (mqtt.requestTopic && [...readTopics, mqtt.availabilityTopic, mqtt.heartbeatTopic].includes(mqtt.requestTopic))
         throw new Error('Read-only requests must use a separate topic from readings, availability and heartbeat');
       if (mqtt.commandTopic && readTopics.includes(mqtt.commandTopic)) throw new Error('Switch commands require a separate topic from state confirmation');
-      if (mqtt.commandTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.requestTopic].includes(mqtt.commandTopic))
+      if (!meross && mqtt.commandTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.requestTopic].includes(mqtt.commandTopic))
         throw new Error('Device commands must use a separate topic from availability and heartbeat');
       if ([mqtt.availabilityTopic, mqtt.bridgeAvailabilityTopic, mqtt.heartbeatTopic].some(topic => topic && readTopics.includes(topic))) throw new Error('Availability and heartbeat must use separate topics from equipment readings');
       if (mqtt.bridgeAvailabilityTopic && [mqtt.availabilityTopic, mqtt.heartbeatTopic, mqtt.commandTopic, mqtt.requestTopic].includes(mqtt.bridgeAvailabilityTopic))
@@ -198,8 +214,8 @@ export function equipmentConfiguration(input = {}) {
       mapping.required = true;
     }
     const ownedSignals = [...new Set([...defaultSignals, ...readings.map(value => value.signal)])];
-    return { id, role: id, label, area, kind, enabled, connection, protocol, manufacturer,
-      source: manufacturer ?? (protocol === 'shelly' ? 'Shelly' : 'MQTT'), temperatureControl,
+    return { id, role: id, label, area, kind, enabled, connection, protocol, manufacturer, ...(meross ? { meross } : {}),
+      source: manufacturer ?? (meross ? 'Meross' : protocol === 'shelly' ? 'Shelly' : 'MQTT'), temperatureControl,
       prefix: protocol === 'shelly' ? address : null, topic: protocol === 'mqtt' ? address : null,
       generation, switchId, temperatureId, controlsSwitch, controlsHeat, controlsCover, controlsDehumidifier, reductionOn, maxAgeMs: age, record,
       stateSignal, powerSignal, temperatureSignal, hasTemperature, metered, readings, mqtt, ownedSignals };
@@ -217,6 +233,11 @@ export function equipmentConfiguration(input = {}) {
     if (device.protocol === 'shelly' && other.protocol === 'shelly'
       && (device.prefix === other.prefix || device.prefix.startsWith(`${other.prefix}/`) || other.prefix.startsWith(`${device.prefix}/`)))
       throw new Error('Native equipment prefixes must be distinct and non-overlapping');
+    if (device.meross && other.meross && device.meross.uuid === other.meross.uuid) {
+      if (device.meross.channel === other.meross.channel || device.meross.key !== other.meross.key)
+        throw new Error('Meross channels must be distinct and use the same device key');
+      continue;
+    }
     const topics = row => row.protocol === 'mqtt' ? [row.topic, ...row.readings.map(value => value.topic).filter(Boolean)] : [];
     if (topics(device).some(topic => topics(other).includes(topic))) throw new Error('Enabled MQTT equipment cannot share a state topic');
     if ([device, other].some((row, i) => row.mqtt.requestTopic && [...topics([device, other][1 - i]),

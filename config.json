@@ -749,6 +749,11 @@
           },
           "max_age_seconds": "int(0,86400)?",
           "record": "bool?",
+          "meross": {
+            "uuid": "str?",
+            "key": "password?",
+            "channel": "int(1,3)?"
+          },
           "mqtt": {
             "command_topic": "str?",
             "on_payload": "str?",
@@ -816,7 +821,8 @@
       "vip_address": "str?",
       "vip_prefix": "int(1,30)",
       "vip_helper": "str",
-      "vip_socket": "str?"
+      "vip_socket": "str?",
+      "mqtt_tls_port": "int(0,65535)?"
     },
     "mirror": {
       "role": "list(master|slave)",

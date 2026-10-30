@@ -137,3 +137,23 @@ test('stop cancels a pending listener startup and a later explicit start is clea
   await proxy.stop();
   assert.equal(proxy.status().connections, 0);
 });
+
+test('optional TLS listener forwards opaque bytes and fences both listeners together', async t => {
+  const plain = await broker(t), tls = await broker(t);
+  const f = new MqttFrontend({ connection: { address: `mqtt://127.0.0.1:${plain.port}` },
+    vip: { address: '127.0.0.2', interface: 'synthetic', tlsUpstreamPort: tls.port } }, {
+    port: 0, interfaces: () => ({ synthetic: [{ address: '127.0.0.3', internal: false }] }) });
+  // Use an ephemeral fixture port rather than the installation's 8883.
+  f.tlsFrontend.port = 0;
+  t.after(() => f.stop());
+  await f.prepare(); await f.start();
+  assert.equal(f.status().tls.ready, true);
+  assert.equal(f.handoverRequirements().tls.protocol, 'mqtts:');
+  const a = await client(t, '127.0.0.2', f.server.address().port);
+  const b = await client(t, '127.0.0.2', f.tlsFrontend.server.address().port);
+  await echo(a); await echo(b, Buffer.from([0x16, 0x03, 0x03, 0x00, 0x01]));
+  await f.stop();
+  await until(() => a.destroyed && b.destroyed);
+  assert.equal(f.status().ready, false);
+  assert.equal(f.status().tls.ready, false);
+});

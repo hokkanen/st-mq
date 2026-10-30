@@ -51,6 +51,8 @@ dehumidifier bridge. See [MQTT routing](configuration.md#primary-mqtt-and-ha-hos
 Configure equivalent MQTT users, permissions and required listeners on both
 brokers. The master owns a TCP frontend at `VIP:1883` and closes its accepted
 connections before releasing the VIP, forcing those clients to reconnect.
+An optional `pair.mqtt_tls_port` also fronts the local TLS listener at
+`VIP:8883`; see [Meross installation](meross-msg200.md#shared-broker-endpoint).
 Fixed HA connections remain open. This does not transfer retained messages,
 broker sessions or queued MQTT messages. Fresh measurements must be reacquired after takeover. ST-MQ's database
 copy is separate from the broker's data and cannot provide a lossless MQTT

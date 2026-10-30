@@ -40,6 +40,7 @@ export function pairConfiguration(input = {}, env = {}, config = {}) {
     timeoutMs: number(env.STMQ_PAIR_TIMEOUT_SECONDS ?? input.timeout_seconds, 3600, 30, 86400, 'timeout_seconds') * 1000,
     staleAfterMs: number(env.STMQ_PAIR_STALE_SECONDS ?? input.stale_seconds, 180, 30, 604800, 'stale_seconds') * 1000,
     vip: {
+      tlsUpstreamPort: number(input.mqtt_tls_port, 0, 0, 65535, 'mqtt_tls_port'),
       interface: text(env.STMQ_PAIR_VIP_INTERFACE ?? input.vip_interface ?? '', 'vip_interface'),
       address: text(env.STMQ_PAIR_VIP_ADDRESS ?? input.vip_address ?? '', 'vip_address'),
       prefixLength: number(env.STMQ_PAIR_VIP_PREFIX ?? input.vip_prefix, 24, 1, 30, 'vip_prefix'),

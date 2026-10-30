@@ -33,7 +33,7 @@ const effectiveFields = [
     peer_url: 'peerUrl', listen_host: 'listenHost', port: 'port' }).map(([field, key]) => [`pair.${field}`, c => c.pair?.[key]]),
   ...['mirror', 'pair'].flatMap(section => Object.entries({ interval_seconds: 'intervalMs', timeout_seconds: 'timeoutMs', stale_seconds: 'staleAfterMs' })
     .map(([field, key]) => [`${section}.${field}`, c => c[section]?.[key] === undefined ? undefined : c[section][key] / 1000])),
-  ...Object.entries({ vip_interface: 'interface', vip_address: 'address', vip_prefix: 'prefixLength', vip_helper: 'helperPath', vip_socket: 'socketPath' })
+  ...Object.entries({ vip_interface: 'interface', vip_address: 'address', vip_prefix: 'prefixLength', vip_helper: 'helperPath', vip_socket: 'socketPath', mqtt_tls_port: 'tlsUpstreamPort' })
     .map(([field, key]) => [`pair.${field}`, c => c.pair?.vip?.[key]]),
   ['runtime.mirror.sourceDirectory', c => c.mirror?.sourceDirectory],
   ...['host', 'port', 'ingressHost', 'ingressPort', 'dataDir', 'databaseDir', 'dbPath', 'addon'].map(key => [`runtime.${key}`, c => c[key]]),

@@ -1,6 +1,6 @@
 // These integrations are hosted by Home Assistant in the supported installation
 // contract. Direct hardware and all other MQTT measurements stay on primary.
-export const haBackedEquipment = device => device.protocol === 'mqtt'
+export const haBackedEquipment = device => device.protocol === 'mqtt' && !device.meross
   && (device.area === 'garage' && device.kind === 'door' || device.kind === 'dehumidifier');
 
 export function mqttRouting(config) {

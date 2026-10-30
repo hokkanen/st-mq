@@ -18,6 +18,9 @@ file shown by **Data & settings → Connections & configuration → Configuratio
 Device topics do not need to be repeated in that file. A private `equipment.devices` override replaces
 the complete public list; arrays are not merged by device ID.
 
+Native [Meross MSG200 doors](meross-msg200.md) use an explicit `meross` mapping
+on their MQTT entry and the primary broker, independently of Home Assistant.
+
 ## Device entries
 
 ```json

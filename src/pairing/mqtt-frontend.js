@@ -21,6 +21,13 @@ export class MqttFrontend {
     interfaces = networkInterfaces, connect = createConnection, serve = createServer,
     timeoutMs = 3000, maxConnections = 256, highWaterMark = 16 * 1024 } = {}) {
     this.upstream = upstreamAddress(connection);
+    if (vip.tlsUpstreamPort) {
+      const address = new URL(connection.address);
+      address.protocol = 'mqtts:'; address.port = String(vip.tlsUpstreamPort);
+      this.tlsFrontend = new MqttFrontend({ connection: { address: address.href },
+        vip: { ...vip, tlsUpstreamPort: 0 }, onFailure: () => this.fail() },
+      { port: 8883, interfaces, connect, serve, timeoutMs, maxConnections, highWaterMark });
+    }
     this.vip = vip;
     this.port = port;
     this.interfaces = interfaces;
@@ -40,10 +47,14 @@ export class MqttFrontend {
 
   status() {
     const listening = this.accepting && this.server?.listening === true;
-    return { listening, ready: listening && !this.error, connections: this.connections.size, error: this.error };
+    const tls = this.tlsFrontend?.status();
+    return { listening, ready: listening && !this.error && (!tls || tls.ready),
+      connections: this.connections.size + (tls?.connections ?? 0), error: this.error ?? tls?.error ?? null,
+      ...(tls ? { tls } : {}) };
   }
 
-  handoverRequirements() { return { version: 1, protocol: this.upstream.protocol, port: this.port }; }
+  handoverRequirements() { return { version: 1, protocol: this.upstream.protocol, port: this.port,
+    ...(this.tlsFrontend ? { tls: this.tlsFrontend.handoverRequirements() } : {}) }; }
 
   async checkUpstream() {
     await new Promise((resolve, reject) => {
@@ -71,6 +82,7 @@ export class MqttFrontend {
     const generation = this.generation;
     try {
       await this.checkUpstream();
+      await this.tlsFrontend?.prepare();
       if (generation !== this.generation) throw pairError('stopped');
       if (this.server?.listening) return;
       const host = this.interfaces()[this.vip.interface]?.find(value => isIPv4(value.address)
@@ -108,7 +120,10 @@ export class MqttFrontend {
   start() {
     if (this.accepting && this.server?.listening) return Promise.resolve();
     if (this.starting) return this.starting;
-    const starting = this.starting = this.open();
+    const starting = this.starting = this.open().then(async () => {
+      if (!this.accepting) throw pairError('stopped');
+      await this.tlsFrontend?.start();
+    }).catch(async error => { await this.stop(); throw error; });
     return starting.finally(() => { if (this.starting === starting) this.starting = null; });
   }
 
@@ -196,6 +211,7 @@ export class MqttFrontend {
     const server = this.server;
     this.server = null;
     const closing = [];
+    if (this.tlsFrontend) closing.push(this.tlsFrontend.stop());
     if (server) closing.push(new Promise(resolve => server.close(() => resolve())));
     this.listenAbort?.abort();
     this.listenAbort = null;

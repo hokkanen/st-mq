@@ -1,0 +1,69 @@
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+
+export const MEROSS_STATE = 'Appliance.GarageDoor.State';
+const digest = (id, key, timestamp) => createHash('md5').update(`${id}${key}${timestamp}`).digest('hex');
+export function merossMessage(key, from, method, payload, now = Date.now()) {
+  const messageId = randomBytes(16).toString('hex'), timestamp = Math.floor(now / 1000);
+  return { header: { messageId, namespace: MEROSS_STATE, method, payloadVersion: 1,
+    from, timestamp, timestampMs: 0, sign: digest(messageId, key, timestamp) }, payload };
+}
+// Meross signatures authenticate the header, not the payload. Broker ACLs and a
+// trusted LAN remain required. Never treat SETACK as contact evidence.
+export function validMerossMessage(message, key) {
+  const h = message?.header;
+  if (!h || !/^[a-f0-9]{32}$/.test(h.messageId) || !Number.isSafeInteger(h.timestamp)
+    || !/^[a-f0-9]{32}$/.test(h.sign)) return false;
+  return timingSafeEqual(Buffer.from(h.sign), Buffer.from(digest(h.messageId, key, h.timestamp)));
+}
+
+export function createMerossProtocol({ devices, clock }) {
+  const replyTopic = `/app/stmq-${randomBytes(16).toString('hex')}/subscribe`;
+  const pending = new Map(), seen = new Map();
+  const parse = body => { try { return JSON.parse(String(body)); } catch { return null; } };
+  const rows = devices.filter(d => d.meross);
+  const find = (topic, body) => rows.find(d => d.mqtt.commandTopic === topic
+    && [d.mqtt.openPayload, d.mqtt.closePayload, d.mqtt.requestPayload].includes(String(body)));
+  const prune = () => {
+    for (const [id, entry] of pending) if (clock() - entry.at > 10_000) pending.delete(id);
+    for (const [id, at] of seen) if (clock() - at > 120_000) seen.delete(id);
+    while (seen.size > 512) seen.delete(seen.keys().next().value);
+  };
+  return {
+    replyTopic,
+    reset() { pending.clear(); seen.clear(); },
+    encode(topic, body) {
+      const d = find(topic, body); if (!d) return body;
+      prune();
+      const query = body === d.mqtt.requestPayload;
+      const message = merossMessage(d.meross.key, replyTopic, query ? 'GET' : 'SET',
+        { state: query ? [{ channel: d.meross.channel }] : { channel: d.meross.channel, open: Number(body === d.mqtt.openPayload) } }, clock());
+      if (query) {
+        // One outstanding query per channel; bounded even if the device is gone.
+        for (const [id, entry] of pending) if (entry.device === d.id) pending.delete(id);
+        pending.set(message.header.messageId, { device: d.id, at: clock() });
+      }
+      return JSON.stringify(message);
+    },
+    classify(topic, body, method) {
+      const m = parse(body);
+      return rows.some(d => topic === d.mqtt.commandTopic && validMerossMessage(m, d.meross.key)
+        && m.header.from === replyTopic && m.header.namespace === MEROSS_STATE && m.header.method === method);
+    },
+    decode(d, topic, body, packet, receivedAt) {
+      if (packet.retain || ![d.topic, replyTopic].includes(topic) || Buffer.byteLength(String(body)) > 65536) return null;
+      const m = parse(body), h = m?.header;
+      if (!validMerossMessage(m, d.meross.key) || h.namespace !== MEROSS_STATE
+        || !['GETACK', 'PUSH'].includes(h.method) || h.from !== `/appliance/${d.meross.uuid}/publish`
+        || receivedAt < h.timestamp * 1000 || receivedAt - h.timestamp * 1000 > 10_000) return null;
+      prune();
+      if (h.method === 'GETACK' && pending.get(h.messageId)?.device !== d.id) return null;
+      const seenKey = `${d.id}:${h.messageId}`;
+      if (seen.has(seenKey)) return null;
+      const state = Array.isArray(m.payload?.state) ? m.payload.state : [m.payload?.state];
+      const s = state.find(s => s?.channel === d.meross.channel);
+      if (!s || ![0, 1].includes(s.open) || s.execute) return null;
+      seen.set(seenKey, receivedAt); pending.delete(h.messageId);
+      return JSON.stringify({ open: s.open, timestamp: h.timestamp * 1000 });
+    },
+  };
+}

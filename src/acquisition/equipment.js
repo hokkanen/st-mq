@@ -1,3 +1,4 @@
+import { createMerossProtocol } from './meross.js';
 import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
 import { createDoorRecording } from './equipment-door-recording.js';
@@ -49,11 +50,13 @@ const validDehumidifierIdentity = identity => typeof identity === 'string' && /^
 
 /** Explicit per-device protocol and broker routing, independent capabilities.
  * Event-only contacts preserve last-reported values without inventing heartbeats. */
-export function createEquipmentCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000,
+export function createEquipmentCapture({ engine, store, settings, publish: transportPublish, canControl = () => true, readbackTimeoutMs = 10_000,
   temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
   temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, brokerForDevice = () => 'primary', brokerIdentityForDevice = () => brokerIdentity,
   refreshSubscriptions = null, topicGroups = [], monotonicClock = () => performance.now() }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
+  const meross = createMerossProtocol({ devices: enabled, clock: () => engine.clock() });
+  const publish = (topic, payload, options, broker) => transportPublish(topic, meross.encode(topic, payload), options, broker);
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity,
     onSourceTimeChanged: confirmCaravanSources }) : null;
@@ -138,7 +141,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const identity = device => canonicalTemperature(device) ? { source: 'mqtt-temperature', device: device.temperatureSignal } : { source: 'mqtt-equipment', device: device.id };
   const age = device => INDOOR_SIGNALS.includes(device.temperatureSignal) && canonicalTemperature(device)
     ? temperatureReportIntervalMs + temperatureReportGraceMs : device.maxAgeMs;
-  const readTopics = device => [...new Set([device.topic, ...device.mappings.map(row => row.topic),
+  const readTopics = device => [...new Set([device.topic, ...(device.meross ? [meross.replyTopic] : []), ...device.mappings.map(row => row.topic),
     device.mqtt.availabilityTopic, device.mqtt.bridgeAvailabilityTopic, device.mqtt.heartbeatTopic].filter(Boolean))];
   const recheckMethod = device => device.mqtt.requestTopic ? 'request' : 'subscription';
   const topicDetails = device => [
@@ -1263,12 +1266,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       return devices.some(device => device.broker === broker && readTopics(device).includes(topic)) ? JSON.stringify(['equipment-mqtt', topic]) : null;
     },
     isReadRequest(topic, payload, broker) {
-      return broker === 'primary' && native?.isReadRequest(topic, payload)
+      return broker === 'primary' && meross.classify(topic, payload, 'GET') || broker === 'primary' && native?.isReadRequest(topic, payload)
         || devices.some(device => device.broker === broker && topic === device.mqtt.requestTopic
           && String(payload) === device.mqtt.requestPayload);
     },
     isDoorCommand(topic, payload, broker) {
-      return devices.some(device => device.kind === 'door' && device.controlsCover && device.broker === broker
+      return broker === 'primary' && meross.classify(topic, payload, 'SET') || devices.some(device => device.kind === 'door' && device.controlsCover && device.broker === broker
         && topic === device.mqtt.commandTopic && ['openPayload', 'closePayload', 'stopPayload']
           .some(field => device.mqtt[field] && String(payload) === device.mqtt[field]));
     },
@@ -1281,6 +1284,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     recordedTopicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
       ...devices.filter(device => device.kind !== 'door' && device.broker === broker).flatMap(readTopics)])]; },
     setConnected(value, broker = null, group = 'all') {
+      if (!value && (broker === null || broker === 'primary') && group !== 'recorded') meross.reset();
       const selected = device => group === 'all' || (device.kind === 'door') === (group === 'doors');
       (group === 'doors' ? doorPendingTime : pendingTime).clear();
       if (group === 'all') doorPendingTime.clear();
@@ -1345,17 +1349,19 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const selected = devices.filter(device => device.kind === 'door' && device.brokerConnected
         && (broker === null || device.broker === broker) && readTopics(device).includes(topic));
       if (!selected.length) return false;
-      const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
-      if (Buffer.byteLength(body) > 65536) return true;
-      const input = parse(body);
+      const rawBody = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
+      if (Buffer.byteLength(rawBody) > 65536) return true;
       for (const device of selected) {
+        const body = device.meross ? meross.decode(device, topic, rawBody, packet, receivedAt) : rawBody;
+        if (body === null) continue;
+        const input = parse(body);
         const at = sourceTime(device.mqtt.timestampPath ? property(input, device.mqtt.timestampPath) : input?.timestamp);
         const timing = classifySourceTime({ sourceTime: at, receivedAt, now: receivedAt });
         if (!doorAdmission.admit(`${device.id}:${topic}`, body, packet, receivedAt,
           { timestamped: ['ready', 'pending'].includes(timing.status) })) continue;
         if (!packet.retain && (timing.status === 'pending' || timing.status === 'ready' && pendingFor(device))) {
           doorPendingTime.defer(++pendingSequence, { device, topic, body, packet, receivedMonotonicAt }, { sourceTime: at, receivedAt });
-        } else receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt);
+        } else receiveDevice(device, device.meross ? device.topic : topic, body, packet, receivedAt, receivedMonotonicAt);
       }
       return true;
     },
@@ -1398,6 +1404,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     },
     tickDoors(now = engine.clock()) {
       if (closed) return;
+      for (const device of devices.filter(d => d.meross && d.brokerConnected && d.subscriptionStatus === 'subscribed')) {
+        if (now - (device.merossPollAt ?? -Infinity) >= settings.pollIntervalMs) {
+          device.merossPollAt = now;
+          if (!device.check?.checking) void api.recheck({ deviceId: device.id }).catch(() => {});
+        }
+      }
       doorPendingTime.drain(now);
       doorRecording.flush();
       for (const device of devices.filter(row => row.kind === 'door')) {
