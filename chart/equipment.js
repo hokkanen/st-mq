@@ -492,8 +492,8 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     mqttStatus: { broker, brokerConnected: health.connected },
     connectionState: !health.connected ? { label: 'Disconnected', state: 'attention' }
       : health.ready ? { label: 'Connected', state: 'available' } : { label: 'Awaiting subscriptions', state: 'pending' },
-    connectionDetail: broker === 'ha' ? 'TeslaMate, BMW CarData, garage doors and the Tuya bridge use this connection.'
-      : 'Direct devices use this connection. HA services also use it when no separate HA broker is configured.',
+    connectionDetail: broker === 'ha' ? 'HA-hosted vehicle and appliance feeds use this connection.'
+      : 'Local MQTT devices use this connection. HA-hosted feeds also use it when no separate HA broker is configured.',
   });
   const charger = shellyChargerConnection(status);
   if (charger) rows.push(charger);

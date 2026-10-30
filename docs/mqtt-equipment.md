@@ -19,7 +19,7 @@ Device topics do not need to be repeated in that file. A private `equipment.devi
 the complete public list; arrays are not merged by device ID.
 
 Native [Meross MSG200 doors](meross-msg200.md) use an explicit `meross` mapping
-on their MQTT entry and the primary broker, independently of Home Assistant.
+on their MQTT entry and the primary broker.
 
 ## Device entries
 
@@ -189,8 +189,7 @@ When availability is configured, a live online message is required alongside liv
 readings; retained online alone cannot restore the device. Bridges can additionally
 use `mqtt.bridge_availability_topic` with `online` / `offline` payloads to invalidate
 their child devices on a bridge outage and request recovery after a live online
-message. See [Home Assistant publishers](homeassistant-mqtt.md) for a change-driven
-example without a timer or heartbeat.
+message.
 An optional read-only request requires its own explicitly configured topic and
 payload. ST-MQ never guesses that publishing to a sensor topic will request status.
 For a publisher that actually implements a read request, configure its documented
@@ -220,26 +219,11 @@ report after reconnection or restart. Choose a positive maximum age only after
 verifying genuine periodic reports. Plain power is a measurement, never implicit
 ON/OFF confirmation.
 
-Door feeds can report only changes. For those, the default maximum age is zero:
-confirmed state remains usable without an age expiry. Disconnection, unavailable
-sources and failed queries make the current state unknown, while preserving the
-last reported value and time as context. A retained value is historical context,
-not proof that the door is currently closed. Invalid payloads show unknown state.
-For JSON snapshots from a bridge, configure `mqtt.timestamp_path` to preserve the
-source state's timestamp. A missing or invalid configured timestamp invalidates
-the reading instead of substituting the bridge's publication time. A live response
-can restore an event-only last-known state without establishing a new physical
-measurement. Bridge availability and sensor availability remain separate evidence.
-
-Controllable MQTT doors require `cover_control: true`, a separate
-`mqtt.command_topic`, distinct `mqtt.open_payload` / `mqtt.close_payload`, and
-optionally `mqtt.stop_payload` for an actual supported Stop action. The default
-HA doors use `open` / `closed` on `stmq/garage/doorN/command/cover`, with
-`mqtt.cover_state_path: "cover_state"` for movement and terminal-state reports.
-Their cards expose Open and Close; Stop appears only when explicitly configured.
-Commands are non-retained QoS 1 requests and are not replayed after failure.
-The UI distinguishes sending, sent and subsequently reported state; it never
-changes the contact value optimistically. See [HA setup and SmartThings fields](homeassistant-mqtt.md).
+Native Meross door controls are configured through the device UUID, key and
+channel mapping described in [Meross MSG200](meross-msg200.md). Open and Close
+require an explicitly enabled `cover_control` permission and usable live evidence.
+Commands are non-retained requests, without application replay. The interface
+distinguishes sending, sent and subsequently reported contact state.
 
 The Garage facade uses the shared `garage.door_travel_seconds` setting for linear
 opening and closing motion of both doors (18 seconds by default). This duration

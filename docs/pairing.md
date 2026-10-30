@@ -52,7 +52,7 @@ Configure equivalent MQTT users, permissions and required listeners on both
 brokers. The master owns a TCP frontend at `VIP:1883` and closes its accepted
 connections before releasing the VIP, forcing those clients to reconnect.
 An optional `pair.mqtt_tls_port` also fronts the local TLS listener at
-`VIP:8883`; see [Meross installation](meross-msg200.md#shared-broker-endpoint).
+`VIP:8883`; see [Mosquitto listeners](mosquitto-meross.md#tls-certificate-and-listeners).
 Fixed HA connections remain open. This does not transfer retained messages,
 broker sessions or queued MQTT messages. Fresh measurements must be reacquired after takeover. ST-MQ's database
 copy is separate from the broker's data and cannot provide a lossless MQTT
@@ -514,10 +514,11 @@ snapshot older than the last master write. A snapshot that was recently
 received can also contain older history; the panel shows its source time.
 
 Moving the broker address does not restart applications on the failed computer.
-If Home Assistant and TeslaMate ran there, BMW/Tesla vehicle feeds and HA door
-publishers remain unavailable. Charging retains manual inputs and, for the same
+If Home Assistant and TeslaMate ran there, BMW/Tesla vehicle feeds remain unavailable. Charging retains manual inputs and, for the same
 identified connection, its last known charge estimate plus recorded energy.
-Garage door reports become unavailable independently of heating. Garage's saved
+Door availability follows its configured source and fresh contact evidence.
+Native Meross equipment reacquires reports through the active local broker.
+Garage's saved
 Normal/Away target has no application expiry or door-based reduction rule. The
 heat-pump controller continues local regulation from fresh BTHome reports, and
 the protection sender continues its independent pipe model. Local sensor or

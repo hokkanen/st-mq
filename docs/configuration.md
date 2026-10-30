@@ -799,15 +799,14 @@ When `mqtt.ha.address` is configured, these integrations use it automatically:
 | --- | --- |
 | TeslaMate | TeslaMate integration |
 | BMW CarData | BMW CarData vehicle provider |
-| Garage doors | Garage door equipment using MQTT |
 | Tuya bridge | Supported MQTT dehumidifier bridge |
 
 Reports, availability, read-only queries, commands and replies use the same
 selected connection. There are no per-device broker selectors and no guesses
 from a device's display name or topic. Other equipment and generic vehicle MQTT
-feeds remain on primary, including H66, direct Shelly devices, the Garage pump
+feeds remain on primary, including native Meross doors, H66, direct Shelly devices, the Garage pump
 adapter and probe sender. The optional HA garage-air publisher is not part of
-the four routed integration groups; the default garage temperature source is
+these HA-hosted integrations; the default garage temperature source is
 direct Shelly MQTT.
 
 A configured HA connection that is offline never falls back to primary. Its
@@ -817,7 +816,7 @@ messages renew measurement clocks or grant new control authority. Commands are
 not queued for later execution through an unavailable broker.
 
 For an Ubuntu master alongside Home Assistant, this invented sparse override
-keeps primary local and routes the four HA-backed groups to HA's fixed address:
+keeps primary local and routes the HA-hosted groups to HA's fixed address:
 
 ```json
 {
@@ -849,7 +848,7 @@ larger sections without adding another configuration format.
 | Sections, in file order | Settings they own |
 | --- | --- |
 | `controller`, `web`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords; independent HTTPS/HTTP listener wiring, private HTTPS storage and LAN resolver; Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs and optional private Finnish price-forecast acquisition. |
-| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, primary broker access, optional `mqtt.ha` access for the four HA-hosted integrations, and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
+| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, primary broker access, optional `mqtt.ha` access for HA-hosted feeds and bridge equipment, and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
 | `pair`, `mirror` | Pair peer connection, snapshots, manual handover and recovery; mirror role, SSH connection and snapshots. `controller.topology` selects which is used. |

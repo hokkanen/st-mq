@@ -487,7 +487,7 @@ Mosquitto broker app; supply a login allowed by that broker. ST-MQ does not copy
 credentials from Home Assistant's MQTT integration. A separate broker needs its
 own reachable address. `simulated` and `offline` modes need no broker.
 
-The optional [door publishers](docs/homeassistant-mqtt.md), [BMW CarData feed](docs/charging/integrations/bmw.md)
+The optional [BMW CarData feed](docs/charging/integrations/bmw.md)
 and [Caravan dehumidifier bridge](docs/caravan-dehumidifier.md) require Home
 Assistant Core's MQTT integration connected to the same broker. Source entities
 and generated household automations remain private. These bridges are separate

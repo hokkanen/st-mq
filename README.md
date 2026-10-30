@@ -78,7 +78,8 @@ the configuration is valid and the application is restarted. See
 | Charging | [Overview and user guide](docs/charging.md), [policies](docs/charging/policies.md), [architecture](docs/charging/architecture.md), [integration guides](docs/charging.md#supported-equipment-and-capability-differences), [physical development tools](docs/charging/testing.md) |
 | Charts, storage and exports | [Recording and chart exploration](docs/recording.md), [CSV import](docs/csv-import.md), [learning reconstruction](docs/reconstruction-and-versioning.md) |
 | Devices and sensors | [MQTT equipment](docs/mqtt-equipment.md), [temperature sensors](docs/temperature-sensors.md), [H66](docs/h66-mqtt.md), [SmartThings](docs/smartthings-temperature-rule.md) |
-| Home Assistant bridges | [MQTT setup](docs/homeassistant-mqtt.md), [Caravan dehumidifier](docs/caravan-dehumidifier.md) |
+| Garage doors | [Meross MSG200](docs/meross-msg200.md), [Mosquitto setup](docs/mosquitto-meross.md) |
+| Home Assistant feeds | [MQTT setup](docs/homeassistant-mqtt.md), [Caravan dehumidifier](docs/caravan-dehumidifier.md) |
 | Other heating inputs | [Firewood](docs/fireplace.md), [floor preheating](docs/floor-preheat.md) |
 | Replication | [Read-only mirror](docs/replication.md), [manual pair](docs/pairing.md) |
 | Setup and deployment | [Linux setup and updates](docs/linux-deployment.md), [HA updates](docs/ha-deployment.md), [Linux–HA paired deployment](docs/paired-deployment.md) |

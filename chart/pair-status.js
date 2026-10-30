@@ -64,7 +64,7 @@ export function pairIssueHelp(view) {
     vip_failed: 'The virtual IP could not be activated. Check the local network interface, helper service and matching address policy.',
     mqtt_local_required: 'Pair mode needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
     mqtt_resolution_failed: 'The MQTT broker name could not be resolved. Check the configured local broker address; use mqtt://127.0.0.1 when the broker runs directly on this computer.',
-    mqtt_frontend_unavailable: 'The device MQTT listener is unavailable. Reserve port 1883 on the virtual IP for this application: bind the Linux broker to loopback, or publish the Home Assistant broker on a different host port.',
+    mqtt_frontend_unavailable: 'The device MQTT listener is unavailable. Reserve port 1883 and, when enabled, TLS port 8883 on the virtual IP for this application. Bind broker listeners to fixed addresses or publish the HA broker on different host ports.',
     mqtt_upstream_unavailable: 'The local MQTT broker could not be reached. Check its configured address and listener before retrying promotion or handover.',
     mqtt_handover_not_ready: 'The other computer has not confirmed the same device MQTT transport. Run the same current release on both computers and use matching MQTT transport protocols.',
     mqtt_source_context_invalid: 'MQTT source identity could not be confirmed. Run the same current build on both computers, match their equipment configuration and check that their broker routes have not changed. Preserve the saved source binding; do not reset it to bypass this check.',
