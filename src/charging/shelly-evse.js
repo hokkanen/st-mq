@@ -93,7 +93,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
     readinessRevision = 0, verifiedReadinessRevision = null;
   let error = null, meterError = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
-  let profileSupported = false, currentWritable = false, currentControlReady = false;
+  let profileSupported = false, currentControlReady = false;
   let device = null, deviceGeneration = null;
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
   const fieldRevisions = new Map(), fieldGenerations = new Map();
@@ -281,6 +281,21 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       || result.components.some(row => !row || typeof row !== 'object' || !keys.includes(row.key)))
       throw fail('evse-component-mapping-unverified');
     return new Map(result.components.map(row => [row.key, row]));
+  }
+  function componentConfiguration(row, role) {
+    const component = row?.config, attrs = row?.attrs;
+    // Shelly's current API puts ownership/access in attrs. Older XT1 builds
+    // also expose them in config; contradictory metadata never grants control.
+    if (!Number.isSafeInteger(component?.id) || component.id < 0
+      || row.key !== `${TYPES[role].toLowerCase()}:${component.id}`
+      || attrs?.owner !== `service:${config.serviceId}` || attrs.role !== role
+      || Object.hasOwn(component, 'owner') && component.owner !== attrs.owner
+      || Object.hasOwn(attrs, 'access') && Object.hasOwn(component, 'access') && attrs.access !== component.access)
+      throw fail('evse-component-mapping-unverified');
+    const access = Object.hasOwn(attrs, 'access') ? attrs.access : component.access;
+    if (typeof access !== 'string' || !/[r*]/.test(access)
+      || role === 'start_charging' && !/[w*]/.test(access)) throw fail('evse-component-mapping-unverified');
+    return { ...component, owner: attrs.owner, access };
   }
   const replySourceClocks = (result, readback) => {
     const components = Array.isArray(result?.components) ? result.components : [];
@@ -831,11 +846,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         deviceGeneration = epoch;
         componentRoles = new Map();
         for (const [role, type] of Object.entries(TYPES)) {
-          const component = role === 'current_limit' ? currentConfig : await rpc(`${type}.GetConfig`, { owner: `service:${config.serviceId}`, role });
+          let component = role === 'current_limit' ? currentConfig : await rpc(`${type}.GetConfig`, { owner: `service:${config.serviceId}`, role });
+          if (Number.isSafeInteger(component?.id) && component.id >= 0
+            && !Object.hasOwn(component, 'owner') && !Object.hasOwn(component, 'access')) {
+            const key = `${type.toLowerCase()}:${component.id}`;
+            const rows = componentRows(await rpc('Shelly.GetComponents', { keys: [key], include: ['config'] }), [key]);
+            component = componentConfiguration(rows.get(key), role);
+          }
           if (!Number.isSafeInteger(component?.id) || component.id < 0 || component.owner !== `service:${config.serviceId}`
-            || typeof component.access !== 'string' || !/[rw*]/.test(component.access)
+            || typeof component.access !== 'string' || !/[r*]/.test(component.access)
             || role === 'start_charging' && !/[w*]/.test(component.access)) throw fail('evse-component-mapping-unverified');
-          if (role === 'current_limit') currentWritable = /[w*]/.test(component.access);
+          if (role === 'current_limit') currentConfig = component;
           if (role === 'work_state') profileSupported = supportedShellyStates(component);
           componentRoles.set(`${type.toLowerCase()}:${component.id}`, role);
         }
@@ -854,7 +875,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         // Native limits and flags remain authoritative and may change in the app.
         const reads = await Promise.allSettled([controlComponents.then(rows => rows.get(`service:${config.serviceId}`).config),
           controlComponents.then(rows => rows.get(`service:${config.serviceId}`).status), rpc('Schedule.List'),
-          controlComponents.then(rows => rows.get(componentKey('current_limit')).config)].map(checked));
+          controlComponents.then(rows => componentConfiguration(rows.get(componentKey('current_limit')), 'current_limit')),
+          controlComponents.then(rows => componentConfiguration(rows.get(componentKey('start_charging')), 'start_charging'))].map(checked));
         if (epoch !== generation) return;
         const failed = reads.find(result => result.status === 'rejected');
         if (failed) throw failed.reason;
@@ -869,7 +891,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         // Healthy polling keeps existing readiness. Recovery cannot reopen the
         // command gate using cached settings before all native reads complete.
         controlReady = controlReady && eligible;
-        const writableRange = currentWritable && /[w*]/.test(currentConfig?.access ?? '')
+        const writableRange = /[w*]/.test(currentConfig?.access ?? '')
           && componentRoles.get(`number:${currentConfig?.id}`) === 'current_limit' && currentConfig.owner === `service:${config.serviceId}`
           && currentConfig?.min === config.minimumCurrentA
           && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA

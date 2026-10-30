@@ -10,7 +10,7 @@ const DEVICE = 'synthetic-readiness-evse';
 const PREFIX = 'test/readiness-evse';
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
 
-function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } = {}) {
+function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW, metadataInAttributes = false } = {}) {
   let now = initialNow, clockStep = 0;
   const client = new EventEmitter(), calls = [], measuredAt = {}, commandSources = {};
   const info = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
@@ -24,6 +24,11 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
       options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] },
     phase_info: { id: 203, owner: 'service:0', access: 'cr' },
   };
+  const attributes = {};
+  if (metadataInAttributes) for (const [role, component] of Object.entries(components)) {
+    attributes[role] = { owner: component.owner, access: component.access };
+    delete component.owner; delete component.access;
+  }
   const fields = { current_limit: 16, start_charging: true, work_state: 'charger_charging',
     phase_info: { total_power: 8.28, total_act_energy: 4,
       phase_a: { voltage: 230, current: 12, power: 2.76 },
@@ -37,7 +42,7 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
     calls.push({ ...frame, topic, options });
     let result;
     if (frame.method === 'Shelly.GetDeviceInfo') result = info;
-    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status });
+    else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status, attributes });
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
@@ -62,8 +67,8 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
     engine: { recorder: { recordEnergy() {}, energyGap() {} }, voltage: { ingest() {} } },
   });
   t.after(() => adapter.close());
-  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt, commandSources, saved, now: () => now,
-    componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components,
+  return { adapter, client, info, service, serviceStatus, schedules, components, attributes, fields, calls, measuredAt, commandSources, saved, now: () => now,
+    componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components, attributes,
       status: role => Object.hasOwn(overrides, role) ? overrides[role] : status(role) }); },
     setClockStep(value) { clockStep = value; },
     advance(milliseconds) { now += milliseconds; },
@@ -88,6 +93,91 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
     },
   };
 }
+
+test('both Shelly metadata layouts commission observations and current/Start control without changing source clocks', async t => {
+  for (const metadataInAttributes of [false, true]) await t.test(metadataInAttributes ? 'attributes' : 'configuration', async t => {
+    const f = fixture(t, { limiterEnabled: true }, { metadataInAttributes });
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    await f.ready();
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    assert.equal(f.adapter.normalize().connected.value, true);
+    const at = f.adapter.snapshot().fields.phase_info.measuredAt;
+    f.measuredAt.phase_info = at;
+    f.advance(1000);
+    await f.command('current_limit', 10);
+    await f.refresh();
+    assert.equal(f.adapter.snapshot().fields.current_limit.value, 10);
+    f.advance(1000);
+    await f.command('start_charging', false);
+    await f.refresh();
+    assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+    assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Number.Set', 10], ['Boolean.Set', false]]);
+    assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, at);
+    assert.equal(Object.hasOwn(f.components.current_limit, 'owner'), !metadataInAttributes, 'Wire metadata is not mutated');
+  });
+});
+
+test('attribute discovery rejects missing, conflicting or unrelated component authority', async t => {
+  const cases = [
+    ['missing owner', f => { f.attributes.current_limit.owner = undefined; }],
+    ['wrong owner', f => { f.attributes.start_charging.owner = 'service:1'; }],
+    ['wrong role', f => { f.attributes.start_charging.role = 'unrelated_permission'; }],
+    ['missing access', f => { delete f.attributes.start_charging.access; }],
+    ['malformed access', f => { f.attributes.start_charging.access = null; }],
+    ['read-only Start', f => { f.attributes.start_charging.access = 'cr'; }],
+    ['unreadable physical component', f => { f.attributes.phase_info.access = 'c'; }],
+    ['conflicting owner', f => { f.components.start_charging.owner = 'service:1'; }],
+    ['conflicting access', f => { f.components.start_charging.owner = 'service:0'; f.components.start_charging.access = 'crw'; f.attributes.start_charging.access = 'cr'; }],
+  ];
+  for (const [name, modify] of cases) await t.test(name, async t => {
+    const f = fixture(t, { limiterEnabled: true }, { metadataInAttributes: true });
+    modify(f); await f.ready();
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    await assert.rejects(f.command('start_charging', true));
+    await assert.rejects(f.command('current_limit', 10));
+    assert.equal(f.mutations().length, 0);
+  });
+});
+
+test('attribute permission changes withdraw current writes or all control without hiding independent physical readings', async t => {
+  const f = fixture(t, { limiterEnabled: true }, { metadataInAttributes: true });
+  await f.ready();
+  f.attributes.current_limit.access = 'cr';
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().currentControlReady, false);
+  await assert.rejects(f.command('current_limit', 10));
+  f.advance(1000);
+  await f.command('start_charging', false);
+  f.attributes.current_limit.access = 'crw';
+  f.attributes.start_charging.access = 'cr';
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.normalize().powerKw.value, 8.28);
+  await assert.rejects(f.command('start_charging', true));
+  f.attributes.start_charging.access = 'crw';
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().currentControlReady, true);
+  await f.command('current_limit', 10);
+});
+
+test('fresh permissions can commission a previously read-only current role in either firmware layout', async t => {
+  for (const metadataInAttributes of [false, true]) await t.test(metadataInAttributes ? 'attributes' : 'configuration', async t => {
+    const f = fixture(t, { limiterEnabled: true }, { metadataInAttributes });
+    const metadata = metadataInAttributes ? f.attributes.current_limit : f.components.current_limit;
+    metadata.access = 'cr';
+    await f.ready();
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    await assert.rejects(f.command('current_limit', 10));
+    metadata.access = 'crw';
+    await f.refresh();
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    await f.command('current_limit', 10);
+    assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Number.Set', 10]]);
+  });
+});
 
 test('correlated current readback keeps a stable 6 A setting usable without rewriting its source clock', async t => {
   const f = fixture(t);

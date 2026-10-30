@@ -91,6 +91,14 @@ not establish a firmware cause or cure for the
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
+Discovery supports both the older XT1 configuration metadata and Shelly's
+[documented component attributes](https://shelly-api-docs.shelly.cloud/gen2/changelog/#200-2026-07-13).
+When the typed configuration omits both `owner` and `access`, a bounded keyed
+`Shelly.GetComponents` query verifies the component's type, ID, service owner,
+role and access. Missing, contradictory or mismatched authority rejects discovery.
+Ordinary control reads verify current-setting and Start permissions from the
+same metadata, including later permission withdrawal. Firmware support does not
+reset equipment identity, saved instructions or native evidence clocks.
 After typed-role discovery, each complete read round uses two
 [`Shelly.GetComponents`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Shelly/#shellygetcomponents)
 requests and `Schedule.List`. One component request contains the service,
