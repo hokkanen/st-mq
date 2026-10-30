@@ -104,6 +104,24 @@ test('an explicitly finite door deadline expires by source time despite a new ca
   assert.equal(f.status().readings.garage_door1_open.observedAt, INITIAL);
 });
 
+test('binary doors without an explicit cover-state mapping confirm requests from fresh contact feedback', async t => {
+  const { cover_state_path: ignored, ...mqtt } = door.mqtt;
+  const f = fixture(t, { ...door, mqtt }); f.report(); f.online();
+  assert.equal(f.status().cover.state, 'closed');
+  await f.capture.setCover({ deviceId: door.id, action: 'open' });
+  assert.equal(f.status().cover.operation.status, 'published');
+  f.advance(1000); f.report('open');
+  assert.equal(f.status().cover.state, 'open'); assert.equal(f.status().cover.operation.status, 'observed');
+});
+
+test('a contact alone cannot supply stopped-motion feedback to a configured Stop control', async t => {
+  const { cover_state_path: ignored, ...mqtt } = door.mqtt;
+  const f = fixture(t, { ...door, mqtt: { ...mqtt, stop_payload: 'stop' } }); f.report('open'); f.online();
+  await f.capture.setCover({ deviceId: door.id, action: 'stop' });
+  f.advance(1000); f.report('open');
+  assert.equal(f.status().cover.state, null); assert.equal(f.status().cover.operation.status, 'published');
+});
+
 test('broker acknowledgement and cached/opening contact do not claim observed open; fresh terminal state does', async t => {
   const f = fixture(t); f.report(); f.online(); f.advance(1000);
   const result = await f.capture.setCover({ deviceId: door.id, action: 'open' });

@@ -98,7 +98,7 @@ export function createMerossProtocol({ devices, clock }) {
       const s = matches[0];
       if (!s || ![0, 1].includes(s.open) || s.execute) return null;
       seen.set(seenKey, receivedAt); pending.delete(h.messageId);
-      return JSON.stringify({ open: s.open, cover_state: s.open === 0 ? 'closed' : 'open', timestamp: h.timestamp * 1000 });
+      return JSON.stringify({ open: s.open, timestamp: h.timestamp * 1000 });
     },
   };
 }

@@ -42,6 +42,7 @@ test('Meross config enforces exact native identity, channel, finite age and no g
     assert.throws(() => equipmentConfiguration({ devices: [{ ...door(1), ...patch }] }));
   assert.throws(() => equipmentConfiguration({ devices: [door(1), { ...door(1), id: 'duplicate' }] }));
   const d = equipmentConfiguration({ devices: [door(3)] }).devices[0];
+  assert.equal(d.mqtt.coverStatePath, null, 'Native contact normalization preserves the declared MQTT source mapping');
   assert.equal(mqttRouting({ connections: { mqtt: { address: 'mqtt://local', ha: { address: 'mqtt://ha' } } } }).equipmentBroker(d), 'primary');
 });
 

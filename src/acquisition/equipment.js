@@ -1060,7 +1060,9 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       if (['degC', '°C'].includes(definition.unit) && (!scalar(value) || value < -60 || value > 150)) value = null;
       if (value === null && !definition.required && !device.readings[definition.signal]) continue;
       const coverState = device.kind === 'door' && definition.signal === device.stateSignal
-        ? property(input, mapping.coverStatePath) : null;
+        ? mapping.coverStatePath ? property(input, mapping.coverStatePath)
+          // A binary contact can confirm Open/Close, never stopped motion.
+          : !mapping.stopPayload ? value === 0 ? 'closed' : value === 1 ? 'open' : null : null : null;
       const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : [],
         { timeBasis: value === null ? 'availability-transition' : device.meross ? 'meross-contact'
           : explicitTimestamp === undefined ? 'mqtt-received' : 'source-measured',
