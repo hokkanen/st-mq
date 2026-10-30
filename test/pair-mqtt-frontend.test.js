@@ -158,6 +158,37 @@ test('optional TLS listener forwards opaque bytes and fences both listeners toge
   assert.equal(f.status().tls.ready, false);
 });
 
+test('concurrent starts wait for the TLS listener and share its startup failure', async t => {
+  for (const fails of [false, true]) await t.test(fails ? 'TLS failure' : 'TLS ready', async t => {
+    const upstream = await broker(t);
+    const proxy = new MqttFrontend({ connection: { address: `mqtt://127.0.0.1:${upstream.port}` },
+      vip: { address: '127.0.0.2', interface: 'synthetic', tlsUpstreamPort: upstream.port } }, { port: 0 });
+    proxy.tlsFrontend.port = 0;
+    t.after(() => proxy.stop());
+    const startTls = proxy.tlsFrontend.start.bind(proxy.tlsFrontend);
+    let finishTls, enteredTls;
+    const entered = new Promise(resolve => { enteredTls = resolve; });
+    proxy.tlsFrontend.start = () => { enteredTls(); return new Promise((resolve, reject) => {
+      finishTls = () => fails ? reject(Object.assign(Error('Synthetic TLS failure'), { code: 'mqtt_frontend_unavailable' })) : resolve();
+    }).then(() => startTls()); };
+    const first = proxy.start();
+    await entered;
+    assert.equal(proxy.status().listening, true);
+    assert.equal(proxy.status().ready, false);
+    let secondSettled = false;
+    const second = proxy.start().then(() => { secondSettled = true; }, error => { secondSettled = true; throw error; });
+    // The plain socket is open, but startup still owns the unresolved TLS listener.
+    await new Promise(resolve => setImmediate(resolve));
+    const settledEarly = secondSettled;
+    finishTls();
+    const results = await Promise.allSettled([first, second]);
+    assert.equal(settledEarly, false, 'Every start waits for all configured listeners');
+    assert.deepEqual(results.map(result => result.status), fails ? ['rejected', 'rejected'] : ['fulfilled', 'fulfilled']);
+    assert.equal(proxy.status().ready, !fails);
+    if (fails) assert.equal(proxy.status().listening, false, 'TLS failure fences the plain listener too');
+  });
+});
+
 test('TLS preflight preserves a distinct fixed-address listener and still rejects wildcard conflicts', async t => {
   const upstream = await broker(t);
   const fixed = createServer(socket => socket.destroy());

@@ -119,8 +119,10 @@ export class MqttFrontend {
   }
 
   start() {
-    if (this.accepting && this.server?.listening) return Promise.resolve();
+    // Opening the plain listener is only part of startup when TLS is enabled.
+    // Concurrent callers must share the complete result, including TLS failure.
     if (this.starting) return this.starting;
+    if (this.accepting && this.server?.listening) return Promise.resolve();
     const starting = this.starting = this.open().then(async () => {
       if (!this.accepting) throw pairError('stopped');
       await this.tlsFrontend?.start();
