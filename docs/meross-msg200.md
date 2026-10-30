@@ -58,7 +58,9 @@ Reuse the existing paired VIP and local Mosquitto brokers. Optional
 `pair.mqtt_tls_port` enables a second, opaque TCP frontend at `VIP:8883`, targeting
 the primary broker hostname at that TLS port. Zero (default) disables it. Both
 frontends share role ownership, close connections before VIP release, and require
-matching listener contracts at handover. Certificates and broker authentication
+matching listener contracts at handover. TLS standby preflight probes a separate
+loopback address, permitting an existing fixed-address TLS listener while still
+rejecting a conflicting wildcard listener. Certificates and broker authentication
 belong to Mosquitto, not ST-MQ.
 
 Provision equivalent device credentials and topic ACLs on both brokers, with

@@ -157,3 +157,23 @@ test('optional TLS listener forwards opaque bytes and fences both listeners toge
   assert.equal(f.status().ready, false);
   assert.equal(f.status().tls.ready, false);
 });
+
+test('TLS preflight preserves a distinct fixed-address listener and still rejects wildcard conflicts', async t => {
+  const upstream = await broker(t);
+  const fixed = createServer(socket => socket.destroy());
+  fixed.listen(0, '127.0.0.3'); await once(fixed, 'listening');
+  t.after(() => new Promise(resolve => fixed.close(resolve)));
+  const f = new MqttFrontend({ connection: { address: `mqtt://127.0.0.1:${upstream.port}` },
+    vip: { address: '127.0.0.2', interface: 'synthetic', tlsUpstreamPort: upstream.port } },
+  { port: 0, interfaces: () => ({ synthetic: [{ address: '127.0.0.3', internal: false }] }) });
+  f.tlsFrontend.port = fixed.address().port;
+  t.after(() => f.stop());
+  await f.prepare(); await f.start();
+  assert.equal(f.status().tls.ready, true);
+  await f.stop();
+  const wildcard = createServer(socket => socket.destroy());
+  wildcard.listen(0, '0.0.0.0'); await once(wildcard, 'listening');
+  t.after(() => new Promise(resolve => wildcard.close(resolve)));
+  f.tlsFrontend.port = wildcard.address().port;
+  await assert.rejects(f.prepare(), error => error.code === 'mqtt_frontend_unavailable');
+});

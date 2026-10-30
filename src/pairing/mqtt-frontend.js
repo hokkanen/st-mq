@@ -19,14 +19,15 @@ function upstreamAddress(connection) {
 export class MqttFrontend {
   constructor({ connection, vip, onFailure = () => {} }, { port = MQTT_FRONTEND_PORT,
     interfaces = networkInterfaces, connect = createConnection, serve = createServer,
-    timeoutMs = 3000, maxConnections = 256, highWaterMark = 16 * 1024 } = {}) {
+    timeoutMs = 3000, maxConnections = 256, highWaterMark = 16 * 1024, probeHost = null } = {}) {
+    this.probeHost = probeHost;
     this.upstream = upstreamAddress(connection);
     if (vip.tlsUpstreamPort) {
       const address = new URL(connection.address);
       address.protocol = 'mqtts:'; address.port = String(vip.tlsUpstreamPort);
       this.tlsFrontend = new MqttFrontend({ connection: { address: address.href },
         vip: { ...vip, tlsUpstreamPort: 0 }, onFailure: () => this.fail() },
-      { port: 8883, interfaces, connect, serve, timeoutMs, maxConnections, highWaterMark });
+      { port: 8883, interfaces, connect, serve, timeoutMs, maxConnections, highWaterMark, probeHost: '127.0.0.2' });
     }
     this.vip = vip;
     this.port = port;
@@ -85,7 +86,7 @@ export class MqttFrontend {
       await this.tlsFrontend?.prepare();
       if (generation !== this.generation) throw pairError('stopped');
       if (this.server?.listening) return;
-      const host = this.interfaces()[this.vip.interface]?.find(value => isIPv4(value.address)
+      const host = this.probeHost ?? this.interfaces()[this.vip.interface]?.find(value => isIPv4(value.address)
         && value.address !== this.vip.address && !value.internal)?.address;
       if (!host) throw pairError('mqtt_frontend_unavailable');
       await this.checkListener(host);
