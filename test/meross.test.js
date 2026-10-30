@@ -42,16 +42,17 @@ test('Meross config enforces exact native identity, channel, finite age and no g
   const d = equipmentConfiguration({ devices: [door(3)] }).devices[0];
   assert.equal(mqttRouting({ connections: { mqtt: { address: 'mqtt://local', ha: { address: 'mqtt://ha' } } } }).equipmentBroker(d), 'primary');
 });
-test('signed queries recover both channels independently; commands retain no-replay guards and broker receipts', async t => {
+test('signed queries recover both channels independently; native commands use QoS 0 and transport receipts', async t => {
   const f = fixture(t); await settle();
   assert.equal(f.sent.length, 2);
-  for (const row of f.sent) assert.ok(validMerossMessage(row.body, key));
+  for (const row of f.sent) { assert.ok(validMerossMessage(row.body, key)); assert.equal(row.options.qos, 0); }
   f.reply(1); f.reply(2); await settle();
   assert.ok(f.capture.status().devices.every(d => d.available));
   const receipt = await f.capture.setCover({ deviceId: 'door1', action: 'open' });
   const command = f.sent.at(-1);
   assert.deepEqual(command.body.payload, { state: { channel: 1, open: 1 } });
   assert.equal(command.options.noReplay, true); assert.equal(command.options.retain, false);
+  assert.equal(command.options.qos, 0); assert.equal(receipt.acknowledgement, 'mqtt-write');
   assert.equal(receipt.confirmed, false);
   f.reply(1, 1, { method: 'SETACK', execute: 1 });
   assert.equal(f.capture.status().devices[0].readings.door1_open.value, 0);
@@ -100,7 +101,7 @@ test('native signed messages use the normal MQTT transport and preserve manual-c
   client.emit('message', query.payload.header.from, Buffer.from(JSON.stringify(reply)), {});
   await settle();
   const result = await reader.equipment.setCover({ deviceId: 'door1', action: 'open' });
-  assert.equal(result.acknowledgement, 'mqtt-broker'); assert.equal(result.confirmed, false);
+  assert.equal(result.acknowledgement, 'mqtt-write'); assert.equal(result.confirmed, false);
   const commands = sent.filter(x => x.payload.header.method === 'SET');
   assert.equal(commands.length, 1); assert.equal(commands[0].options.retain, false);
   client.emit('close'); client.emit('connect'); await settle();

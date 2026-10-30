@@ -64,11 +64,14 @@ Device identity, contact timestamps and command outcomes remain separate evidenc
 ## Controls and recovery
 
 Open and Close require the active control role, a subscribed broker connection,
-fresh contact evidence and the configured door permission. Commands are sent once,
-without retention or application replay. A newer request cancels an unsent request;
+fresh contact evidence and the configured door permission. Native traffic uses
+MQTT QoS 0 to avoid stalled delivery windows on firmware that leaves QoS 1
+deliveries unacknowledged. Commands are sent once, without retention or application
+replay. A newer request cancels an unsent request;
 a request whose starting contact changed before transmission is rejected.
 
-The interface distinguishes publication from a subsequently observed contact.
+Publication confirms a transport write, not a broker acknowledgement. The
+interface distinguishes publication from a subsequently observed contact.
 An unconfirmed outcome requires checking current door state before another request.
 The opener retains its native limits and protection.
 

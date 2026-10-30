@@ -31,7 +31,7 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
   const gate = gateMqttPublications(client, { canControl: () => allowed, timeoutMs });
   t.after(async () => { gate.revoke(); await client.endAsync(true); });
   await once(client, 'connect');
-  const publish = (topic = 'invented/switch/set', { signal, beforeWrite, onFirstWrite } = {}) => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos: 1, retain: false, signal, beforeWrite, onFirstWrite }, error => error ? reject(error) : resolve()));
+  const publish = (topic = 'invented/switch/set', { signal, beforeWrite, onFirstWrite, qos = 1 } = {}) => new Promise((resolve, reject) => client.publish(topic, 'ON', { qos, retain: false, signal, beforeWrite, onFirstWrite }, error => error ? reject(error) : resolve()));
   return { client, gate, wire, streams, delayed, store, publish,
     get byteCount() { return bytes; },
     authority: value => { allowed = value; }, acknowledge: value => { acknowledge = value; },
@@ -56,6 +56,20 @@ test('installed MQTT.js: sent but unacknowledged commands are removed before rec
   f.client.reconnect(); await once(f.client, 'connect'); await flush();
   assert.equal(f.wire.length, 1);
   f.acknowledge(true); await f.publish(); assert.equal(f.wire.length, 2, 'fresh same-owner intent remains supported');
+});
+
+test('installed MQTT.js: QoS 0 writes complete without broker acknowledgement and retain byte-write fencing', async t => {
+  const f = await fixture(t);
+  await f.publish('invented/door/set', { qos: 0 });
+  await flush();
+  assert.equal(f.wire.length, 1); assert.equal(f.pendingCount(), 0);
+  f.streams.at(-1).destroy(); await once(f.client, 'close');
+  f.client.reconnect(); await once(f.client, 'connect'); await flush();
+  assert.equal(f.wire.length, 1, 'Reconnect cannot repeat a completed QoS 0 request');
+  f.client.on('packetsend', packet => { if (packet.cmd === 'publish') f.authority(false); });
+  await assert.rejects(f.publish('invented/door/set', { qos: 0 }), /unconfirmed/);
+  assert.equal(f.wire.length, 1, 'Revocation still blocks the first byte at QoS 0');
+  assert.equal(f.pendingCount(), 0);
 });
 
 test('installed MQTT.js: revocation from packetsend is checked before the first byte reaches the stream', async t => {

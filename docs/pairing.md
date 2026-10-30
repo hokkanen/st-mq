@@ -45,7 +45,7 @@ and publishers that require HA keep using its fixed broker endpoint. ST-MQ's
 primary connection uses the broker on its own computer, through loopback, a
 local interface address or the Home Assistant `core-mosquitto` app. ST-MQ
 rejects a remote primary broker or its own virtual IP as primary. Ubuntu can
-also configure `mqtt.ha` for TeslaMate, BMW CarData, garage doors and the Tuya
+also configure `mqtt.ha` for TeslaMate, BMW CarData and the Tuya
 dehumidifier bridge. See [MQTT routing](configuration.md#primary-mqtt-and-ha-hosted-integrations).
 
 Configure equivalent MQTT users, permissions and required listeners on both

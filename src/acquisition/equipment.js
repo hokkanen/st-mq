@@ -56,7 +56,11 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
   refreshSubscriptions = null, topicGroups = [], monotonicClock = () => performance.now() }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
   const meross = createMerossProtocol({ devices: enabled, clock: () => engine.clock() });
-  const publish = (topic, payload, options, broker) => transportPublish(topic, meross.encode(topic, payload), options, broker);
+  const merossTopics = new Set(enabled.filter(device => device.meross).map(device => device.mqtt.commandTopic));
+  // Native firmware does not reliably drain QoS 1 deliveries. A QoS 0 write
+  // completion is transport evidence, distinct from a broker acknowledgement.
+  const publish = (topic, payload, options, broker) => transportPublish(topic, meross.encode(topic, payload),
+    merossTopics.has(topic) ? { ...options, qos: 0 } : options, broker);
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity,
     onSourceTimeChanged: confirmCaravanSources }) : null;
@@ -1545,7 +1549,8 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       // Cancellation reaches the byte-write gate too: an earlier publication
       // may have passed preflight but still be in MQTT's outgoing store.
       previousDispatch?.cancellation.abort();
-      const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock() };
+      const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock(),
+        ...(device.meross ? { acknowledgement: 'mqtt-write' } : {}) };
       device.coverOperation = operation;
       const previous = device.readings[device.stateSignal];
       const startingState = { value: previous?.value, coverState: previous?.coverState };
@@ -1588,7 +1593,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
         if (coverDispatches.get(device) === dispatch) coverDispatches.delete(device);
         cancellation.abort();
       }
-      return { ...operation, deviceId: device.id, acknowledgement: 'mqtt-broker', confirmed: operation.status === 'observed' };
+      return { ...operation, deviceId: device.id, acknowledgement: device.meross ? 'mqtt-write' : 'mqtt-broker', confirmed: operation.status === 'observed' };
     },
     async recheck({ deviceId } = {}) {
       if (deviceId && !enabled.some(row => row.id === deviceId)) throw fail('unknown device');
