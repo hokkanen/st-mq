@@ -7,7 +7,7 @@ shell_command:
 
 automation:
   - id: stmq_preserve_meross_msg200
-    alias: ST-MQ preserve MSG200 channel parsing after updates
+    alias: Preserve MSG200 compatibility after updates
     triggers:
       - trigger: state
         entity_id: update.meross_lan_update

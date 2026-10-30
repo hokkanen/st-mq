@@ -1,13 +1,15 @@
 # Meross MSG200 garage doors
 
 ST-MQ communicates with the MSG200 through the signed Meross MQTT protocol.
-The device connects to the paired MQTT virtual IP on TLS port 8883. The active
-ST-MQ node reads contacts and sends commands through its local primary broker.
+The device connects to a local TLS MQTT broker. In a paired installation, it uses
+the MQTT virtual IP on port 8883. The active ST-MQ node reads contacts and sends
+commands through its local primary broker.
 
 ## Requirements
 
 The installation needs the device UUID, local key, Meross user ID, channel mapping
-and a working TLS broker on each node. Credentials and installation addresses
+and a working TLS broker on each node that can host the device connection.
+Credentials and installation addresses
 belong in private configuration. [Mosquitto setup](mosquitto-meross.md) covers
 broker authentication, certificates, listeners and device binding.
 
