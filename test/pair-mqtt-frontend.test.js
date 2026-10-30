@@ -158,6 +158,68 @@ test('optional TLS listener forwards opaque bytes and fences both listeners toge
   assert.equal(f.status().tls.ready, false);
 });
 
+test('cancelled startup cannot stop a newer explicit startup', async t => {
+  for (const tls of [false, true]) await t.test(tls ? 'TLS' : 'plain', async t => {
+    const upstream = await broker(t);
+    const proxy = new MqttFrontend({ connection: { address: `mqtt://127.0.0.1:${upstream.port}` },
+      vip: { address: '127.0.0.2', interface: 'synthetic', ...(tls ? { tlsUpstreamPort: upstream.port } : {}) } }, { port: 0 });
+    if (tls) proxy.tlsFrontend.port = 0;
+    t.after(() => proxy.stop());
+    const first = proxy.start(), stopped = proxy.stop(), later = proxy.start();
+    const results = await Promise.allSettled([first, stopped, later]);
+    assert.deepEqual(results.map(result => result.status), ['rejected', 'fulfilled', 'fulfilled']);
+    assert.equal(results[0].reason.code, 'stopped');
+    assert.equal(proxy.status().ready, true);
+    await echo(await client(t, '127.0.0.2', proxy.server.address().port));
+  });
+});
+
+test('an old TLS startup completion cannot fence or acknowledge a newer frontend', async t => {
+  for (const fails of [false, true]) await t.test(fails ? 'late failure' : 'late success', async t => {
+    const upstream = await broker(t);
+    const proxy = new MqttFrontend({ connection: { address: `mqtt://127.0.0.1:${upstream.port}` },
+      vip: { address: '127.0.0.2', interface: 'synthetic', tlsUpstreamPort: upstream.port } }, { port: 0 });
+    proxy.tlsFrontend.port = 0;
+    t.after(() => proxy.stop());
+    const startTls = proxy.tlsFrontend.start.bind(proxy.tlsFrontend);
+    let finishOldTls, enteredTls;
+    const entered = new Promise(resolve => { enteredTls = resolve; });
+    proxy.tlsFrontend.start = () => { enteredTls(); return new Promise((resolve, reject) => {
+      finishOldTls = () => fails ? reject(Object.assign(Error('Synthetic old TLS startup failure'), { code: 'stopped' })) : resolve();
+    }); };
+    const first = proxy.start(); await entered;
+    await proxy.stop(); proxy.tlsFrontend.start = startTls;
+    await proxy.start(); assert.equal(proxy.status().ready, true);
+    finishOldTls();
+    await assert.rejects(first, { code: 'stopped' });
+    assert.equal(proxy.status().ready, true);
+    await echo(await client(t, '127.0.0.2', proxy.tlsFrontend.server.address().port));
+  });
+});
+
+test('stale preflight errors cannot replace the health of a newer frontend', async t => {
+  const upstream = await broker(t), proxy = frontend(t, upstream);
+  let rejectProbe;
+  proxy.checkUpstream = () => new Promise((resolve, reject) => { rejectProbe = reject; });
+  const preflight = proxy.prepare();
+  await proxy.start();
+  rejectProbe(Object.assign(Error('Synthetic old probe failure'), { code: 'mqtt_upstream_unavailable' }));
+  await assert.rejects(preflight, { code: 'mqtt_upstream_unavailable' });
+  assert.equal(proxy.status().ready, true);
+  assert.equal(proxy.status().error, null);
+  await echo(await client(t, '127.0.0.2', proxy.server.address().port));
+});
+
+test('late listener errors cannot close a replacement frontend', async t => {
+  const upstream = await broker(t), proxy = frontend(t, upstream);
+  await proxy.start(); const oldServer = proxy.server;
+  await proxy.stop(); await proxy.start();
+  oldServer.emit('error', Error('Synthetic old listener error'));
+  assert.equal(proxy.status().ready, true);
+  assert.equal(proxy.status().error, null);
+  await echo(await client(t, '127.0.0.2', proxy.server.address().port));
+});
+
 test('concurrent starts wait for the TLS listener and share its startup failure', async t => {
   for (const fails of [false, true]) await t.test(fails ? 'TLS failure' : 'TLS ready', async t => {
     const upstream = await broker(t);

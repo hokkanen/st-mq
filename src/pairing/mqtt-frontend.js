@@ -93,7 +93,8 @@ export class MqttFrontend {
       if (generation !== this.generation) throw pairError('stopped');
       this.error = null;
     } catch (error) {
-      this.error = MQTT_FRONTEND_ERRORS.has(error?.code) ? error.code : 'mqtt_frontend_unavailable';
+      if (generation === this.generation)
+        this.error = MQTT_FRONTEND_ERRORS.has(error?.code) ? error.code : 'mqtt_frontend_unavailable';
       throw error;
     }
   }
@@ -124,9 +125,16 @@ export class MqttFrontend {
     if (this.starting) return this.starting;
     if (this.accepting && this.server?.listening) return Promise.resolve();
     const starting = this.starting = this.open().then(async () => {
-      if (!this.accepting) throw pairError('stopped');
+      if (this.starting !== starting || !this.accepting) throw pairError('stopped');
       await this.tlsFrontend?.start();
-    }).catch(async error => { await this.stop(); throw error; });
+      if (this.starting !== starting || !this.accepting) throw pairError('stopped');
+    }).catch(async error => {
+      // A stopped attempt can reject after a later start has already opened.
+      // Its cleanup must not revoke that newer owner's listeners or sockets.
+      if (this.starting === starting) await this.stop();
+      else await this.pendingStop;
+      throw error;
+    });
     return starting.finally(() => { if (this.starting === starting) this.starting = null; });
   }
 
@@ -147,6 +155,7 @@ export class MqttFrontend {
         if (error) reject(error); else resolve();
       };
       server.on('error', () => {
+        if (generation !== this.generation) { finish(pairError('stopped')); return; }
         this.error = 'mqtt_frontend_unavailable';
         if (!settled) finish(pairError(this.error));
         else if (this.accepting) this.fail();
