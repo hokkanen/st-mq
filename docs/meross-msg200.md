@@ -70,13 +70,28 @@ it. Use the stock Dynamic Security plugin and the installed version's own
 `mosquitto_ctrl` password tooling, with a device role limited to its native topics
 and application reply topics. No anonymous access is needed.
 
-When the stock HA app's authentication chain rejects this account before the
-native plugin runs, the optional [shared broker app](../integrations/mqtt-broker/README.md)
-uses the same pinned broker image with a single local authentication owner. It
-replaces the stock broker, preserving existing accounts and management ports;
-it is not an additional device-specific broker. Preserve stored broker data and
-reconfigure internal hostname references during cutover. HA's independent Meross
-LAN HTTP path remains available through MQTT outages.
+The official HA Mosquitto app can retain its normal update path. Provision the
+fixed device username as a dedicated local-only, read-only Home Assistant user
+with the firmware-derived MQTT password. Do not put that colon-containing
+username in the app's password-file `logins` list. Supervisor authenticates it
+through HA initially and persists a hashed credential cache; when Core is down,
+the installed Supervisor explicitly checks that cache. Warm and verify the cache
+before binding the device. Verify a fresh connection after restarting Mosquitto
+with Core stopped, and verify the cached credential on disk. This still requires
+HAOS Supervisor on that host, independently of HA Core. A newly provisioned or
+changed credential must be validated while Core is available before relying on
+its cached value. The HA broker retains its existing account authorization model;
+Ubuntu's native Dynamic Security role restricts device topic access.
+
+Provision the same firmware credential on Ubuntu using its bundled Dynamic
+Security plugin. Use the broker version's own password format; Mosquitto 2.0 and
+2.1 differ. Keep ordinary password-file accounts unchanged. The configured TLS
+listener must present a device-compatible certificate. Keep existing fixed TLS
+listeners and certificates separately when adding the VIP's local upstream.
+
+HA's Meross LAN uses its local HTTP path independently of ST-MQ and falls back
+to it when the device's MQTT endpoint is on the other computer. Existing
+HA-backed publishers and SmartThings stay on their fixed HA MQTT endpoint.
 
 Failover remains owner-confirmed under the [pairing contract](pairing.md). This
 is a shared endpoint over two independent brokers, not replicated MQTT session
