@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile, writeFile, rm, chmod, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, chmod, access, mkdir, copyFile, symlink } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,4 +63,22 @@ test('prepared Mosquitto 2.0 account authenticates a MAC username and retains pa
     verifier.once('exit', code => code === 0 ? resolve(JSON.parse(out)) : reject(Error('Pinned fixture verification failed: ' + diagnostic)));
   });
   assert.deepEqual(result, { authenticated: true, certificatePinned: true, nativeSubscription: true, unrelatedSubscriptionDenied: true });
+
+  // Run the actual verifier from a disposable checkout so no private fixture
+  // needs to be created in this repository. A leading '..' in a directory name
+  // is still inside the checkout; it is not a parent-directory traversal.
+  const checkout = join(directory, 'fixture-checkout'), scripts = join(checkout, 'scripts');
+  await mkdir(scripts, { recursive: true });
+  await symlink(fileURLToPath(new URL('../../node_modules', import.meta.url)), join(checkout, 'node_modules'), 'dir');
+  const verifier = join(scripts, 'verify-meross-broker.js');
+  await copyFile(fileURLToPath(new URL('../../scripts/verify-meross-broker.js', import.meta.url)), verifier);
+  await writeFile(join(checkout, 'package.json'), JSON.stringify({ type: 'module' }));
+  for (const name of ['private', '..fixture-private']) {
+    const folder = join(checkout, name); await mkdir(folder, { mode: 0o700 });
+    const internal = join(folder, 'check.json'); await writeFile(internal, await readFile(check), { mode: 0o600 });
+    const denied = spawnSync(process.execPath, [verifier, internal, '--restricted'], { encoding: 'utf8', timeout: 8000 });
+    assert.equal(denied.status, 1, `Reject private input within checkout directory ${name}`);
+    assert.match(denied.stderr, /failed at private configuration/);
+    assert.equal(denied.stdout, '');
+  }
 });

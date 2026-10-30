@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync, statSync, realpathSync } from 'node:fs';
-import { dirname, relative } from 'node:path';
+import { dirname, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import mqtt from 'mqtt';
@@ -8,7 +8,8 @@ import mqtt from 'mqtt';
 const root = realpathSync(fileURLToPath(new URL('..', import.meta.url)));
 const privateJson = path => {
   const actual = realpathSync(path), inside = relative(root, actual);
-  if (!inside.startsWith('..') || statSync(actual).mode & 0o077 || statSync(dirname(actual)).mode & 0o077)
+  const outside = inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+  if (!outside || statSync(actual).mode & 0o077 || statSync(dirname(actual)).mode & 0o077)
     throw Error('Private input must be outside the checkout');
   return JSON.parse(readFileSync(actual, 'utf8'));
 };
