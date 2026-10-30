@@ -138,7 +138,25 @@ listeners and certificates separately when adding the VIP's local upstream.
 
 HA's Meross LAN uses its local HTTP path independently of ST-MQ and falls back
 to it when the device's MQTT endpoint is on the other computer. Existing
-HA-backed publishers and SmartThings stay on their fixed HA MQTT endpoint.
+HA-backed publishers retain their fixed HA MQTT endpoint.
+
+Some MQTT Device Creator versions accept only an IP address and always use
+port 1883. Such clients can retain the shared VIP. On Ubuntu, use the existing
+Mosquitto's narrowly scoped
+`integrations/homeassistant/meross-ha-bridge.conf.example` to forward HA-owned
+door commands and read-only queries to HA's fixed broker, returning its contact
+snapshots and availability. Supply private local and remote credentials. Never
+bridge native `/appliance` or application reply topics, or a broad household
+wildcard. This adds no service and keeps SmartThings dependent on HA only.
+
+Command routes use QoS 0 at the bridge and clean sessions at both ends so a
+request issued while HA's broker is disconnected is dropped instead of replayed
+after recovery. Inspect both brokers for retained door commands before enabling
+the bridge. The real-broker regression
+`test/extended/meross-ha-bridge.test.js` verifies one-time routing, exact snapshot
+payload preservation, disconnected-command loss and native-topic isolation.
+An outage can still make an in-flight command outcome uncertain; inspect current
+door state before issuing another request.
 
 Failover remains owner-confirmed under the [pairing contract](pairing.md). This
 is a shared endpoint over two independent brokers, not replicated MQTT session

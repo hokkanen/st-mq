@@ -1,0 +1,23 @@
+# Install privately on Ubuntu with the real HA address and local/remote credentials.
+# This bridge carries HA-owned garage routes, never /appliance or /app topics.
+connection stmq-ha-garage
+address 192.0.2.20:1885
+remote_clientid stmq-ha-garage-linux
+try_private true
+cleansession true
+local_cleansession true
+bridge_protocol_version mqttv311
+bridge_outgoing_retain false
+restart_timeout 1 5
+keepalive_interval 10
+notifications true
+notifications_local_only true
+notification_topic stmq/bridge/ha_garage/status
+topic stmq/garage/door1/command/cover out 0
+topic stmq/garage/door2/command/cover out 0
+topic stmq/garage/door1/command out 0
+topic stmq/garage/door2/command out 0
+topic stmq/garage/door1/status/contact in 1
+topic stmq/garage/door2/status/contact in 1
+topic stmq/garage/door1/availability in 1
+topic stmq/garage/door2/availability in 1
