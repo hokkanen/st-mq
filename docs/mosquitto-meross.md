@@ -180,6 +180,10 @@ an unrelated subscription. HA's normal account authorization model can allow
 that subscription. A successful HA connection also warms Supervisor's credential
 cache before the Core-off test.
 
+Use only the configuration fields shown above. The login file must contain only
+`username` and `password`, with the MAC username belonging to the configured UUID.
+Application credentials cannot qualify the firmware account.
+
 ## Device binding
 
 `scripts/bind-meross-msg200.py` inspects an already paired MSG200 or changes only

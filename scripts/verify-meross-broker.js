@@ -13,6 +13,10 @@ const privateJson = path => {
     throw Error('Private input must be outside the checkout');
   return JSON.parse(readFileSync(actual, 'utf8'));
 };
+const fields = (value, allowed) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || Object.keys(value).some(key => !allowed.includes(key))) throw Error('Invalid private configuration');
+};
 
 let client;
 let stage = 'private configuration';
@@ -22,10 +26,17 @@ const bounded = promise => new Promise((resolve, reject) => {
 });
 try {
   if (!process.argv[2] || process.argv.slice(3).some(x => x !== '--restricted')) throw Error('Invalid arguments');
-  const c = privateJson(process.argv[2]), login = privateJson(c.login_file), url = new URL(c.address);
+  const c = privateJson(process.argv[2]);
+  fields(c, ['address', 'uuid', 'login_file', 'server_certificate', 'ca_certificate']);
+  if (['address', 'uuid', 'login_file', 'server_certificate'].some(key => typeof c[key] !== 'string' || !c[key])
+    || c.ca_certificate !== undefined && (typeof c.ca_certificate !== 'string' || !c.ca_certificate))
+    throw Error('Invalid private configuration');
+  const login = privateJson(c.login_file), url = new URL(c.address);
+  fields(login, ['username', 'password']);
   if (url.protocol !== 'mqtts:' || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname))
     throw Error('A plain TLS MQTT origin is required');
-  if (!/^[a-f0-9]{32}$/.test(c.uuid) || typeof login.username !== 'string' || typeof login.password !== 'string')
+  if (!/^[a-f0-9]{32}$/.test(c.uuid) || login.username !== c.uuid.slice(-12).match(/../g).join(':')
+    || typeof login.password !== 'string' || !login.password)
     throw Error('Invalid native login');
   const fingerprint = new X509Certificate(readFileSync(c.server_certificate)).fingerprint256;
   stage = 'TLS authentication';

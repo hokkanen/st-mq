@@ -64,6 +64,27 @@ test('prepared Mosquitto 2.0 account authenticates a MAC username and retains pa
   });
   assert.deepEqual(result, { authenticated: true, certificatePinned: true, nativeSubscription: true, unrelatedSubscriptionDenied: true });
 
+  const appLogin = join(directory, 'fixture-app-login.json');
+  await writeFile(appLogin, JSON.stringify({ username: 'fixture-app', password: 'fixture-app-password' }), { mode: 0o600 });
+  const extraLogin = join(directory, 'fixture-extra-login.json');
+  await writeFile(extraLogin, JSON.stringify({ ...login, fixture_retired_setting: true }), { mode: 0o600 });
+  const checkInput = JSON.parse(await readFile(check, 'utf8'));
+  for (const [name, patch] of [
+    ['wrong-native-account', { login_file: appLogin }],
+    ['unknown-login-setting', { login_file: extraLogin }],
+    ['unknown-setting', { fixture_retired_setting: true }],
+    ['non-string-identity', { uuid: [device.uuid] }],
+  ]) {
+    const invalid = join(directory, `${name}.json`);
+    await writeFile(invalid, JSON.stringify({ ...checkInput, ...patch }), { mode: 0o600 });
+    const refused = spawnSync(process.execPath,
+      [fileURLToPath(new URL('../../scripts/verify-meross-broker.js', import.meta.url)), invalid],
+      { encoding: 'utf8', timeout: 8000 });
+    assert.equal(refused.status, 1, `Reject ${name} before claiming native qualification`);
+    assert.match(refused.stderr, /failed at private configuration/);
+    assert.equal(refused.stdout, '');
+  }
+
   // Run the actual verifier from a disposable checkout so no private fixture
   // needs to be created in this repository. A leading '..' in a directory name
   // is still inside the checkout; it is not a parent-directory traversal.
