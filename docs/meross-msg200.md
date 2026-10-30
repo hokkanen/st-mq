@@ -89,7 +89,11 @@ Ubuntu's native Dynamic Security role restricts device topic access.
 
 Provision the same firmware credential on Ubuntu using its bundled Dynamic
 Security plugin. Use the broker version's own password format; Mosquitto 2.0 and
-2.1 differ. Keep ordinary password-file accounts unchanged. The configured TLS
+2.1 differ. Keep ordinary password-file credentials unchanged. Their Dynamic Security client
+entries need explicit application ACL roles, with no password in those entries
+so authentication still defers to the existing password file. An authentication
+success alone does not establish permission to subscribe. Verify existing ST-MQ
+subscriptions as well as native account restrictions before any handover. The configured TLS
 listener must present a device-compatible certificate. Keep existing fixed TLS
 listeners and certificates separately when adding the VIP's local upstream.
 
