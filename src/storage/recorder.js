@@ -96,12 +96,14 @@ function caravanRecordingBoundary(o, newReport) {
 }
 export const isCaravanRecordingRecovery = o => caravanRecordingBoundary(o, false);
 export const isCaravanRecordingAdmission = o => caravanRecordingBoundary(o, true);
-// Correlated output replies and live timestamp-free MQTT state reports use
-// the host receipt clock. Ordered replies can share a millisecond; observation
-// IDs preserve their order. A device's repeated measurement clock cannot do so.
-const hostContactReport = o => o.unit === 'state' && o.sourceTime === o.receivedAt
+// Correlated output replies use the host clock. Signed Meross contacts have a
+// whole-second source clock and retain their distinct receive/admission order.
+// Neither case rewrites source time or admits repeated measurement timestamps.
+const contactReport = o => o.unit === 'state' && (o.sourceTime === o.receivedAt
   && (o.source === 'sonoff-floor' && o.raw?.timeBasis === 'mqtt-received' && o.raw?.evidence === 'gpio_output_readback'
-    || o.source === 'mqtt-equipment' && o.signal === 'dhwr_active' && o.raw?.timeBasis === 'mqtt-received');
+    || o.source === 'mqtt-equipment' && o.signal === 'dhwr_active' && o.raw?.timeBasis === 'mqtt-received')
+  || o.source === 'mqtt-equipment' && o.raw?.timeBasis === 'meross-contact'
+    && /_open$/.test(o.signal) && o.sourceTime % 1000 === 0 && [0, 1].includes(o.value));
 const numericalFloor = (a,b) => Math.max(1,Math.abs(a??0),Math.abs(b??0))*Number.EPSILON*32;
 const voltageEstimate = o => o.source === 'voltage-estimate' && VOLTAGE_SIGNALS.includes(o.signal) && o.unit === 'V';
 const valueFloor = o => voltageEstimate(o) ? VOLTAGE_RECORDING_FLOOR_V : 0;
@@ -549,7 +551,7 @@ export class Recorder {
 
   classify(o, state) {
     const q = flags(o.quality);
-    const contact = hostContactReport(o);
+    const contact = contactReport(o);
     if (q.some(x => /failed|disconnected|fetch-error|acquisition-failed|provider[-_]error/.test(x))) return 'failed';
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
     if (hasCaravanEvidence(o)) {
@@ -735,7 +737,7 @@ export class Recorder {
         o.quality = flags([...o.quality, 'out-of-order-source-time']);
       const status = this.classify(o,s), fresh = status === 'fresh';
       const evidence = fresh ? caravanRecordingEvidence(o) : null;
-      const freshUpdate = fresh && (hostContactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
+      const freshUpdate = fresh && (contactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
       // Coverage stores admission endpoints. Keep the latest genuine report's
       // original clocks independently so policy/reconnect events cannot mistake

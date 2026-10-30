@@ -48,6 +48,12 @@ ST-MQ subscribes to the device publish topic and a unique application reply topi
 It requests each configured channel after subscription and every equipment poll
 interval. Reports expire after 90 seconds by default.
 
+The configured freshness must allow at least one poll interval. Recorded contacts
+retain that poll interval and the remaining freshness margin, so chart coverage
+ends at the original report deadline even if no disconnect event was recorded.
+Source, receive and delayed-admission timestamps remain distinct in stored history.
+Contact changes within one source-clock second retain their receive order.
+
 Signed PUSH messages and responses to current state requests provide contact
 readings. Retained packets, invalid signatures, stale source timestamps, duplicate
 messages and unmatched responses do not refresh the contact. Small source-clock

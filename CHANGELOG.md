@@ -6,6 +6,11 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Meross MSG200 garage doors support signed local MQTT contact reports and
+  Open/Close controls. Paired installations can expose a shared TLS MQTT endpoint.
+  Door recording preserves delayed source-clock admission and the configured
+  contact-report deadline without changing earlier history.
+
 - Background worker shutdown cancels late startup storage waits, preventing a
   chart cancellation race from hanging shutdown.
 

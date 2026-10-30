@@ -12,8 +12,8 @@ export function merossMessage(key, from, method, payload, now = Date.now(), name
 // trusted LAN remain required. Never treat SETACK as contact evidence.
 export function validMerossMessage(message, key) {
   const h = message?.header;
-  if (!h || !/^[a-f0-9]{32}$/.test(h.messageId) || !Number.isSafeInteger(h.timestamp)
-    || !/^[a-f0-9]{32}$/.test(h.sign)) return false;
+  if (!h || typeof h.messageId !== 'string' || !/^[a-f0-9]{32}$/.test(h.messageId) || !Number.isSafeInteger(h.timestamp)
+    || typeof h.sign !== 'string' || !/^[a-f0-9]{32}$/.test(h.sign)) return false;
   return timingSafeEqual(Buffer.from(h.sign), Buffer.from(digest(h.messageId, key, h.timestamp)));
 }
 
@@ -91,7 +91,9 @@ export function createMerossProtocol({ devices, clock }) {
       const seenKey = `${d.id}:${h.messageId}`;
       if (seen.has(seenKey)) return null;
       const state = Array.isArray(m.payload?.state) ? m.payload.state : [m.payload?.state];
-      const s = state.find(s => s?.channel === d.meross.channel);
+      const matches = state.filter(s => s?.channel === d.meross.channel);
+      if (matches.length !== 1) return null;
+      const s = matches[0];
       if (!s || ![0, 1].includes(s.open) || s.execute) return null;
       seen.set(seenKey, receivedAt); pending.delete(h.messageId);
       return JSON.stringify({ open: s.open, timestamp: h.timestamp * 1000 });

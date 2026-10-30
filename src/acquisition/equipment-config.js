@@ -94,7 +94,7 @@ export function equipmentConfiguration(input = {}) {
     let meross = null;
     if (row.meross !== undefined) schema(row.meross, ['uuid', 'key', 'channel'], 'Meross device');
     if (row.meross !== undefined && Object.keys(row.meross).length) {
-      if (!/^[a-f0-9]{32}$/.test(row.meross.uuid) || typeof row.meross.key !== 'string'
+      if (typeof row.meross.uuid !== 'string' || !/^[a-f0-9]{32}$/.test(row.meross.uuid) || typeof row.meross.key !== 'string'
         || !/^[a-f0-9]{32}$/.test(row.meross.key) || row.kind !== 'door'
         || row.connection !== `mqtt:/appliance/${row.meross.uuid}/publish`
         || row.mqtt !== undefined && (!plain(row.mqtt) || Object.keys(row.mqtt).length > 0)
@@ -144,6 +144,7 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Live-only equipment recording requires an MQTT switch or power sensor');
     if (id === 'dhwr' && record) throw new Error('DHWR raw telemetry must stay live-only; derived circulation feedback changes and availability are recorded separately');
     const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, ['door', 'power'].includes(kind) ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
+    if (meross && age < pollIntervalMs) throw new Error('Meross freshness must allow at least one poll interval');
     if (!(kind === 'door' || kind === 'power' && age === 0) && age < pollIntervalMs) throw new Error('Equipment maximum age must allow its poll interval');
     schema(row.mqtt ?? {}, MQTT_KEYS, 'equipment MQTT mapping');
     const mapping = row.mqtt ?? {};

@@ -36,11 +36,29 @@ function fixture(t) {
 }
 test('Meross config enforces exact native identity, channel, finite age and no generic mapping', () => {
   for (const patch of [{ meross: { uuid, key, channel: 0 } }, { meross: { uuid, key } }, { max_age_seconds: 0 },
-    { mqtt: { state_path: 'custom' } }, { readings: [{ key: 'other' }] }, { connection: 'mqtt:other' }, { kind: 'switch' }])
+    { mqtt: { state_path: 'custom' } }, { readings: [{ key: 'other' }] }, { connection: 'mqtt:other' }, { kind: 'switch' },
+    { meross: { uuid: [uuid], key, channel: 1 } }, { max_age_seconds: 0.0001 }, { max_age_seconds: 29 }])
     assert.throws(() => equipmentConfiguration({ devices: [{ ...door(1), ...patch }] }));
   assert.throws(() => equipmentConfiguration({ devices: [door(1), { ...door(1), id: 'duplicate' }] }));
   const d = equipmentConfiguration({ devices: [door(3)] }).devices[0];
   assert.equal(mqttRouting({ connections: { mqtt: { address: 'mqtt://local', ha: { address: 'mqtt://ha' } } } }).equipmentBroker(d), 'primary');
+});
+
+test('malformed signed headers and ambiguous contact rows are rejected without throwing or refreshing state', async t => {
+  const signed = merossMessage(key, `/appliance/${uuid}/publish`, 'PUSH', { state: [{ channel: 1, open: 0 }] });
+  for (const [field, value] of [['messageId', [signed.header.messageId]], ['sign', [signed.header.sign]],
+    ['sign', {}], ['timestamp', String(signed.header.timestamp)]]) {
+    const frame = structuredClone(signed); frame.header[field] = value;
+    assert.equal(validMerossMessage(frame, key), false);
+  }
+  const f = fixture(t); await settle();
+  for (const open of [0, 1]) {
+    const message = merossMessage(key, `/appliance/${uuid}/publish`, 'PUSH',
+      { state: [{ channel: 1, open: 0 }, { channel: 1, open }] }, Date.parse('2026-10-30T10:00:00Z'));
+    f.capture.receiveDoors(`/appliance/${uuid}/publish`, JSON.stringify(message));
+  }
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+  f.reply(1); assert.equal(f.capture.status().devices[0].available, true);
 });
 test('signed queries recover both channels independently; native commands use QoS 0 and transport receipts', async t => {
   const f = fixture(t); await settle();

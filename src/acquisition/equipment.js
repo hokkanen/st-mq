@@ -756,8 +756,11 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       reading.availabilityConfirmed = true; reading.confirmedAt = now;
       const observation = device.record !== false && definition.record !== false ? { ...identity(device),
         signal: definition.signal, value: reading.value, unit: reading.unit, sourceTime: reading.observedAt,
-        receivedAt: now, quality: reading.quality,
-        raw: { timeBasis: 'mqtt-live-status', ...(device.maxAgeMs === 0 ? { eventOnly: true } : {}),
+        receivedAt: device.meross || reading.timeAdmission ? reading.receivedAt : now, quality: reading.quality,
+        raw: { timeBasis: device.meross ? 'meross-contact' : 'mqtt-live-status', ...(device.meross ? {
+          eventOnly: false, reportIntervalMs: settings.pollIntervalMs,
+          reportGraceMs: device.maxAgeMs - settings.pollIntervalMs,
+        } : device.maxAgeMs === 0 ? { eventOnly: true } : {}),
           availabilityConfirmed: true, confirmedAt: now,
           ...(reading.timeAdmission ? { timeAdmission: reading.timeAdmission } : {}) } } : null;
       const saved = definition.signal === device.stateSignal ? { key: `equipment:door:v1:${device.id}`,
@@ -1059,7 +1062,8 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const coverState = device.kind === 'door' && definition.signal === device.stateSignal
         ? property(input, mapping.coverStatePath) : null;
       const accepted = record(device, definition, value, at, receivedAt, value === null ? ['invalid-value'] : [],
-        { timeBasis: value === null ? 'availability-transition' : explicitTimestamp === undefined ? 'mqtt-received' : 'source-measured',
+        { timeBasis: value === null ? 'availability-transition' : device.meross ? 'meross-contact'
+          : explicitTimestamp === undefined ? 'mqtt-received' : 'source-measured',
           ...(device.kind === 'door' ? { coverState: ['open', 'closed', 'opening', 'closing'].includes(coverState) ? coverState : null } : {}) });
       if (accepted) reported.add(definition.signal);
       updated = accepted || updated;
