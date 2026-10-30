@@ -1,0 +1,55 @@
+# Install beside the reviewed bundle as an HA package.
+shell_command:
+  stmq_preserve_meross_msg200: >-
+    python3 /config/stmq-meross-msg200/scripts/apply-meross-lan-msg200.py
+    --integration-dir /config/custom_components/meross_lan
+    --backup-dir /config/private-backups/meross-lan-msg200
+
+automation:
+  - id: stmq_preserve_meross_msg200
+    alias: ST-MQ preserve MSG200 channel parsing after updates
+    triggers:
+      - trigger: state
+        entity_id: update.meross_lan_update
+        attribute: installed_version
+      - trigger: state
+        entity_id: update.meross_lan_update
+        attribute: in_progress
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: template
+        value_template: "{{ not state_attr('update.meross_lan_update', 'in_progress') }}"
+    actions:
+      - delay: "00:00:03"
+      - condition: template
+        value_template: "{{ not state_attr('update.meross_lan_update', 'in_progress') }}"
+      - action: shell_command.stmq_preserve_meross_msg200
+        response_variable: compatibility
+        continue_on_error: true
+      - if:
+          - condition: template
+            value_template: "{{ compatibility is not defined or compatibility.get('returncode', -1) != 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: stmq_meross_msg200_compatibility
+              title: MSG200 integration needs compatibility review
+              message: >-
+                The installed Meross LAN source is outside the reviewed version.
+                Verify matching-channel command responses before using garage
+                controls. Unknown source was not patched; no door was operated.
+        else:
+          - if:
+              - condition: template
+                value_template: "{{ (compatibility.get('stdout', '') | from_json({})).get('restartRequired', false) }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  notification_id: stmq_meross_msg200_compatibility
+                  title: MSG200 compatibility restored
+                  message: >-
+                    Restart Home Assistant to load the reviewed matching-channel
+                    parser, then verify both doors. No door was operated.
+    mode: queued
+    max: 3

@@ -7,6 +7,45 @@ cloud account for local operation after provisioning. SmartThings remains a
 Home Assistant MQTT bridge; keep existing cover entity IDs and automation routes
 when replacing the HA integration.
 
+## Meross LAN command-response compatibility
+
+MSG200 firmware 4.2.8 can acknowledge a command with every channel's contact
+followed by a scalar execution flag. Meross LAN 5.8.0 assumes the first list item
+belongs to the requested channel. Consequently Door 2 can display Door 1's state
+after a command, and its movement tracking does not start. Periodic contact polls
+can later correct the display; that does not make the command response correct.
+
+The reviewed installer `scripts/apply-meross-lan-msg200.py` selects the matching
+channel and recognizes the separate execution flag. It preserves legacy
+single-channel responses and refuses ambiguous contacts. The execution flag
+starts the existing movement estimate; it is not physical completion evidence.
+Synthetic tests execute the installed upstream command method with different
+channel states, in addition to testing the installer and unknown-source refusal.
+
+Install the script and the `integrations/homeassistant/meross-lan-msg200*`
+files in the same relative layout under `/config/stmq-meross-msg200`. Apply with:
+
+```sh
+python3 /config/stmq-meross-msg200/scripts/apply-meross-lan-msg200.py \
+  --integration-dir /config/custom_components/meross_lan \
+  --backup-dir /config/private-backups/meross-lan-msg200
+```
+
+Restart HA Core to load the change. Install
+`integrations/homeassistant/meross-lan-update-guard.yaml` as an HA package, using
+the actual HACS update entity if different. It reapplies only the exact reviewed
+5.8.0 source after reinstall and reports that a Core restart is needed. Unknown
+versions, dependencies and source hashes require review; the guard never patches
+them or restarts HA automatically. HACS remains the update manager, with this
+explicit compatibility qualification for garage command responses.
+
+ST-MQ's `garage.door_travel_seconds` owns its movement estimate. HA's native
+opening/closing duration settings are separate command timeouts; allow for the
+opener's start delay and contact-report latency rather than treating a timeout
+as a full-open sensor. Meross LAN's `transition_duration` attribute is its own
+learned fallback, not the configured ST-MQ travel time. Configure durations only
+while the doors are stationary, then recheck device readiness before commanding.
+
 ## Native configuration
 
 Put device identity and key in private configuration outside the checkout.
