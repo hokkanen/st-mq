@@ -71,3 +71,9 @@ test('retained, bad signatures, unmatched acknowledgements and stale reports gra
   f.advance(91_000); f.capture.tickDoors();
   assert.ok(f.capture.status().devices.every(d => !d.available));
 });
+
+test('Home Assistant empty nested Meross sections preserve generic equipment contracts', () => {
+  const d = { id: 'contact', kind: 'door', connection: 'mqtt:invented/contact' };
+  assert.deepEqual(equipmentConfiguration({ devices: [d] }), equipmentConfiguration({ devices: [{ ...d, meross: {} }] }));
+  assert.throws(() => equipmentConfiguration({ devices: [{ ...d, meross: { retired: true } }] }));
+});

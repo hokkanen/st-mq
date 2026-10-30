@@ -92,8 +92,8 @@ export function equipmentConfiguration(input = {}) {
   const devices = (input.devices ?? []).map(row => {
     schema(row, DEVICE_KEYS, 'equipment device');
     let meross = null;
-    if (row.meross !== undefined) {
-      schema(row.meross, ['uuid', 'key', 'channel'], 'Meross device');
+    if (row.meross !== undefined) schema(row.meross, ['uuid', 'key', 'channel'], 'Meross device');
+    if (row.meross !== undefined && Object.keys(row.meross).length) {
       if (!/^[a-f0-9]{32}$/.test(row.meross.uuid) || typeof row.meross.key !== 'string'
         || !/^[a-f0-9]{32}$/.test(row.meross.key) || row.kind !== 'door'
         || row.connection !== `mqtt:/appliance/${row.meross.uuid}/publish`

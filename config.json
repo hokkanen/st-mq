@@ -3,7 +3,9 @@
   "description": "Home energy monitoring, heating control, EV charging and historical analysis",
   "version": "0.9.5",
   "stage": "stable",
-  "breaking_versions": ["0.9.5"],
+  "breaking_versions": [
+    "0.9.5"
+  ],
   "url": "https://github.com/hokkanen/st-mq",
   "slug": "st-mq",
   "arch": [
@@ -247,7 +249,8 @@
           "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "downstairs",
@@ -260,7 +263,8 @@
           "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "bedroom",
@@ -273,7 +277,8 @@
           "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "heat_savings",
@@ -286,7 +291,8 @@
           "reduction_on": true,
           "temperature_control": {},
           "mqtt": {},
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "dhwr",
@@ -311,7 +317,8 @@
             }
           ],
           "generation": 3,
-          "switch_id": 0
+          "switch_id": 0,
+          "meross": {}
         },
         {
           "id": "garage",
@@ -334,7 +341,8 @@
               "required": false,
               "component": "temperature:101"
             }
-          ]
+          ],
+          "meross": {}
         },
         {
           "id": "blu_ht",
@@ -375,7 +383,8 @@
               "record": false,
               "path": "rssi"
             }
-          ]
+          ],
+          "meross": {}
         },
         {
           "id": "caravan",
@@ -387,7 +396,8 @@
           "switch_control": true,
           "temperature_control": {},
           "mqtt": {},
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "garage_door1",
@@ -410,7 +420,8 @@
             "availability_topic": "stmq/garage/door1/availability",
             "bridge_availability_topic": "homeassistant/status"
           },
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "garage_door2",
@@ -433,7 +444,8 @@
             "availability_topic": "stmq/garage/door2/availability",
             "bridge_availability_topic": "homeassistant/status"
           },
-          "readings": []
+          "readings": [],
+          "meross": {}
         },
         {
           "id": "caravan_dehumidifier",
@@ -456,7 +468,8 @@
             "availability_topic": "stmq/garage/caravan_dehumidifier/availability",
             "bridge_availability_topic": "homeassistant/status"
           },
-          "readings": []
+          "readings": [],
+          "meross": {}
         }
       ]
     },
