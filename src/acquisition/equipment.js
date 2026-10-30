@@ -112,7 +112,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     onReady({ device, topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
       if (closed || !device.brokerConnected || ['failed', 'disconnected'].includes(device.subscriptionStatus)) return;
       const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
-      try { receiveDevice(device, topic, body, packet, receivedAt, receivedMonotonicAt); }
+      try { receiveDevice(device, device.meross ? device.topic : topic, body, packet, receivedAt, receivedMonotonicAt); }
       finally { admittedReceptionAt = previous; }
     } });
   const pendingTime = createSourceTimePending({ clock: engine.clock, dispatch: action => write(() => (store.transaction ?? (fn => fn())).call(store, () => {

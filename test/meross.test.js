@@ -20,10 +20,10 @@ function fixture(t) {
       sent.push({ topic, body: JSON.parse(body), options });
     } });
   t.after(() => { capture.close(); store.close(); });
-  const reply = (channel, open = 0, { method = 'GETACK', retain = false, badKey = false, execute = 0 } = {}) => {
+  const reply = (channel, open = 0, { method = 'GETACK', retain = false, badKey = false, execute = 0, sourceOffsetMs = 0 } = {}) => {
     const request = sent.findLast(x => x.body.header.method === 'GET' && x.body.payload.state[0].channel === channel);
     const m = merossMessage(badKey ? '0'.repeat(32) : key, `/appliance/${uuid}/publish`, method,
-      { state: [{ channel, open, execute }] }, now);
+      { state: [{ channel, open, execute }] }, now + sourceOffsetMs);
     if (method === 'GETACK' && request) {
       m.header.messageId = request.body.header.messageId;
       m.header.sign = createHash('md5').update(`${m.header.messageId}${badKey ? '0'.repeat(32) : key}${m.header.timestamp}`).digest('hex');
@@ -70,6 +70,36 @@ test('retained, bad signatures, unmatched acknowledgements and stale reports gra
   assert.ok(f.capture.status().devices.every(d => !d.available));
   f.capture.confirmSubscriptions(f.capture.topics); await settle(); f.reply(1); f.reply(2); await settle();
   f.advance(91_000); f.capture.tickDoors();
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+});
+
+test('native clock leads wait for source time without changing clocks or granting early control', async t => {
+  const f = fixture(t); await settle(); f.advance(500);
+  const message = f.reply(1, 0, { sourceOffsetMs: 1000 });
+  f.reply(2, 0, { sourceOffsetMs: 1000 });
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+  await assert.rejects(f.capture.setCover({ deviceId: 'door1', action: 'open' }));
+  assert.equal(f.sent.filter(row => row.body.header.method === 'SET').length, 0);
+  f.advance(499); f.capture.tickDoors();
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+  f.advance(1); f.capture.tickDoors();
+  assert.ok(f.capture.status().devices.every(d => d.available));
+  const reading = f.capture.status().devices[0].readings.door1_open;
+  assert.equal(reading.observedAt, message.header.timestamp * 1000);
+  assert.equal(reading.receivedAt, reading.observedAt - 500);
+  assert.deepEqual(reading.timeAdmission, { sourceTime: reading.observedAt,
+    receivedAt: reading.receivedAt, admittedAt: reading.observedAt });
+});
+
+test('native admission rejects excessive clock leads and cannot restore a disconnected pending report', async t => {
+  const f = fixture(t); await settle(); f.advance(500);
+  f.reply(1, 0, { sourceOffsetMs: 2000 });
+  f.reply(2, 0, { sourceOffsetMs: -11000 });
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+  f.reply(1, 0, { sourceOffsetMs: 1000 });
+  f.capture.setConnected(false); f.capture.setConnected(true);
+  f.capture.confirmSubscriptions(f.capture.topics); await settle();
+  f.advance(1000); f.capture.tickDoors();
   assert.ok(f.capture.status().devices.every(d => !d.available));
 });
 

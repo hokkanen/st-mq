@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { classifySourceTime } from '../domain/time-evidence.js';
 
 export const MEROSS_STATE = 'Appliance.GarageDoor.State';
 const digest = (id, key, timestamp) => createHash('md5').update(`${id}${key}${timestamp}`).digest('hex');
@@ -83,7 +84,8 @@ export function createMerossProtocol({ devices, clock }) {
       const m = parse(body), h = m?.header;
       if (!validMerossMessage(m, d.meross.key) || h.namespace !== MEROSS_STATE
         || !['GETACK', 'PUSH'].includes(h.method) || h.from !== `/appliance/${d.meross.uuid}/publish`
-        || receivedAt < h.timestamp * 1000 || receivedAt - h.timestamp * 1000 > 10_000) return null;
+        || !['ready', 'pending'].includes(classifySourceTime({ sourceTime: h.timestamp * 1000,
+          receivedAt, now: receivedAt, maxAgeMs: 10_000 }).status)) return null;
       prune();
       if (h.method === 'GETACK' && pending.get(h.messageId)?.device !== d.id) return null;
       const seenKey = `${d.id}:${h.messageId}`;

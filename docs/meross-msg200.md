@@ -49,9 +49,12 @@ It requests each configured channel after subscription and every equipment poll
 interval. Reports expire after 90 seconds by default.
 
 Signed PUSH messages and responses to current state requests provide contact
-readings. Retained packets, invalid signatures, stale or future source timestamps,
-duplicate messages and unmatched responses do not refresh the contact. A command
-acknowledgement does not establish movement or a new contact observation.
+readings. Retained packets, invalid signatures, stale source timestamps, duplicate
+messages and unmatched responses do not refresh the contact. Small source-clock
+leads use [delayed admission](time-evidence.md#device-report-admission): the original
+source and receipt times remain intact, and control waits until the source time
+arrives. Larger leads are rejected. A command acknowledgement does not establish
+movement or a new contact observation.
 
 A closed contact confirms the configured closed sensor. An open contact means
 that the door is not closed; it does not prove full opening. Unknown connectivity
