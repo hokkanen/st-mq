@@ -49,6 +49,8 @@ illustration's movement estimate; it does not change the motor or contact sensor
 ST-MQ subscribes to the device publish topic and a unique application reply topic.
 It requests each configured channel after subscription and every equipment poll
 interval. Reports expire after 90 seconds by default.
+An unanswered state query gets one new read attempt within its original timeout.
+Movement requests are not retried.
 
 The configured freshness must allow at least one poll interval. Recorded contacts
 retain that poll interval and the remaining freshness margin, so chart coverage

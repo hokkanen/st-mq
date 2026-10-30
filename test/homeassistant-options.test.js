@@ -15,7 +15,7 @@ test('sparse equipment replacement gains empty HA containers with identical runt
   const options = structuredClone(manifest.options);
   options.equipment.devices = devices;
   const result = homeAssistantOptions(options, manifest.schema);
-  assert.deepEqual(result.equipment.devices, [{ ...devices[0], temperature_control: {}, mqtt: {}, readings: [] }]);
+  assert.deepEqual(result.equipment.devices, [{ ...devices[0], temperature_control: {}, mqtt: {}, readings: [], meross: {} }]);
   assert.deepEqual(equipmentConfiguration(result.equipment), equipmentConfiguration(options.equipment));
   assert.equal(Object.hasOwn(devices[0], 'temperature_control'), false, 'The source import stays unchanged');
   assert.deepEqual(homeAssistantOptions(result, manifest.schema), result);

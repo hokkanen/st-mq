@@ -106,7 +106,7 @@ export function equipmentConfiguration(input = {}) {
         command_topic: `/appliance/${meross.uuid}/subscribe`,
         request_topic: `/appliance/${meross.uuid}/subscribe`, request_payload: `meross:${row.id}:get`,
         open_payload: `meross:${row.id}:open`, close_payload: `meross:${row.id}:close`,
-        state_path: 'open', timestamp_path: 'timestamp' } };
+        state_path: 'open', timestamp_path: 'timestamp', cover_state_path: 'cover_state' } };
     }
     const id = signal(row.id, undefined), label = text(row.label, id.replaceAll('_', ' '));
     const area = row.area ?? 'home', kind = row.kind ?? 'switch', enabled = bool(row.enabled, true);

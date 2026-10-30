@@ -149,7 +149,7 @@ test('sparse equipment import saves the nested containers required by current Su
   const device = { id: 'fixture_sensor', area: 'garage', kind: 'temperature', connection: 'mqtt:fixture/temperature' };
   f.writeImport({ equipment: { devices: [device] } });
   await f.launch();
-  assert.deepEqual(f.saved.equipment.devices, [{ ...device, temperature_control: {}, mqtt: {}, readings: [] }]);
+  assert.deepEqual(f.saved.equipment.devices, [{ ...device, temperature_control: {}, mqtt: {}, readings: [], meross: {} }]);
   assert.equal(f.posts, 1);
   assert.equal(existsSync(f.paths.importPath), false);
 });

@@ -68,8 +68,10 @@ export function createMerossProtocol({ devices, clock }) {
       const message = merossMessage(d.meross.key, replyTopic, query ? 'GET' : 'SET',
         { state: query ? [{ channel: d.meross.channel }] : { channel: d.meross.channel, open: Number(body === d.mqtt.openPayload) } }, clock());
       if (query) {
-        // One outstanding query per channel; bounded even if the device is gone.
-        for (const [id, entry] of pending) if (entry.device === d.id) pending.delete(id);
+        // Keep the initial read and one retry correlated: a delayed first reply
+        // is still fresh evidence. Further requests replace the oldest entry.
+        const older = [...pending].filter(([, entry]) => entry.device === d.id);
+        while (older.length >= 2) pending.delete(older.shift()[0]);
         pending.set(message.header.messageId, { device: d.id, at: clock() });
       }
       return JSON.stringify(message);
@@ -96,7 +98,7 @@ export function createMerossProtocol({ devices, clock }) {
       const s = matches[0];
       if (!s || ![0, 1].includes(s.open) || s.execute) return null;
       seen.set(seenKey, receivedAt); pending.delete(h.messageId);
-      return JSON.stringify({ open: s.open, timestamp: h.timestamp * 1000 });
+      return JSON.stringify({ open: s.open, cover_state: s.open === 0 ? 'closed' : 'open', timestamp: h.timestamp * 1000 });
     },
   };
 }

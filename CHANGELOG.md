@@ -10,6 +10,9 @@ Versions follow Semantic Versioning.
   Open/Close controls. Paired installations can expose a shared TLS MQTT endpoint.
   Door recording preserves delayed source-clock admission and the configured
   contact-report deadline without changing earlier history.
+- Fresh native door contacts confirm Open/Close receipts in the dashboard.
+  A missed native state query gets one bounded read-only retry; movement requests
+  remain single attempts.
 
 - Background worker shutdown cancels late startup storage waits, preventing a
   chart cancellation race from hanging shutdown.

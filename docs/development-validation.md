@@ -6,6 +6,16 @@ This reference describes available checks, their coverage and limits. Use
 
 ## Coverage reference
 
+The Meross protocol, recovery and history suites exercise signed channel-specific
+contacts, Open/Close receipts, retained and malformed messages, coarse source
+clocks, delayed admission and prospective report deadlines. A lost state query
+gets one bounded retry without extending its original timeout; disconnect and
+authority loss cancel that retry. Movement commands retain their one-shot fencing.
+The isolated Mosquitto suites cover native authentication, a blocked QoS 1 delivery
+window, a lost QoS 0 read and the narrow HA topic routes. The Garage door browser
+checks cover modal navigation, receipts, motion estimates, roles and responsive
+layouts. These fixtures do not establish physical travel or opener protection.
+
 `test/easee-ocpp-approval-integration.test.js` exercises a locally refused virtual-tag
 start followed by a confirmed deauthorization and suspension. Recovery requires
 the same physical session, fresh stopped evidence and current permission; Pause,

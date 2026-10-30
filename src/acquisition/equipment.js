@@ -1604,10 +1604,10 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const tasks = [];
       if (native && (!deviceId || enabled.some(row => row.id === deviceId && row.protocol === 'shelly'))) tasks.push(native.recheck({ deviceId }));
       for (const device of devices.filter(row => !deviceId || row.id === deviceId)) tasks.push(new Promise(resolve => {
-        let completed = false;
+        let completed = false, retryTimer;
         const method = recheckMethod(device);
         const check = { at: engine.clock(), reported: new Set(), retainedReceived: false, ready: false, finish: status => {
-          if (completed) return; completed = true; clearTimeout(timer); device.checks.delete(check);
+          if (completed) return; completed = true; clearTimeout(timer); clearTimeout(retryTimer); device.checks.delete(check);
           if (device.kind === 'door' && method === 'request' && ['timeout', 'unavailable'].includes(status) && device.liveSinceConnect) {
             // Event-only state has no age expiry, but an explicitly unanswered
             // query is evidence that this route can no longer confirm it.
@@ -1650,6 +1650,19 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
           if (method === 'request') {
             check.reported.clear(); check.at = engine.clock();
             await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 1, retain: false }, device.broker);
+            if (device.meross && !completed) {
+              // QoS 0 state reads may be lost while the device is busy. One new
+              // signed GET retains this check's original deadline. Movement
+              // commands never enter this retry path.
+              retryTimer = setTimeout(() => {
+                void Promise.resolve().then(() => {
+                  if (completed || closed || !device.brokerConnected || !canControl()
+                    || device.subscriptionStatus !== 'subscribed') return;
+                  return publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 1, retain: false }, device.broker);
+                }).catch(() => check.finish('unavailable'));
+              }, 2000);
+              retryTimer.unref?.();
+            }
           }
           check.ready = true; completeChecks(device, engine.clock());
           if (method === 'subscription') check.finish(healthy(device, engine.clock()) ? 'last-reported'

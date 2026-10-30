@@ -6,6 +6,7 @@ import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { merossMessage, validMerossMessage } from '../src/acquisition/meross.js';
 import { mqttRouting } from '../src/acquisition/mqtt-routing.js';
+import { equipmentCoverResult } from '../chart/equipment.js';
 const uuid = '0123456789abcdef0123456789abcdef', key = 'abcdef0123456789abcdef0123456789';
 const door = channel => ({ id: `door${channel}`, area: 'garage', kind: 'door',
   connection: `mqtt:/appliance/${uuid}/publish`, cover_control: true, meross: { uuid, key, channel } });
@@ -78,6 +79,23 @@ test('signed queries recover both channels independently; native commands use Qo
   assert.equal(f.capture.status().devices[0].readings.door1_open.value, 1);
   f.authority(false);
   await assert.rejects(f.capture.setCover({ deviceId: 'door2', action: 'open' }));
+});
+
+test('fresh native contacts confirm Open and Close receipts in the dashboard without treating SETACK as state', async t => {
+  const f = fixture(t); await settle(); f.reply(1); f.reply(2); await settle();
+  const device = () => f.capture.status().devices[0];
+  assert.equal(device().cover.state, 'closed');
+  await f.capture.setCover({ deviceId: 'door1', action: 'open' });
+  f.reply(1, 1, { method: 'SETACK', execute: 1 });
+  assert.equal(device().cover.operation.status, 'published');
+  f.advance(1000); f.reply(1, 1, { method: 'PUSH' });
+  assert.equal(device().cover.state, 'open'); assert.equal(device().cover.operation.status, 'observed');
+  assert.match(equipmentCoverResult(device(), Date.parse('2026-10-30T10:00:01Z')), /state reported: open/);
+  await f.capture.setCover({ deviceId: 'door1', action: 'close' });
+  f.reply(1, 0, { retain: true }); assert.equal(device().cover.operation.status, 'published');
+  f.advance(1000); f.reply(1, 0, { method: 'PUSH' });
+  assert.equal(device().cover.state, 'closed'); assert.equal(device().cover.operation.status, 'observed');
+  assert.match(equipmentCoverResult(device(), Date.parse('2026-10-30T10:00:02Z')), /state reported: closed/);
 });
 test('retained, bad signatures, unmatched acknowledgements and stale reports grant no control; reconnect requires fresh reports', async t => {
   const f = fixture(t); await settle();

@@ -42,7 +42,7 @@ test('native QoS 0 keeps polling when firmware leaves QoS 1 deliveries unacknowl
   });
   const uuid = '0123456789abcdef0123456789abcdef', key = 'abcdef0123456789abcdef0123456789';
   const commandTopic = `/appliance/${uuid}/subscribe`, deviceTopic = `/appliance/${uuid}/publish`;
-  const packets = [], responses = new Set(), parser = mqttPacket.parser(); let subscribed = false;
+  const packets = [], responses = new Set(), parser = mqttPacket.parser(); let subscribed = false, droppedRead = false;
   device = createConnection({ host: '127.0.0.1', port });
   device.on('data', data => parser.parse(data));
   parser.on('packet', packet => {
@@ -54,6 +54,7 @@ test('native QoS 0 keeps polling when firmware leaves QoS 1 deliveries unacknowl
     // Model firmware that processes requests but omits protocol PUBACK at QoS 1.
     const query = JSON.parse(packet.payload);
     if (query.header.method !== 'GET') return;
+    if (packet.qos === 0 && !droppedRead) { droppedRead = true; return; }
     const reply = merossMessage(key, deviceTopic, 'GETACK', { state: [{ channel: 1, open: 0 }] });
     reply.header.messageId = query.header.messageId;
     reply.header.sign = createHash('md5').update(reply.header.messageId + key + reply.header.timestamp).digest('hex');
@@ -86,6 +87,7 @@ test('native QoS 0 keeps polling when firmware leaves QoS 1 deliveries unacknowl
       return app.publishAsync(topic, payload, options); } });
   await app.subscribeAsync(capture.topics, { qos: 0 }); capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
   await until(() => capture.status().devices[0].available);
+  assert.equal(droppedRead, true, 'A lost QoS 0 read recovers through a new bounded query');
   for (let i = 0; i < 25; i++) {
     const result = await capture.recheck({ deviceId: 'fixture_door' }); assert.equal(result.devices[0].available, true);
   }
