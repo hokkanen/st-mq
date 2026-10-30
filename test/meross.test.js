@@ -36,7 +36,7 @@ function fixture(t) {
 }
 test('Meross config enforces exact native identity, channel, finite age and no generic mapping', () => {
   for (const patch of [{ meross: { uuid, key, channel: 0 } }, { meross: { uuid, key } }, { max_age_seconds: 0 },
-    { mqtt: {} }, { connection: 'mqtt:other' }, { kind: 'switch' }])
+    { mqtt: { state_path: 'custom' } }, { readings: [{ key: 'other' }] }, { connection: 'mqtt:other' }, { kind: 'switch' }])
     assert.throws(() => equipmentConfiguration({ devices: [{ ...door(1), ...patch }] }));
   assert.throws(() => equipmentConfiguration({ devices: [door(1), { ...door(1), id: 'duplicate' }] }));
   const d = equipmentConfiguration({ devices: [door(3)] }).devices[0];
@@ -105,4 +105,39 @@ test('native signed messages use the normal MQTT transport and preserve manual-c
   assert.equal(commands.length, 1); assert.equal(commands[0].options.retain, false);
   client.emit('close'); client.emit('connect'); await settle();
   assert.equal(sent.filter(x => x.payload.header.method === 'SET').length, 1, 'Reconnect never resends a movement');
+});
+
+test('Supervisor empty mapping groups preserve a native Meross route without allowing custom overrides', () => {
+  assert.deepEqual(equipmentConfiguration({ devices: [door(1)] }),
+    equipmentConfiguration({ devices: [{ ...door(1), mqtt: {}, readings: [], temperature_control: {} }] }));
+});
+
+test('session establishment acknowledges Bind and Clock without actuating or inventing contact evidence', async t => {
+  const f = fixture(t); await settle();
+  const deviceTopic = `/appliance/${uuid}/publish`;
+  for (const [namespace, method, payload] of [
+    ['Appliance.Control.Bind', 'SET', { bind: {} }],
+    ['Appliance.System.Clock', 'PUSH', { clock: {} }],
+  ]) {
+    const message = merossMessage(key, deviceTopic, method, payload, Date.parse('2026-10-30T10:00:00Z'), namespace);
+    const before = f.sent.length;
+    f.capture.receiveDoors(deviceTopic, JSON.stringify(message), {}, Date.parse('2026-10-30T10:00:00Z'), 'primary');
+    await settle();
+    assert.equal(f.sent.length, before + 1, 'One appliance response, shared by both configured channels');
+    const sent = f.sent.at(-1);
+    assert.equal(sent.body.header.namespace, namespace);
+    assert.equal(sent.body.header.messageId, message.header.messageId);
+    assert.equal(sent.body.header.method, namespace.endsWith('Bind') ? 'SETACK' : 'PUSH');
+    assert.equal(sent.options.noReplay, true); assert.equal(sent.options.retain, false);
+    assert.equal(f.capture.isReadRequest(sent.topic, JSON.stringify(sent.body), 'primary'), true);
+    f.capture.receiveDoors(deviceTopic, JSON.stringify(message), {}, Date.parse('2026-10-30T10:00:00Z'), 'primary');
+    await settle(); assert.equal(f.sent.length, before + 1, 'Duplicate session message is not replayed');
+  }
+  assert.ok(f.capture.status().devices.every(d => !d.available));
+  assert.ok(f.sent.every(s => s.body.header.namespace !== 'Appliance.GarageDoor.State' || s.body.header.method === 'GET'));
+  f.authority(false);
+  const bind = merossMessage(key, deviceTopic, 'SET', {}, Date.parse('2026-10-30T10:00:00Z'), 'Appliance.Control.Bind');
+  const before = f.sent.length;
+  f.capture.receiveDoors(deviceTopic, JSON.stringify(bind), {}, Date.parse('2026-10-30T10:00:00Z'), 'primary');
+  await settle(); assert.equal(f.sent.length, before);
 });

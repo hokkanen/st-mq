@@ -41,7 +41,9 @@ expire after 90 seconds by default. An authenticated PUSH or a correlated GETACK
 provides contact evidence; retained messages, SETACK, executed-command fields,
 invalid signatures, stale timestamps and duplicate message IDs do not renew it.
 Device clocks ahead of reception are conservatively rejected. Polling and
-reconnection send GET only. Open/close use the existing authority, live readiness,
+reconnection send state GET requests only. Signed Bind/Clock session messages
+receive bounded protocol acknowledgements or clock replies; these cannot
+operate a door or establish contact evidence. Open/close use the existing authority, live readiness,
 bounded deadline, state-change and byte-write guards. Commands are never retained,
 retried or replayed. Broker acknowledgement does not prove device acceptance or
 movement. There is no native Stop command exposed for this device.

@@ -1266,7 +1266,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       return devices.some(device => device.broker === broker && readTopics(device).includes(topic)) ? JSON.stringify(['equipment-mqtt', topic]) : null;
     },
     isReadRequest(topic, payload, broker) {
-      return broker === 'primary' && meross.classify(topic, payload, 'GET') || broker === 'primary' && native?.isReadRequest(topic, payload)
+      return broker === 'primary' && (meross.classify(topic, payload, 'GET') || meross.isSessionReply(topic, payload)) || broker === 'primary' && native?.isReadRequest(topic, payload)
         || devices.some(device => device.broker === broker && topic === device.mqtt.requestTopic
           && String(payload) === device.mqtt.requestPayload);
     },
@@ -1352,6 +1352,20 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const rawBody = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (Buffer.byteLength(rawBody) > 65536) return true;
       for (const device of selected) {
+        if (device.meross && canControl()) {
+          const reply = meross.sessionReply(device, topic, rawBody, packet);
+          if (reply) {
+            const validate = () => {
+              if (closed || !canControl() || !device.brokerConnected || !meross.isSessionReply(device.mqtt.commandTopic, reply))
+                throw fail('Meross session response expired');
+            };
+            void Promise.resolve().then(() => {
+              validate();
+              return publish(device.mqtt.commandTopic, reply, { qos: 0, retain: false, noReplay: true,
+                beforePublish: validate, beforeWrite: () => { try { validate(); return true; } catch { return false; } } }, device.broker);
+            }).catch(() => {});
+          }
+        }
         const body = device.meross ? meross.decode(device, topic, rawBody, packet, receivedAt) : rawBody;
         if (body === null) continue;
         const input = parse(body);

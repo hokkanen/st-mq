@@ -97,7 +97,8 @@ export function equipmentConfiguration(input = {}) {
       if (!/^[a-f0-9]{32}$/.test(row.meross.uuid) || typeof row.meross.key !== 'string'
         || !/^[a-f0-9]{32}$/.test(row.meross.key) || row.kind !== 'door'
         || row.connection !== `mqtt:/appliance/${row.meross.uuid}/publish`
-        || row.mqtt !== undefined || row.readings !== undefined)
+        || row.mqtt !== undefined && (!plain(row.mqtt) || Object.keys(row.mqtt).length > 0)
+        || row.readings !== undefined && (!Array.isArray(row.readings) || row.readings.length > 0))
         throw new Error('Meross doors require exact native MQTT connection, key and channel without generic mappings');
       if (!Number.isInteger(row.meross.channel) || row.max_age_seconds === 0) throw new Error('Meross doors require a channel and finite freshness');
       meross = { uuid: row.meross.uuid, key: row.meross.key, channel: number(row.meross.channel, undefined, 1, 3, true) };
