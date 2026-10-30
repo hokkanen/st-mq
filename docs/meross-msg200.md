@@ -64,8 +64,19 @@ working local TLS listeners. Bind the Linux broker listener away from the VIP;
 map the HA add-on's published TLS listener to a distinct management port if it
 would conflict with the VIP frontend. Use the actual local TLS port in each
 node's configuration. Validate both before binding the appliance to the VIP.
-Meross firmware credentials differ from ordinary application credentials; derive
-and provision them privately using the reviewed upstream protocol.
+Meross firmware credentials differ from ordinary application credentials. Their
+username contains colons, so the Mosquitto password-file tool cannot provision
+it. Use the stock Dynamic Security plugin and the installed version's own
+`mosquitto_ctrl` password tooling, with a device role limited to its native topics
+and application reply topics. No anonymous access is needed.
+
+When the stock HA app's authentication chain rejects this account before the
+native plugin runs, the optional [shared broker app](../integrations/mqtt-broker/README.md)
+uses the same pinned broker image with a single local authentication owner. It
+replaces the stock broker, preserving existing accounts and management ports;
+it is not an additional device-specific broker. Preserve stored broker data and
+reconfigure internal hostname references during cutover. HA's independent Meross
+LAN HTTP path remains available through MQTT outages.
 
 Failover remains owner-confirmed under the [pairing contract](pairing.md). This
 is a shared endpoint over two independent brokers, not replicated MQTT session

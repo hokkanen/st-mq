@@ -77,3 +77,32 @@ test('Home Assistant empty nested Meross sections preserve generic equipment con
   assert.deepEqual(equipmentConfiguration({ devices: [d] }), equipmentConfiguration({ devices: [{ ...d, meross: {} }] }));
   assert.throws(() => equipmentConfiguration({ devices: [{ ...d, meross: { retired: true } }] }));
 });
+
+test('native signed messages use the normal MQTT transport and preserve manual-command fencing', async t => {
+  const { EventEmitter } = await import('node:events');
+  const { startMqtt } = await import('../src/acquisition/mqtt.js');
+  const store = new Store(':memory:'), client = new EventEmitter(), sent = [];
+  const now = Date.parse('2026-10-30T10:00:00Z');
+  client.subscribe = (topic, options, done) => done(null, [{ topic, qos: 1 }]);
+  client.publish = (topic, payload, options, done) => { sent.push({ topic, payload: JSON.parse(payload), options }); done(); };
+  client.end = (force, options, done) => done();
+  const equipment = equipmentConfiguration({ devices: [door(1)] });
+  const reader = await startMqtt({ engine: { clock: () => now, ingest() {} }, store,
+    config: { connections: { mqtt: { address: 'mqtt://fixture.invalid' }, equipment } },
+    connect: () => client, canControl: () => true });
+  t.after(async () => { await reader.close({ restore: false }); store.close(); });
+  client.emit('connect'); await settle(); await settle();
+  const query = sent.find(x => x.payload.header.method === 'GET');
+  assert.ok(query, 'SUBACK triggers a signed native GET on primary');
+  const reply = merossMessage(key, `/appliance/${uuid}/publish`, 'GETACK', { state: [{ channel: 1, open: 0 }] }, now);
+  reply.header.messageId = query.payload.header.messageId;
+  reply.header.sign = createHash('md5').update(`${reply.header.messageId}${key}${reply.header.timestamp}`).digest('hex');
+  client.emit('message', query.payload.header.from, Buffer.from(JSON.stringify(reply)), {});
+  await settle();
+  const result = await reader.equipment.setCover({ deviceId: 'door1', action: 'open' });
+  assert.equal(result.acknowledgement, 'mqtt-broker'); assert.equal(result.confirmed, false);
+  const commands = sent.filter(x => x.payload.header.method === 'SET');
+  assert.equal(commands.length, 1); assert.equal(commands[0].options.retain, false);
+  client.emit('close'); client.emit('connect'); await settle();
+  assert.equal(sent.filter(x => x.payload.header.method === 'SET').length, 1, 'Reconnect never resends a movement');
+});
