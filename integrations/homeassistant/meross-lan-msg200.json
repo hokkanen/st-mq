@@ -2,6 +2,6 @@
   "version": "5.8.0",
   "requirements": [],
   "originalSha256": "33ce19c7d6e3fed02465448a47264d818f1c73a3d7349d54a856260ddd373cc0",
-  "helperSha256": "8242a3e4d27f0cafce6d18b0ded0b5aa846a4d90dfdb1d54b13151fadb91b8d3",
-  "patchedSha256": "fbbf27e083b27772b154e393744200005864d2c62c6a5ca28ebba86c5f5235a3"
+  "helperSha256": "b5190b0edb0617d2651ed0e165552f8e8b95fe33ae07c0560321d281eced2117",
+  "patchedSha256": "b62a0047f0df04103cc3d1439f6ce31f7db54da3e6c2cf8bc04aa9aee46f6cc3"
 }

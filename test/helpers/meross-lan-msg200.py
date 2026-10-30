@@ -21,6 +21,7 @@ tree = ast.parse(patched)
 helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'stmq_garage_command_state')
 garage = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MLGarage')
 method = next(n for n in garage.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'async_request_position')
+config_mixin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'StmqGarageConfigMixin')
 mc = NS(KEY_PAYLOAD='payload', KEY_STATE='state', KEY_OPEN='open', KEY_EXECUTE='execute', KEY_CHANNEL='channel', METHOD_SET='SET')
 scope = {'mc': mc}
 exec(compile(ast.Module(body=[helper, method], type_ignores=[]), 'reviewed-garage-method', 'exec'), scope)
@@ -64,6 +65,36 @@ async def exercise(action, contact):
 
 asyncio.run(exercise(1, 0))
 asyncio.run(exercise(0, 1))
+
+
+class OriginalListMixin:
+    async def async_request_value(self, value):
+        return 'original-fallback'
+
+
+scope['me'] = NS(MEListChannelMixin=OriginalListMixin)
+exec(compile(ast.Module(body=[config_mixin], type_ignores=[]), 'reviewed-config-mixin', 'exec'), scope)
+
+
+async def config_write():
+    calls = []
+    async def request(*args):
+        calls.append(args)
+        return True
+    entity = scope['StmqGarageConfigMixin']()
+    entity.manager = NS(async_request_ack=request)
+    entity.ns = NS(name='Appliance.GarageDoor.MultipleConfig', key='config')
+    entity.channel = 2
+    for key, value in [('doorOpenDuration', 18000), ('doorCloseDuration', 22000), ('buzzerEnable', 1)]:
+        entity.key_value = key
+        assert await entity.async_request_value(value)
+        assert calls[-1] == (entity.ns.name, 'SET', {'config': {'channel': 2, key: value}})
+    entity.ns = NS(name='Appliance.GarageDoor.Config', key='config')
+    assert await entity.async_request_value(1) == 'original-fallback'
+    assert len(calls) == 3
+
+
+asyncio.run(config_write())
 with tempfile.TemporaryDirectory() as tmp:
     root = Path(tmp) / 'integration'
     (root / 'devices').mkdir(parents=True)

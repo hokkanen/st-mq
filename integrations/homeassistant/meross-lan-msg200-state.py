@@ -20,3 +20,14 @@ def stmq_garage_command_state(payload, channel):
     if type(state.get("open")) is not int or state["open"] not in (0, 1):
         raise ValueError("Garage acknowledgement has no binary contact")
     return state
+
+
+class StmqGarageConfigMixin(me.MEListChannelMixin):
+    async def async_request_value(self, value):
+        if self.ns.name != "Appliance.GarageDoor.MultipleConfig":
+            return await super().async_request_value(value)
+        # This firmware acknowledges a list-shaped write without applying it.
+        return await self.manager.async_request_ack(
+            self.ns.name, mc.METHOD_SET,
+            {self.ns.key: {mc.KEY_CHANNEL: self.channel, self.key_value: value}},
+        )

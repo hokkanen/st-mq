@@ -30,10 +30,15 @@ def patched_source(original):
         raise ValueError('Unreviewed Meross LAN garage source')
     helper = (BUNDLE / 'meross-lan-msg200-state.py').read_text()
     source = original.decode()
-    if source.count(BEFORE) != 1 or source.count('class MLGarage(MLCover):') != 1:
+    switch = 'class MLGarageMultipleConfigSwitch(me.MEListChannelMixin, MLSwitch):'
+    number = 'class MLGarageMultipleConfigNumber(MLConfigNumber):'
+    first_class = 'class MLGarageTimeoutBinarySensor(me.MEPartialAvailableMixin, MLBinarySensor):'
+    if any(source.count(s) != 1 for s in [BEFORE, switch, number, first_class]):
         raise ValueError('Reviewed Meross LAN source context differs')
-    result = source.replace(BEFORE, AFTER).replace(
-        'class MLGarage(MLCover):', helper + '\n\nclass MLGarage(MLCover):').encode()
+    result = (source.replace(BEFORE, AFTER)
+              .replace(first_class, helper + '\n\n' + first_class)
+              .replace(switch, 'class MLGarageMultipleConfigSwitch(StmqGarageConfigMixin, MLSwitch):')
+              .replace(number, 'class MLGarageMultipleConfigNumber(StmqGarageConfigMixin, MLConfigNumber):').encode())
     compile(result, 'garagedoor.py', 'exec')
     return result
 

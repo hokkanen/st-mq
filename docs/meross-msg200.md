@@ -19,6 +19,11 @@ The reviewed installer `scripts/apply-meross-lan-msg200.py` selects the matching
 channel and recognizes the separate execution flag. It preserves legacy
 single-channel responses and refuses ambiguous contacts. The execution flag
 starts the existing movement estimate; it is not physical completion evidence.
+The same firmware acknowledges list-shaped configuration writes without applying
+them. The adapter sends dictionary-shaped per-channel configuration writes for
+native garage numbers and switches, retaining the existing path for other
+namespaces. Always verify settings with a fresh native configuration GET and
+after Core restart; an optimistic HA number is not persisted device readback.
 Synthetic tests execute the installed upstream command method with different
 channel states, in addition to testing the installer and unknown-source refusal.
 
