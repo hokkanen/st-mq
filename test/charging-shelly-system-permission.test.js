@@ -26,6 +26,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   automatic = true, vehicleFeed = true, limiterEnabled = false, bmwTopic = null } = {}) {
   let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false, pendingStartEcho = null,
     planStartAt = START, ownershipSaveFailure = false, delayedStart = false, roundTailDelayMs = 0;
+  let bootAt = null;
   const data = new Map(), writes = [], echoTrace = [], client = new EventEmitter();
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: autoCharge };
@@ -97,7 +98,9 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   client.publish = (_topic, payload, _options, done) => {
     const frame = JSON.parse(payload), role = frame.params.role;
     let result;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
+    if (frame.method === 'Sys.GetStatus') result = bootAt === null ? {} : {
+      uptime: Math.floor((now - bootAt) / 1000), unixtime: Math.floor(now / 1000) };
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
     else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components: components(), status });
     else if (frame.method === 'Service.GetConfig') result = structuredClone(service);
     else if (frame.method === 'Service.GetStatus') result = structuredClone(serviceStatus);
@@ -158,7 +161,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     await runtime.setAdapter('charger2', adapter);
   };
   const adapter = createShellyEvseAdapter({ config: chargingConfiguration(config.charging).chargers.charger2,
-    broker: config.connections.mqtt, client, store, clock: () => now, canControl: () => true,
+    broker: config.connections.mqtt, client, store, clock: () => now, monotonicClock: () => now - START, canControl: () => true,
     engine: { recorder: { recordEnergy() {}, energyGap() {}, flush() {} } } });
   t.after(() => adapter.close());
   client.emit('connect'); client.emit('message', `${PREFIX}/online`, Buffer.from('true'), {}); await adapter.refresh();
@@ -173,6 +176,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     failOwnershipSave(value) { ownershipSaveFailure = value; },
     item: () => runtime.chargers.charger2,
     advance(ms) { now += ms; },
+    setBootAt(at) { bootAt = at; },
     meterNotification() {
       client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
         params: { ts: now / 1000, 'object:203': { value: meter(), last_update_ts: now / 1000 } } })), {});
@@ -214,6 +218,34 @@ async function startedFixture(t, options) {
   assert.equal(f.fields.start_charging.value, true);
   return f;
 }
+
+for (const writer of [false, true]) test(`reboot compatibility evidence reaches the durable session report and replays once; writer ${writer}`, async t => {
+  const f = await fixture(t, { durableStorage: true, automatic: false, vehicleFeed: false });
+  if (writer) await f.store.startWriter();
+  f.setBootAt(START - 100000); await f.adapter.refresh(); await f.reconnect();
+  const connectedAt = f.adapter.snapshot().session.connectedAt;
+  f.advance(10000); f.setBootAt(f.now - 1000);
+  f.fields.work_state = { value: 'charger_insert', at: START - 1000, source: 'sys' };
+  f.fields.start_charging = { value: false, at: START - 1000, source: 'sys' };
+  f.fields.current_limit = { value: 12, at: START - 1000, source: 'sys' };
+  await f.update(); f.advance(5000); await f.update(); f.advance(5000); await f.update();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().session.connectedAt, connectedAt);
+  await f.update();
+  const current = f.runtime.sessionDiagnostics.status(f.now).chargers.find(row => row.id === 'charger2').current;
+  assert(current);
+  const read = () => f.runtime.sessionDiagnostics.reportEvents({ chargerId: 'charger2', reportId: current.id, limit: 100 }).events;
+  let events = read();
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1);
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-restored').length, 1);
+  assert.equal(events.find(row => row.code === 'shelly-reboot-restored').reboot.outcome, 'manual',
+    'Automatic off preserves the independently observed native Stop');
+  assert.equal(events.filter(row => row.code === 'shelly-sys-off').length, 0);
+  await f.restart(); await f.update();
+  events = read(); assert.equal(events.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+  assert.equal(f.writes.length, 0, 'Reporting and Automatic off must not start charging');
+});
 
 for (const writer of [false, true])
 test(`queued BMW receipt cannot cancel a healthy identification after newer native admission; writer ${writer}`, async t => {

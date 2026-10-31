@@ -159,7 +159,8 @@ async function shellyFixture(t) {
   client.subscribe=(topics,_options,cb)=>cb(null,topics.map(topic=>({topic,qos:0})));
   client.publish=(_topic,payload,_options,cb)=>{
     const frame=JSON.parse(payload);let result;
-    if(frame.method==='Shelly.GetDeviceInfo')result={id:'synthetic-evse',model:'synthetic-model',fw_id:'synthetic-firmware'};
+    if(frame.method==='Sys.GetStatus')result={};
+    else if(frame.method==='Shelly.GetDeviceInfo')result={id:'synthetic-evse',model:'synthetic-model',fw_id:'synthetic-firmware'};
     else if(frame.method==='Shelly.GetComponents')result=shellyComponentReply(frame.params.keys,{service,serviceStatus,components,status});
     else if(frame.method==='Service.GetConfig')result=service;
     else if(frame.method==='Schedule.List')result={rev:1,jobs:[]};

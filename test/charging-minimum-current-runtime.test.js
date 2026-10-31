@@ -54,7 +54,8 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     const reads = role => frame.method === 'Shelly.GetComponents' ? frame.params.keys.includes(`${components[role][0].toLowerCase()}:${components[role][1]}`)
       : frame.params.role === role && frame.method.endsWith('.GetStatus');
     let result, respond = true, replyBoundary;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-minimum-second' };
+    if (frame.method === 'Sys.GetStatus') result = {};
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-minimum-second' };
     else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components: capabilities(), status });
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = { state: 'running' };

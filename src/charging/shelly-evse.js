@@ -6,7 +6,9 @@ import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { validShellyDeviceHold, shellyDevicePermission, validShellyCompatibility, compatibilityScope,
   compatibilityPermission, compatibilityStart, compatibilityRecovery, compatibilityEvent, compatibilityDebit,
-  compatibilityAcknowledgedStart } from './shelly-compatibility.js';
+  compatibilityAcknowledgedStart, validShellyBootState, validShellyBootSample, validShellyBootEpoch, shellyBootInterval,
+  classifyShellyBoot, shellyRebootBaseline, shellyRebootSettings, SHELLY_REBOOT_ROLES,
+  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline } from './shelly-compatibility.js';
 import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
@@ -18,7 +20,7 @@ const PERMISSION_EVENT_LIMIT = 64;
 const RPC_TIMEOUT_MS = 5000;
 const PHASE_KEYS = ['phase_a', 'phase_b', 'phase_c'];
 const MUTATIONS = new Set(['Number.Set', 'Boolean.Set', 'Schedule.Update']);
-const METHODS = new Set(['Shelly.GetDeviceInfo', 'Shelly.GetComponents', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
+const METHODS = new Set(['Sys.GetStatus', 'Shelly.GetDeviceInfo', 'Shelly.GetComponents', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
 export function shellyAssociation(config, broker) {
@@ -52,6 +54,10 @@ const validPermissionEvent = event => event && typeof event === 'object' && !Arr
 
 export function validateShellyAcquisitionState(state, association = state?.association) {
   if (!state || typeof state !== 'object' || Array.isArray(state) || state.version !== 2 || state.association !== association
+    || !validShellyBootState(state.boot)
+    || Object.values(state.fields ?? {}).some(field => field.bootEpoch !== undefined && (!state.boot || !validShellyBootEpoch(field.bootEpoch))
+      || field.rebootBaseline !== undefined && field.rebootBaseline !== field.bootEpoch)
+    || state.counter?.bootEpoch !== undefined && (!state.boot || !validShellyBootEpoch(state.counter.bootEpoch))
     || ['checkSession', 'sessionCheck'].some(key => Object.hasOwn(state, key))
     || state.counter && Object.hasOwn(state.counter, 'powerW')
     || Object.keys(state.fields ?? {}).some(role => !Object.hasOwn(TYPES, role))
@@ -80,7 +86,8 @@ export function validateShellyAcquisitionState(state, association = state?.assoc
 }
 
 /** EVSE RPC transport, deliberately separate from generic relay equipment. */
-export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
+export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now,
+  monotonicClock = () => performance.now(), canControl = () => false } = {}) {
   config = shellyProfile(config);
   try { store.writeHealth?.monitorCommands?.('charger2-command'); } catch { /* Passive monitoring. */ }
   const controlAttempt = () => createControlAttempt({ store, context: 'charger2-command' });
@@ -101,6 +108,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
   let lastRpcTimeout = null;
+  let systemSample = null, systemMonotonic = null, bootCandidate = null, rebootRound = null, firstRebootRound = null;
+  let rebootIntent = null;
+  const rebootPending = () => Boolean(bootCandidate || state.boot?.incident && state.boot.incident.phase !== 'ready');
   let statusObserver = null;
   const cancellation = new AbortController();
   let storagePending = 0;
@@ -132,7 +142,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         pending.delete(packet.responseId);
         packet.response.reject(fail(reason === 'cleared' ? 'evse-offline' : 'evse-source-clock-unavailable'));
       }
-      if (reason !== 'cleared' && packet.epoch === generation && !closed) {
+      if (reason !== 'cleared' && packet.response?.method !== 'Sys.GetStatus' && packet.epoch === generation && !closed) {
         controlReady = false; readinessRevision++; error = 'evse-source-clock-unavailable';
         if (reason === 'overflow') eventOverflow = true;
         publishStatus();
@@ -178,7 +188,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     && discovered && profileSupported && service?.id === config.serviceId && nativeServiceAvailable()
     && !eventOverflow && !state.permissionOverflow
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
-  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0
+  const ready = () => !rebootPending() && controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0
     && (store.canDispatch?.() ?? true);
   const currentReady = () => ready() && currentControlReady;
   function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal, attempt } = {}) {
@@ -304,10 +314,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return values.filter(value => finite(value?.last_update_ts) && value.last_update_ts > 0)
       .map(value => Math.round(value.last_update_ts * 1000));
   };
-  async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null,
+  async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, captureReceipt = false, identificationCurrent = null,
     attempt = createControlAttempt({ store, context: 'charger2-command', kind: mutation ? 'mutation' : 'query' }) } = {}) {
     try {
-    const epoch = generation;
+    const epoch = generation, bootEpoch = state.boot?.epoch;
     let remainingAdmissionMs = RPC_TIMEOUT_MS;
     const mayWait = mutation && typeof guard === 'function';
     guard ??= () => true;
@@ -328,7 +338,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       && identificationCurrent.originalCurrentA <= Math.min(config.maximumCurrentA, currentConfig.max)
       && (identificationCurrent.phase !== 'restoring' || params.value === identificationCurrent.originalCurrentA
         || config.limiterEnabled && currentReady());
-    const permitted = () => ready() && !notificationPending.size && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
+    const permitted = () => state.boot?.epoch === bootEpoch && ready() && !notificationPending.size && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
       && (method !== 'Number.Set' || config.limiterEnabled && currentReady() || identificationCurrentAllowed());
     const settleInput = async () => {
       // Received-input waits and the native reply share the command budget.
@@ -360,10 +370,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return await new Promise((resolve, reject) => {
       const requestedAt = clock(), started = performance.now();
       const replyTimeoutMs = Math.max(1, Math.floor(remainingAdmissionMs));
-      const item = { generation: epoch, retired: false,
+      const item = { generation: epoch, retired: false, method, captureReceipt, requestedAt, started: monotonicClock(),
         resolve(value) { item.retired = true; resolve(value); },
         reject(cause) { item.retired = true; reject(cause); },
-        readback: statusReadback ? { generation: epoch, sessionSequence: state.sessionSequence, requestedAt: clock(),
+        readback: statusReadback ? { generation: epoch, bootEpoch, sessionSequence: state.sessionSequence, requestedAt: clock(),
           ...(componentReadback ? { keys: [...params.keys], components: [...componentRoles].filter(([key]) => params.keys.includes(key)).map(([key, role]) =>
             ({ key, role, revision: fieldRevisions.get(role) ?? 0 })) }
             : { role: params.role, revision: fieldRevisions.get(params.role) ?? 0 }) } : null };
@@ -411,6 +421,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     }
     const measuredAt = finite(result.last_update_ts) && result.last_update_ts > 0 ? Math.round(result.last_update_ts * 1000) : null;
     const previous = state.fields[role], delta = notificationPending.get(role);
+    if (readback && readback.bootEpoch !== state.boot?.epoch
+      && !(readback.bootEpoch === undefined && state.boot?.incident === null)) return false;
+    if (readback && rebootRound && SHELLY_REBOOT_ROLES.includes(role)) {
+      if (readback.generation === generation && readback.revision === (fieldRevisions.get(role) ?? 0))
+        rebootRound.fields[role] = { value: copy(result.value), measuredAt, receivedAt, retained,
+          source: 'shelly-evse', commandSource: typeof result.source === 'string' ? result.source : null,
+          ...(admittedAt === undefined ? {} : { admittedAt }), readback: copy(readback) };
+      return false;
+    }
     if (readback && delta && readback.requestedAt >= delta.receivedAt
       && !Object.hasOwn(result, 'source') && (!delta.valueKnown || delta.value === null
         || JSON.stringify(result.value) === JSON.stringify(delta.value)))
@@ -442,6 +461,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       // clocks; this is receipt freshness, never a new instruction or plug edge.
       const before = copy(state);
       previous.receivedAt = receivedAt; previous.retained = false;
+      if (state.boot?.incident) previous.bootEpoch = state.boot.epoch;
       if (delta && readback.requestedAt >= delta.receivedAt) delete previous.invalidatedAt;
       if (admittedAt !== undefined) previous.admittedAt = admittedAt;
       else delete previous.admittedAt;
@@ -502,6 +522,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     try {
       const record = () => {
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse', ...(admittedAt === undefined ? {} : { admittedAt }),
+          ...(state.boot?.incident ? { bootEpoch: state.boot.epoch } : {}),
           commandSource: typeof result.source === 'string' ? result.source : null };
         if (readback) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt, ...(admittedAt === undefined ? {} : { admittedAt }) };
         if (role === 'work_state' && !retained) reconcileConnection(value, measuredAt, receivedAt);
@@ -510,7 +531,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           // This EVSE role reports kW already; it is not a generic Shelly W meter.
           const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power);
           let acceptedEnergy = false;
-          if (before && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2 && total >= before.value) {
+          if (before && !bootCandidate && (!state.boot?.incident || before.bootEpoch === state.boot.epoch)
+            && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2 && total >= before.value) {
             const energy = total - before.value;
             const plausible = config.maximumCurrentA * 3 * 300 / 1000 * (measuredAt - before.at) / 3600000 * 1.2;
             if (energy <= plausible + .001) {
@@ -536,11 +558,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
                   start: before.at, end: measuredAt, referenceKwh: energy, reason: 'unknown-phase-share' }, receivedAt);
               }
             } else { meterError = 'evse-counter-jump'; }
-          } else if (before && total < before.value) { meterError = 'evse-counter-reset'; }
+          } else if (state.boot?.incident && before?.bootEpoch !== state.boot.epoch) { meterError = null; }
+          else if (before && total < before.value) { meterError = 'evse-counter-reset'; }
           if (before && !acceptedEnergy) engine.recorder.energyGap?.({
             source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt, admittedAt,
-            quality: [total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
-          state.counter = { at: measuredAt, value: total, phasePowers };
+            quality: [bootCandidate || state.boot?.incident && before.bootEpoch !== state.boot.epoch ? 'meter-report-gap'
+              : total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
+          state.counter = { at: measuredAt, value: total, phasePowers, ...(state.boot?.incident ? { bootEpoch: state.boot.epoch } : {}) };
         }
         persist();
       };
@@ -551,6 +575,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return true;
   }
   function admitReadback(readback, result, receivedAt, admittedAt) {
+    if (readback.bootEpoch !== state.boot?.epoch
+      && !(readback.bootEpoch === undefined && state.boot?.incident === null)) return;
+    if (rebootRound && SHELLY_REBOOT_ROLES.includes(readback.role)) {
+      accept(readback.role, result, receivedAt, false, readback, admittedAt);
+      return;
+    }
     const role = readback.role;
     const eligible = readback.generation === generation && readback.revision === (fieldRevisions.get(role) ?? 0);
     accept(role, result, receivedAt, false, readback, admittedAt);
@@ -614,7 +644,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
             }
             if (readError) throw readError;
           } else if (item.readback) admitReadback(item.readback, frame.result, receivedAt, admittedAt);
-          afterCommit(() => item.resolve(frame.result));
+          afterCommit(() => item.resolve(item.captureReceipt ? { value: frame.result, requestedAt: item.requestedAt,
+            receivedAt, ...(admittedAt === undefined ? {} : { admittedAt }),
+            monotonicRequestedAt: item.started } : frame.result));
         } catch (cause) {
           controlReady = false; readinessRevision++; error = cause.code ?? 'evse-read-unavailable';
           item.reject(cause);
@@ -646,7 +678,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending]
       .map(map => [map, new Map(map)]);
     const savedRequests = requests ? new Map(pending) : null;
-    store.afterRollback?.(() => {
+    const restore = () => {
       state = before;
       // Disconnect/reset is immediate transport evidence. A failed older save
       // restores durable fields without reviving that connection's admission.
@@ -660,8 +692,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           if (!item.retired && !pending.has(id)) pending.set(id, item);
       }
       engine.recorder?.reload?.();
-    });
+    };
+    store.afterRollback?.(restore);
+    return restore;
   }
+  const writeReboot = action => write(() => {
+    const restore = preserveAdmissionState(), previousRound = firstRebootRound, epoch = generation;
+    try { return action(); }
+    catch (cause) {
+      restore();
+      if (epoch === generation) firstRebootRound = previousRound;
+      throw cause;
+    }
+  });
   function receive(topic, payload, packet = {}, receivedAt = clock(), timeAdmission = null) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536
       || !topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
@@ -686,7 +729,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       try { frame = JSON.parse(body); } catch {}
       if (frame?.src === config.deviceId) {
         const sourceClocks = topic === `${source}/rpc`
-          ? replySourceClocks(frame.result, response?.readback)
+          ? response?.method === 'Sys.GetStatus' && finite(frame.result?.unixtime) && frame.result.unixtime > 0
+            ? [Math.round(frame.result.unixtime * 1000)] : replySourceClocks(frame.result, response?.readback)
           : ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)
             ? [frame.params?.ts, ...Object.values(frame.params ?? {}).map(value => value?.last_update_ts)]
               .filter(value => finite(value) && value > 0).map(value => Math.round(value * 1000)) : [];
@@ -695,7 +739,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         if (sourceTime > receivedAt && temporal.status === 'invalid') {
           if (response && pending.get(responseId) === response) pending.delete(responseId);
           response?.reject(fail('evse-source-clock-unavailable'));
-          controlReady = false; readinessRevision++; error = 'evse-source-clock-unavailable'; publishStatus();
+          if (response?.method !== 'Sys.GetStatus') {
+            controlReady = false; readinessRevision++; error = 'evse-source-clock-unavailable'; publishStatus();
+          }
           return;
         }
         if (sourcePending.defer(++sourcePacketSequence, { topic, body, metadata, epoch, sourceTime, response, responseId }, { sourceTime, receivedAt })) {
@@ -733,9 +779,20 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   function admitNotification(params, at, retained, method = 'NotifyStatus', admittedAt) {
     let accepted = true;
     const eventAt = finite(params?.ts) && params.ts > 0 ? Math.round(params.ts * 1000) : null;
+    const bootAt = state.boot?.incident ? shellyBootInterval(state.boot.incident.samples[1]).lower : null;
+    // A queued preboot notification cannot revive that boot's control scope.
+    if (bootAt !== null && eventAt !== null && eventAt < bootAt) return true;
     for (const [key, delta] of Object.entries(params ?? {})) {
       const role = componentRoles.get(key);
       if (!role) continue;
+      if (rebootPending() && SHELLY_REBOOT_ROLES.includes(role)) {
+        firstRebootRound = null;
+        if (rebootRound) rebootRound.changed = true;
+        // Startup initialization is sampled by correlated reads, never turned
+        // into another SYS incident or a new connection edge.
+        if (delta.source === 'sys' && finite(delta.last_update_ts) && bootAt !== null
+          && delta.last_update_ts * 1000 <= bootAt) continue;
+      }
       try {
         // Full component readings retain their native value clock. A partial
         // notification is a separate event, never a fabricated last_update_ts.
@@ -809,7 +866,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   // readback once. Received input fences this before admission; source
   // clocks and command/readback freshness are never renewed by reuse.
   // The controller owns the single status observer, including during a poll.
-  const readBoundary = () => [generation, receivedInputRevision, sourcePacketSequence, statusObserver, readinessRevision, verifiedReadinessRevision,
+  const readBoundary = () => [generation, state.boot?.epoch, receivedInputRevision, sourcePacketSequence, statusObserver, readinessRevision, verifiedReadinessRevision,
     state.sessionSequence, state.connection?.connected, state.connection?.sessionId, state.connection?.connectedAt,
     state.notificationRevision, readAt, serviceAt, ...Object.keys(TYPES).map(role => fieldRevisions.get(role))];
   const reusableRead = () => Number.isSafeInteger(receivedInputRevision) && !closed && connected && admitted && online && !error && !meterError
@@ -825,6 +882,152 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         && readBoundary().every((value, index) => Object.is(value, boundary[index])));
     } catch { return false; }
   };
+  function rebootEvent(code, detail = {}) {
+    const boot = state.boot, incident = boot.incident;
+    if (incident.connectedAt === null) return;
+    const metadata = {};
+    for (const [key, value] of Object.entries({ model: info?.model, firmware: info?.ver ?? info?.fw_id }))
+      if (typeof value === 'string' && /^[\w .:+/-]{1,128}$/.test(value)) metadata[key] = value;
+    boot.events.push({ sequence: ++boot.sequence, at: clock(), code, incidentId: incident.id,
+      connectedAt: incident.connectedAt, policy: 'reboot-state', ...metadata, reboot: detail });
+    // Do not silently discard unreported incidents when storage is unavailable.
+    if (boot.events.length > 128) throw fail('evse-reboot-report-overflow');
+  }
+  async function readSystem() {
+    let response;
+    const epoch = generation;
+    const lastReadAt = state.fields.work_state?.readback?.receivedAt;
+    try { response = await rpc('Sys.GetStatus', {}, { captureReceipt: true }); }
+    catch { return null; } // Optional evidence does not revoke ordinary control.
+    if (closed || epoch !== generation || !connected || !admitted || !online) return null;
+    const sample = { uptime: response.value?.uptime, unixtime: response.value?.unixtime,
+      requestedAt: response.requestedAt, receivedAt: response.receivedAt,
+      ...(response.admittedAt === undefined ? {} : { admittedAt: response.admittedAt }) };
+    if (!validShellyBootSample(sample) || sample.receivedAt > clock() || clock() - sample.receivedAt > config.maxAgeMs
+      || !validateAdmittedSourceTime({ sourceTime: sample.unixtime * 1000, receivedAt: sample.receivedAt,
+        admittedAt: sample.admittedAt, now: clock() })) return null;
+    const elapsedMs = systemSample ? response.monotonicRequestedAt - systemMonotonic : undefined;
+    const prior = systemSample ?? state.boot?.anchor;
+    const classification = classifyShellyBoot({ previous: prior, sample, elapsedMs, lastReadAt });
+    if (classification === 'unknown') { firstRebootRound = null; return null; }
+    if (bootCandidate) {
+      const continuation = classifyShellyBoot({ previous: bootCandidate.sample, sample,
+        elapsedMs: response.monotonicRequestedAt - bootCandidate.monotonic });
+      if (continuation === 'same' && sample.requestedAt - bootCandidate.sample.requestedAt >= 5000) {
+        const candidate = bootCandidate;
+        // Discovery from the earlier boot must not label the new incident with
+        // stale firmware metadata or authorize its identity.
+        const identity = await rpc('Shelly.GetDeviceInfo');
+        if (closed || epoch !== generation || !connected || !admitted || !online) return null;
+        if (identity?.id !== config.deviceId) throw fail('evse-component-mapping-unverified');
+        info = identity;
+        await writeReboot(() => {
+          if (state.boot?.incident && state.boot.incident.phase !== 'ready')
+            rebootEvent('shelly-reboot-superseded', { reason: 'reboot-unconfirmed' });
+          const epoch = randomUUID(), previous = state.boot;
+          state.boot = { epoch, anchor: candidate.sample, sequence: previous?.sequence ?? 0,
+            events: copy(previous?.events ?? []), incident: { id: epoch, detectedAt: clock(), phase: 'checking',
+              reason: 'checking', samples: [candidate.sample, sample],
+              connectedAt: state.connection?.connected === true ? state.connection.connectedAt : null,
+              reconciledAt: null, issueObserved: false, controlRestoredAt: null } };
+          rebootEvent('shelly-reboot-observed', { samples: [candidate.sample, sample],
+            bootInterval: shellyBootInterval(sample), before: shellyRebootSettings(state.fields), intent: copy(rebootIntent) });
+          persist();
+        });
+        bootCandidate = null; firstRebootRound = null;
+        discovered = controlReady = false; readinessRevision++;
+        // A query from the earlier boot can no longer admit native fields.
+        fieldGenerations.clear();
+      } else if (continuation !== 'same') bootCandidate = { sample, monotonic: response.monotonicRequestedAt };
+    } else if (classification === 'reboot') {
+      bootCandidate = { sample, monotonic: response.monotonicRequestedAt };
+      controlReady = false;
+    } else if (!state.boot) {
+      await writeReboot(() => {
+        state.boot = { epoch: randomUUID(), anchor: sample, incident: null, sequence: 0, events: [] };
+        persist();
+      });
+    }
+    systemSample = sample; systemMonotonic = response.monotonicRequestedAt;
+    return { sample, classification, monotonic: response.monotonicRequestedAt };
+  }
+  async function finishRebootRound(round, systemBefore) {
+    if (!state.boot?.incident || state.boot.incident.phase === 'ready') return;
+    const epoch = state.boot.epoch, systemAfter = await readSystem();
+    if (state.boot?.epoch !== epoch || generation !== round.generation) return;
+    const stableBoot = systemBefore && systemAfter && state.boot.epoch === epoch && !bootCandidate
+      && classifyShellyBoot({ previous: systemBefore.sample, sample: systemAfter.sample,
+        elapsedMs: systemAfter.monotonic - systemBefore.monotonic }) === 'same';
+    let decision = stableBoot && !round.changed ? shellyRebootBaseline({ boot: state.boot,
+      before: state.fields, after: round.fields, session: state.connection, connectedStates: [...config.connectedStates, ...config.chargingStates],
+      disconnectedStates: config.disconnectedStates, now: clock() }) : { allowed: false, reason: 'readback-required' };
+    if (!nativeServiceAvailable()) decision = { ...decision, allowed: false, reason: 'native-restriction' };
+    const physicalReady = () => live('phase_info') && state.fields.phase_info?.bootEpoch === epoch
+      && clock() - state.fields.phase_info.measuredAt <= config.maxAgeMs
+      && state.fields.phase_info.measuredAt >= shellyBootInterval(state.boot.incident.samples[1]).lower;
+    if (!physicalReady()) decision = { ...decision, allowed: false, reason: 'readback-required' };
+    if (Object.values(round.fields).some(field => field.receivedAt > clock() || clock() - field.receivedAt > config.maxAgeMs))
+      decision = { allowed: false, reason: 'readback-required' };
+    // Receipt times differ on every read; only native values, origins and source
+    // clocks establish stability. The intervals themselves remain in the proof.
+    const identity = JSON.stringify(SHELLY_REBOOT_ROLES.map(role => {
+      const field = round.fields[role]; return [field?.value, field?.measuredAt, field?.commandSource];
+    }));
+    await writeReboot(() => {
+      if (state.boot?.epoch !== epoch || generation !== round.generation) return;
+      const incident = state.boot.incident;
+      if (round.changed || SHELLY_REBOOT_ROLES.some(role => round.fields[role]?.readback.revision !== (fieldRevisions.get(role) ?? 0))) {
+        firstRebootRound = null; incident.phase = 'checking'; incident.reason = 'control-changed'; persist(); return;
+      }
+      if (!physicalReady()) decision = { ...decision, allowed: false, reason: 'readback-required' };
+      if (Object.values(round.fields).some(field => field.receivedAt > clock()
+        || clock() - field.receivedAt > config.maxAgeMs
+        || !validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt,
+          admittedAt: field.admittedAt, now: clock() }))) decision = { allowed: false, reason: 'readback-required' };
+      const confirmed = decision.allowed && firstRebootRound?.identity === identity
+        && round.requestedAt - firstRebootRound.requestedAt >= 5000;
+      if (decision.workaround && !incident.issueObserved) {
+        incident.issueObserved = true;
+        rebootEvent('shelly-reboot-reconciliation', { before: shellyRebootSettings(state.fields),
+          after: shellyRebootSettings(round.fields), intent: copy(rebootIntent),
+          continuityRetained: decision.connected && incident.connectedAt !== null
+            && state.connection?.connectedAt === incident.connectedAt });
+      }
+      if (!decision.allowed) {
+        firstRebootRound = null;
+        if (incident.reason !== decision.reason) {
+          incident.phase = 'blocked'; incident.reason = decision.reason;
+          rebootEvent('shelly-reboot-blocked', { reason: decision.reason });
+        }
+        persist();
+        return;
+      }
+      if (!confirmed) {
+        firstRebootRound ??= { identity, requestedAt: round.requestedAt };
+        if (firstRebootRound.identity !== identity) firstRebootRound = { identity, requestedAt: round.requestedAt };
+        incident.phase = 'reconciling'; incident.reason = 'readback-required'; persist(); return;
+      }
+      const bootAt = shellyBootInterval(incident.samples[1]).lower;
+      for (const role of SHELLY_REBOOT_ROLES) {
+        const field = round.fields[role];
+        state.fields[role] = { ...field, bootEpoch: epoch,
+          ...(field.commandSource === 'sys' && field.measuredAt <= bootAt ? { rebootBaseline: epoch } : {}),
+          readback: { requestedAt: field.readback.requestedAt, measuredAt: field.measuredAt,
+            receivedAt: field.receivedAt, ...(field.admittedAt === undefined ? {} : { admittedAt: field.admittedAt }) } };
+        fieldGenerations.set(role, generation);
+        notificationBaselines.set(role, { value: copy(field.value), commandSource: field.commandSource, measuredAt: field.measuredAt });
+      }
+      // Reboot alone never creates a plug edge. A current disconnected state
+      // may retire a session only through its ordinary, ordered source clock.
+      if (!decision.connected) reconcileConnection(round.fields.work_state.value,
+        round.fields.work_state.measuredAt, round.fields.work_state.receivedAt);
+      incident.phase = 'ready'; incident.reason = 'reconciled'; incident.reconciledAt = clock();
+      rebootEvent('shelly-reboot-baseline', { reason: 'reconciled',
+        continuityRetained: decision.connected && incident.connectedAt !== null
+          && state.connection?.connectedAt === incident.connectedAt });
+      persist();
+    });
+  }
   async function refresh({ force = false, completedRead } = {}) {
     if (!force && consumeRead(completedRead)) return;
     // A poll already in flight may have requested a setting before a write was
@@ -832,8 +1035,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     // confirmation; receipt after the reply cannot change that request's order.
     if (force && polling) await polling;
     if (polling || !connected || !admitted || closed) return polling;
-    const epoch = generation, readinessAtStart = readinessRevision, observerAtStart = statusObserver;
+    const epoch = generation, observerAtStart = statusObserver;
     polling = (async () => {
+      // Ordinary optional system reads must not serialize the electrical poll
+      // behind writer admission. Recovery already fences commands and needs its
+      // confirmed epoch before it can discover/stage a replacement baseline.
+      const systemFlight = readSystem().then(value => ({ value }), cause => ({ cause }));
+      let systemBefore;
+      if (!discovered || rebootPending()) {
+        const result = await systemFlight;
+        if (result.cause) throw result.cause;
+        systemBefore = result.value;
+      }
+      if (epoch !== generation || closed) return;
       if (!discovered) {
         let deviceRead;
         [deviceRead, service, currentConfig] = await Promise.all([
@@ -866,7 +1080,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           for (const event of events) if (!admitNotification(event.params, event.at, event.retained, event.method, event.admittedAt)) admission.restore(event.admissionCheckpoint);
         }, { epoch });
       }
+      const readinessAtStart = readinessRevision;
       let eligible = false;
+      const round = state.boot?.incident && state.boot.incident.phase !== 'ready'
+        ? { fields: {}, requestedAt: clock(), generation, changed: false } : null;
+      rebootRound = round;
       const checked = promise => promise.catch(cause => {
         if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
         throw cause;
@@ -911,13 +1129,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const [controlComponents, physicalComponents] = componentBatches().map(keys =>
         rpc('Shelly.GetComponents', { keys, include: ['config', 'status'] }, { statusReadback: true })
           .then(result => componentRows(result, keys)));
-      const reads = await Promise.allSettled([checked(metadata()), checked(controlComponents), checked(physicalComponents)]);
+      const reads = await Promise.allSettled([checked(metadata()), checked(controlComponents), checked(physicalComponents), systemFlight]);
       if (epoch !== generation) return;
       const failed = reads.find(result => result.status === 'rejected');
       if (failed) throw failed.reason;
+      if (reads[3].value.cause) throw reads[3].value.cause;
+      systemBefore ??= reads[3].value.value;
+      if (round) await finishRebootRound(round, systemBefore);
       // A notification error during any await invalidates this refresh too.
       // Its later successful replies must not erase the newer failure.
-      if (eligible && readinessAtStart === readinessRevision) {
+      if (eligible && readinessAtStart === readinessRevision && !rebootPending()) {
         verifiedReadinessRevision = readinessRevision; controlReady = true; error = null;
       }
       readAt = clock();
@@ -931,11 +1152,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       } catch { /* Unknown reuse proof keeps the ordinary fresh-read path. */ }
     })().catch(cause => {
       if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
-    }).finally(() => { polling = null; if (epoch === generation) publishStatus(); });
+    }).finally(() => { rebootRound = null; polling = null; if (epoch === generation) publishStatus(); });
     return polling;
   }
   function connect() {
     lastRpcTimeout = null;
+    firstRebootRound = rebootRound = null;
     sourcePending.clear();
     notificationBaselines.clear();
     connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false; verifiedReadinessRevision = null;
@@ -952,6 +1174,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   function disconnect() {
     sourcePending.clear();
+    firstRebootRound = rebootRound = null;
     connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline');
     publishStatus();
   }
@@ -973,9 +1196,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   // preparation cannot become an unrestricted probe while readback is pending.
   const observationReady = () => Boolean(connected && admitted && online && observationServiceReady() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
-  const basicReady = () => controlReady && observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
+  const basicReady = () => !rebootPending() && controlReady && observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
   const commandBlockReason = () => !connected || !admitted || !online ? 'provider-offline'
-    : error ?? (state.permissionOverflow ? 'evse-permission-event-overflow'
+    : error === 'evse-reboot-report-overflow' ? error
+      : rebootPending() ? state.boot?.incident?.phase === 'blocked' ? 'evse-reboot-blocked' : 'evse-reboot-checking'
+      : error ?? (state.permissionOverflow ? 'evse-permission-event-overflow'
       : notificationPending.size ? 'evse-notification-readback-required'
         : !knownWorkState() ? 'evse-work-state-unavailable'
           : !observationReady() ? 'evse-read-unavailable'
@@ -1007,6 +1232,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     notificationRevision: state.notificationRevision ?? 0, notificationPending: [...notificationPending.keys()],
     permissionEvents: copy(state.permissionEvents ?? []), permissionSequence: state.permissionSequence ?? 0,
     permissionOverflow: state.permissionOverflow === true,
+    reboot: state.boot ? copy(state.boot) : null,
     error: error ?? (state.permissionOverflow ? 'evse-permission-event-overflow' : notificationPending.size ? 'evse-notification-readback-required' : ready() && !knownWorkState() ? 'evse-work-state-unavailable'
       : ready() && (!settingFresh('start_charging') || !settingFresh('current_limit')) ? 'evse-read-unavailable' : null), generation,
     commissioning: { profileSupported, identityMatched: discovered, controlReady: basicReady(), currentControlReady: basicReady() && currentControlReady,
@@ -1045,6 +1271,28 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     ]);
   };
   const adapter = { association, config, snapshot, readings, refresh, rpc, waitForInputAdmission, controlAttempt,
+    observeRebootIntent(value) {
+      if (!validShellyRebootIntent(value)) throw fail('invalid-evse-command');
+      rebootIntent = copy(value);
+    },
+    async recordRebootControl(outcome, { guard } = {}) {
+      if (!SHELLY_REBOOT_OUTCOMES.includes(outcome) || typeof guard !== 'function') throw fail('invalid-evse-command');
+      const incident = state.boot?.incident;
+      if (!incident || incident.phase !== 'ready' || incident.controlRestoredAt !== null) return;
+      const intent = copy(rebootIntent);
+      await writeReboot(() => {
+        if (state.boot?.incident !== incident || incident.controlRestoredAt !== null || !guard()) return;
+        incident.controlRestoredAt = clock();
+        rebootEvent('shelly-reboot-restored', { outcome, intent }); persist();
+      });
+    },
+    async acknowledgeRebootEvents(sequence) {
+      if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence > (state.boot?.sequence ?? 0)) throw fail('invalid-evse-cursor');
+      if (!state.boot || !state.boot.events.some(event => event.sequence <= sequence)) return;
+      await writeReboot(() => {
+        state.boot.events = state.boot.events.filter(event => event.sequence > sequence); persist();
+      });
+    },
     deviceInfo() {
       return device ? { ...device, available: !closed && connected && admitted && online && discovered
         && deviceGeneration === generation && time(readAt) && clock() >= readAt && clock() - readAt <= config.maxAgeMs } : null;
@@ -1138,8 +1386,9 @@ function validCurrentTest(value) {
     && (value.restoreCurrentA === null || Number.isSafeInteger(value.restoreCurrentA)
       && value.restoreCurrentA >= value.appliedCurrentA && value.restoreCurrentA <= value.originalCurrentA)
     && (value.pending === null || typeof value.pending === 'object' && !Array.isArray(value.pending)
-      && Object.keys(value.pending).length === 3
-      && Object.keys(value.pending).every(key => ['value', 'dispatchedAt', 'acceptedAt'].includes(key))
+      && Object.keys(value.pending).filter(key => key !== 'bootEpoch').length === 3
+      && Object.keys(value.pending).every(key => ['value', 'dispatchedAt', 'acceptedAt', 'bootEpoch'].includes(key))
+      && (value.pending.bootEpoch === undefined || validShellyBootEpoch(value.pending.bootEpoch))
       && Number.isSafeInteger(value.pending.value) && value.pending.value >= 6 && value.pending.value <= value.originalCurrentA
       && time(value.pending.dispatchedAt) && (value.pending.acceptedAt === null
         || time(value.pending.acceptedAt) && value.pending.acceptedAt >= value.pending.dispatchedAt));
@@ -1149,15 +1398,15 @@ const identificationKeys = ['purpose', 'identificationId', 'identificationConnec
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const currentInstructionAt = field => Math.max(field.measuredAt, field.instructionAt ?? 0);
-const acceptedReadback = (field, pending) => pending.stage === 'accepted' && time(pending.acceptedAt)
+const acceptedReadback = (field, pending) => field.bootEpoch === pending.bootEpoch && pending.stage === 'accepted' && time(pending.acceptedAt)
   && field.readback?.measuredAt === field.measuredAt
   && field.readback.requestedAt >= pending.acceptedAt
   && field.readback.receivedAt >= field.readback.requestedAt;
-const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
+const commandReadback = (field, pending) => field.bootEpoch === pending.bootEpoch && (field.measuredAt >= pending.dispatchedAt
   // Integer native timestamps locate an update within a whole second. A
   // correlated read after acknowledgement can confirm that setting without
   // rounding the source clock forward or accepting an older second/cache.
-  || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending);
+  || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending));
 
 const laterCurrentInstruction = (field, pending) => currentInstructionAt(field) > pending.acceptedAt
   && !(field.commandSource === 'sys' && field.value === pending.value)
@@ -1214,6 +1463,8 @@ function validShellyExecution(value) {
 export function validateShellyOwnershipState(initialState, association = initialState?.association) {
   if (initialState != null && (typeof initialState !== 'object' || Array.isArray(initialState) || initialState.version !== 1 || initialState.association !== association
     || Object.hasOwn(initialState, 'startup')
+    || initialState.bootEpoch !== undefined && !validShellyBootEpoch(initialState.bootEpoch)
+    || initialState.pending?.bootEpoch !== undefined && !validShellyBootEpoch(initialState.pending.bootEpoch)
     || !validShellyCompatibility(initialState.compatibility)
     || !validShellyExecution(initialState.execution) || !validCurrentTest(initialState.currentTest) || !validShellyDeviceHold(initialState.deviceHold)
     || initialState.automaticPermission != null && (typeof initialState.automaticPermission !== 'object'
@@ -1232,7 +1483,8 @@ export function validateShellyOwnershipState(initialState, association = initial
     || initialState.permissionEventCursor !== undefined && (!Number.isSafeInteger(initialState.permissionEventCursor) || initialState.permissionEventCursor < 0)
     || initialState.lastCurrentInstructionAt !== undefined && !time(initialState.lastCurrentInstructionAt)
     || initialState.permissionCommand != null && (!token(initialState.permissionCommand.sessionId)
-      || Object.keys(initialState.permissionCommand).sort().join(',') !== 'acceptedAt,dispatchedAt,sessionId,value'
+      || Object.keys(initialState.permissionCommand).filter(key => key !== 'bootEpoch').sort().join(',') !== 'acceptedAt,dispatchedAt,sessionId,value'
+      || initialState.permissionCommand.bootEpoch !== undefined && !validShellyBootEpoch(initialState.permissionCommand.bootEpoch)
       || typeof initialState.permissionCommand.value !== 'boolean' || !time(initialState.permissionCommand.dispatchedAt)
       || !time(initialState.permissionCommand.acceptedAt) || initialState.permissionCommand.acceptedAt < initialState.permissionCommand.dispatchedAt)
     || initialState.provisional !== undefined && typeof initialState.provisional !== 'boolean'
@@ -1312,6 +1564,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     state.lastCurrentInstructionAt = currentInstructionAt(field);
   };
   const observeCurrentChoice = (field, session) => {
+    if (isShellyRebootBaseline(field, adapter.snapshot())) return;
     const instructionAt = currentInstructionAt(field);
     // With current control enabled, the carried setting is only readback.
     // Only a later instruction belongs to this physical connection. Basic
@@ -1337,7 +1590,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const rememberPermissionCommand = pending => {
     if (pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt))
       state.permissionCommand = { value: pending.value, dispatchedAt: pending.dispatchedAt,
-        acceptedAt: pending.acceptedAt, sessionId: pending.sessionId };
+        acceptedAt: pending.acceptedAt, sessionId: pending.sessionId,
+        ...(pending.bootEpoch === undefined ? {} : { bootEpoch: pending.bootEpoch }) };
   };
   // Runtime authority itself reads status. This pure preview cannot call it.
   const devicePermission = snapshot => shellyDevicePermission({ hold: state.deviceHold,
@@ -1473,11 +1727,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt, snapshot.notificationRevision,
-    scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null]);
+    scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null, snapshot.reboot?.epoch ?? null]);
   const automaticFingerprint = snapshot => hash([snapshot.association, snapshot.session?.sessionId,
     snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt, snapshot.notificationRevision,
-    scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null]);
+    scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null, snapshot.reboot?.epoch ?? null]);
   const takeoverStatus = snapshot => {
     // Runtime authority consults controller status, so this read-only view must
     // not call canControl recursively. Every actual takeover rechecks it below.
@@ -1507,7 +1761,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     // Command admission and committed observation evidence have separate lives.
     // A failed query or unrelated pending current update cannot erase fresh
     // matching permission; changes, invalid input and expiry still withdraw it.
-    const instructionEvidenceReady = snapshot.controlReady || instructionObservationReady(snapshot);
+    const instructionEvidenceReady = (!snapshot.reboot?.incident || state.bootEpoch === snapshot.reboot.epoch)
+      && (snapshot.controlReady || instructionObservationReady(snapshot));
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
     const userPause = sessionPaused(snapshot);
@@ -1703,6 +1958,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       const live = adapter.snapshot();
       return !closed && intentRevision === revision && canControl()
         && live.association === state.association && live.generation === generation && live.notificationRevision === notificationRevision
+        && live.reboot?.epoch === snapshot.reboot?.epoch
         && live.identificationCurrentReady === true && live.controlReady && live.online
         && sameSetting(live.fields.current_limit, expected) && sameSetting(live.fields.start_charging, permission)
         && scheduleToken(live) === nativeSchedule
@@ -1711,7 +1967,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
     try {
       test.phase = restoring ? 'restoring' : 'applying';
-      test.pending = { value: target, dispatchedAt: clock(), acceptedAt: null };
+      test.pending = { value: target, dispatchedAt: clock(), acceptedAt: null,
+        ...(snapshot.reboot?.incident ? { bootEpoch: snapshot.reboot.epoch } : {}) };
       await persist();
       await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
         { mutation: true, identificationCurrent: copy(test), guard, attempt });
@@ -1755,11 +2012,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
         || input.sessionPause.requestedAt < input.sessionPause.connectedAt || input.sessionPause.requestedAt > clock()))
         throw fail('invalid-session-pause');
       requestedSessionPause = input.sessionPause ? copy(input.sessionPause) : null;
+      const requestedSnapshot = adapter.snapshot();
+      adapter.observeRebootIntent?.({ automatic: input.enabled === true,
+        chargeNow: time(input.chargeNow?.connectedAt) && input.chargeNow.connectedAt === requestedSnapshot.session?.connectedAt,
+        pause: time(input.sessionPause?.connectedAt) && input.sessionPause.connectedAt === requestedSnapshot.session?.connectedAt });
       const intentRevision = ++revision;
       cancelPlanning();
       let takeoverRequested = typeof input.takeover === 'string';
       let stopPass = null;
-      const requestedSnapshot = adapter.snapshot();
       let remainingAdmissionMs = RPC_TIMEOUT_MS;
       const settleTakeoverAdmission = async () => {
         // Join received input, not a new query or mutation. All takeover joins
@@ -1791,6 +2051,17 @@ export function createShellyController({ adapter, initialState, saveState = () =
           && !state.scheduleTakeoverPending && takeoverResult?.state !== 'pending';
         await adapter.refresh({ completedRead: reuseRead ? input.completedRead : undefined });
         let snapshot = adapter.snapshot();
+        if (snapshot.reboot?.incident?.phase === 'ready' && state.bootEpoch !== snapshot.reboot.epoch) {
+          // Desired/manual instructions and duties survive. Confirmations from
+          // the previous boot do not. New writes still use the ordinary queue.
+          state.bootEpoch = snapshot.reboot.epoch;
+          state.ownedPause = false; state.automaticPermission = null;
+          if (state.owned) {
+            state.owned.permissionAt = null; state.owned.confirmedAt = null; state.owned.witnessedCharging = false;
+          }
+          delete state.executionStage; delete state.currentExecutionStage;
+          await persist();
+        }
         await manageCurrentTest({ snapshot, intentRevision, early: true, economicWait: sessionPaused(snapshot) });
         if (takeoverRequested) await settleTakeoverAdmission();
         snapshot = adapter.snapshot();
@@ -1949,6 +2220,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                   && scheduleToken(adapter.snapshot()) === expectedSchedule
                   && adapter.snapshot().nativeScheduleRevision === expectedScheduleRevision;
                 state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt,
+                  ...(snapshot.reboot?.incident ? { bootEpoch: snapshot.reboot.epoch } : {}),
                   role: 'start_charging', value: false, reason: 'automatic-takeover-wait', stage: 'proposed' };
                 const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
                 try {
@@ -2018,6 +2290,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (state.pending) {
           const pending = state.pending, readback = snapshot.fields[pending.role];
           if (pending.stage === 'proposed') state.pending = null;
+          else if (snapshot.reboot?.incident && pending.bootEpoch !== snapshot.reboot.epoch) {
+            // A new boot cannot attribute its initialization to an uncertain
+            // earlier command. Preserve that record and any physical duty;
+            // existing explicit takeover remains available on its own terms.
+            state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
+          }
           else if (pending.role === 'start_charging' && pending.value === false && fresh(readback) && readback.value === false
             && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt > pending.acceptedAt && !systemEcho(readback, false))) {
             // A lost reply cannot attribute an arbitrary later false event to
@@ -2154,7 +2432,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         let plan = ownedStop ? { ...copy(ownedStop), startAt: ownedStop.periods[0].startAt }
           : !independentPermission && typeof getPlan === 'function'
             ? await readPlan(snapshot, { refresh: input.refreshPlan !== false }, intentRevision, input) : input.plan;
-        if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
+        if (!identification && (plan == null || chargingPlanInputsUnavailable(plan)) && state.execution && !state.provisional)
           plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
         // Ordinary planning retains its original fresh post-wait context read.
         // A completed return must permit normal replacement-plan adoption.
@@ -2243,6 +2521,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const identificationPause = identification?.phase === 'pausing';
         const probeExpired = () => probing && clock() >= identification.probeUntil;
         const pause = userPause || restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause || probeExpired();
+        if (pause && !state.pending && !state.manual && !state.owned && isShellyRebootBaseline(start, snapshot) && start.value === false) {
+          // An already-off startup setting needs no fabricated Stop/ACK. Its
+          // fresh native baseline can satisfy the retained hold; physical-zero
+          // confirmation remains separate and command history stays untouched.
+          state.ownedPause = true; state.automaticPermission = { value: false, measuredAt: start.measuredAt };
+        }
         const recovery = state.owned?.sessionId === sessionId && !identificationPause;
         const nativeRelease = ['enable', 'charge-now'].includes(state.manual?.kind);
         const allowStart = (economic && inWindow || identification && !identificationPause
@@ -2302,7 +2586,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // Confirm an acknowledged command read-only while authority remains;
         // every further publication still requires current admission below.
         const liveIntent = () => !closed && intentRevision === revision && hasAuthority() && adapter.snapshot().session?.sessionId === sessionId
-          && adapter.snapshot().association === state.association;
+          && adapter.snapshot().association === state.association && adapter.snapshot().reboot?.epoch === controlScope.reboot?.epoch;
         const guard = () => liveIntent() && canControl() && adapter.snapshot().notificationRevision === expectedNotificationRevision
           && (!stopPass || ownsDueStop());
         const command = async (role, value, reason, owned = null) => {
@@ -2326,6 +2610,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // current test changed the setting earlier in this reconciliation.
           if (role === 'current_limit') rememberCurrent(expectedCurrent);
           state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
+            ...(commandSnapshot.reboot?.incident ? { bootEpoch: commandSnapshot.reboot.epoch } : {}),
             stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
           if (stopPass) stopPass.pending = state.pending;
           attempt.storageWaiting(true);
@@ -2553,6 +2838,15 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (dueStopPass === stopPass) dueStopPass = null;
         if (takeoverRequested && takeoverAttemptRevision === intentRevision && takeoverResult?.state === 'pending')
           takeoverResult = { state: 'blocked', reason: 'evse-takeover-changed' };
+      });
+      if (requestedSnapshot.reboot?.incident?.controlRestoredAt === null) queue = queue.then(async () => {
+        if (closed || intentRevision !== revision || state.pending || state.currentTest?.pending
+          || state.currentTest?.phase === 'uncertain' || !adapter.recordRebootControl) return;
+        const result = status();
+        if (adapter.snapshot().controlReady && SHELLY_REBOOT_OUTCOMES.includes(result.phase)
+          && (result.confirmed || ['off', 'manual'].includes(result.phase)))
+          await adapter.recordRebootControl(result.phase, { guard: () => !closed && intentRevision === revision && canControl()
+            && adapter.snapshot().reboot?.epoch === requestedSnapshot.reboot?.epoch });
       });
       return queue.then(() => status());
     },

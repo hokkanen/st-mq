@@ -184,6 +184,7 @@ export class Engine {
       reason: !enabled ? 'not-enabled' : meterAvailable ? 'physical-meter' : physical?.online ? 'telemetry-unavailable' : 'awaiting-mqtt',
       connected: physical?.online === true, recording: enabled && meterAvailable,
       controlReady: physical?.controlReady === true, commissioning: physical?.commissioning ?? null,
+      controlReason: physical?.commandBlockReason ?? physical?.error ?? null,
       readings, maxAgeMs: physicalAdapter?.config?.maxAgeMs ?? null,
       mqttStatus: physical?.mqtt ?? null, topics: physical?.topics ?? [] };
     return providers;

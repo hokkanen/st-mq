@@ -51,7 +51,8 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   client.publish = (topic, payload, options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
     let result;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
+    if (frame.method === 'Sys.GetStatus') result = {};
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
     else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status });
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;

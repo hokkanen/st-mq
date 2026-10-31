@@ -11,7 +11,7 @@ import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 
 const START = 1_800_000_000_000, DEVICE = 'synthetic-periodic-evse', PREFIX = 'synthetic/periodic/evse';
 const roles = ['current_limit', 'start_charging', 'work_state', 'phase_info'];
-const round = ['Shelly.GetComponents', 'Shelly.GetComponents', 'Schedule.List'].sort();
+const round = ['Sys.GetStatus', 'Shelly.GetComponents', 'Shelly.GetComponents', 'Schedule.List'].sort();
 const ownedGates = new WeakMap();
 function gate(t) {
   let release;
@@ -44,7 +44,8 @@ async function fixture(t) {
       options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'] });
     const componentStatus = role => ({ value: structuredClone(fields[role]), last_update_ts: (measuredAt[role] ?? START) / 1000 });
     const serviceConfig = { id: 0, auto_balance: { enable: false }, auto_charge: true };
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
+    if (frame.method === 'Sys.GetStatus') result = {};
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
     else if (frame.method === 'Shelly.GetComponents') result = { cfg_rev: 1, offset: 0, total: frame.params.keys.length,
       components: [{ key: 'service:0', config: serviceConfig, status: { ...metadata } }, ...roles.map((role, index) => ({
         key: `${['number', 'boolean', 'enum', 'object'][index]}:${200 + index}`,
@@ -140,7 +141,7 @@ async function reserveStore(t, f) {
 test('one periodic episode uses a combined component read without renewing original clocks', async t => {
   const f = await fixture(t), before = clocks(f.adapter);
   await periodic(t, f);
-  assert.equal(f.requests.length, 3);
+  assert.equal(f.requests.length, round.length);
   assertRound(f.requests); assert.deepEqual(clocks(f.adapter), before);
   assert.equal(f.adapter.snapshot().generation, 1); assert.equal(f.adapter.snapshot().controlReady, true);
   assert.equal(f.requests.some(row => row.method.endsWith('.Set')), false);
@@ -272,7 +273,7 @@ test(`notification readback and its real reconciliation share one complete nativ
   f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
     params: { ts: f.now() / 1000, 'number:200': { value: 12, source: 'rpc' } } })), {});
   await entered.promise; await flight; await f.store.runWrite(() => {});
-  assert.equal(f.requests.length, 3, 'Reconciliation must not repeat the just-completed native reads');
+  assert.equal(f.requests.length, round.length, 'Reconciliation must not repeat the just-completed native reads');
   assertRound(f.requests); assert.equal(typeof proof, 'object'); assert(Object.isFrozen(proof));
   assert.equal(updates, 1); assert.equal(consumed, proof, 'The actual controller consumes its own completed read');
   assert.equal(f.adapter.snapshot().controlReady, true);
@@ -295,11 +296,11 @@ test('the periodic native poll progresses while real Store evidence admission ho
     if (!reservation) { reservation = await reserveStore(t, f); reconciliation = reconcile(proof); entry.release(); }
   });
   f.advance(); f.fire(); await entry.promise; await started.promise;
-  assert.equal(f.requests.length, 3); assert(f.runtime.chargers.charger2.reconcileFlight);
+  assert.equal(f.requests.length, round.length); assert(f.runtime.chargers.charger2.reconcileFlight);
   const replies = gate(t); let published = 0;
   f.holdReplies(() => { if (++published === 3) replies.release(); return null; });
   f.advance(); f.fire(); await replies.promise;
-  assert.equal(f.requests.length, 6, 'Second independent native poll starts before held Store admission releases');
+  assert.equal(f.requests.length, round.length * 2, 'Second independent native poll starts before held Store admission releases');
   assert.deepEqual(clocks(f.adapter), before);
   reservation.release(); await reservation.flight; await reconciliation;
   await f.adapter.refresh(); await f.store.runWrite(() => {});
@@ -370,7 +371,7 @@ test('newer known native service restriction is observed by the invalidated ordi
   await periodic(t, f, async () => {
     f.metadata.state = 'stopped'; f.notify('work_state', 'charger_pause'); await f.store.runWrite(() => {});
   });
-  assert(f.requests.length >= 6); assert.equal(f.adapter.snapshot().controlReady, false);
+  assert(f.requests.length >= round.length * 2); assert.equal(f.adapter.snapshot().controlReady, false);
   assert.equal(f.adapter.snapshot().commissioning.nativeCaps.state, 'stopped');
 });
 
@@ -404,7 +405,7 @@ for (const replace of ['controller', 'adapter', 'generation']) {
       return result;
     });
     await periodic(t, f).catch(error => { assert.equal(replace, 'adapter'); assert.equal(error.code, 'STORAGE_WRITE_STALE'); });
-    assert.equal(f.requests.length, 6);
+    assert.equal(f.requests.length, round.length * 2);
   });
 }
 
@@ -422,7 +423,7 @@ test('unsafe authority and clock freshness cannot turn a completed poll into per
   const fresh = await proofFromTimer(t, f); f.advance(60_000); f.requests.length = 0;
   await f.adapter.refresh({ completedRead: fresh }); assertRound(f.requests);
   const future = await proofFromTimer(t, f); f.setNow(START); f.requests.length = 0;
-  await f.adapter.refresh({ completedRead: future }); assert.equal(f.requests.length, 3);
+  await f.adapter.refresh({ completedRead: future }); assert.equal(f.requests.length, round.length);
 });
 
 test('explicit reconciliation and forced post-write confirmation retain their fresh request order', async t => {
@@ -573,7 +574,7 @@ test('force waits for an older in-flight poll and then starts its own new round 
   f.requests.length = 0; const earlier = f.adapter.refresh(); await entered.promise;
   const confirmation = f.adapter.refresh({ force: true, completedRead: proof }); assertRound(f.requests);
   held.release(); await earlier; await confirmation;
-  assert.equal(f.requests.length, 6); assertRound(f.requests.slice(3));
+  assert.equal(f.requests.length, round.length * 2); assertRound(f.requests.slice(round.length));
 });
 
 test('a takeover request retains its separate fresh preflight even with a valid periodic witness', async t => {
@@ -636,7 +637,7 @@ test('real same-adapter controller replacement during a held poll cannot inherit
   assert.notEqual(f.runtime.chargers.charger2.controller, previous);
   assert.equal(f.runtime.chargers.charger2.adapterGeneration, generation + 1);
   f.holdReplies(null); held.release(); await completed.promise; await flight; await f.store.runWrite(() => {});
-  assert.equal(f.requests.length, 6); assertRound(f.requests.slice(3));
+  assert.equal(f.requests.length, round.length * 2); assertRound(f.requests.slice(round.length));
 });
 
 test('real same-adapter owner replacement after issuance invalidates the unused witness', async t => {

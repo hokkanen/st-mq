@@ -22,6 +22,21 @@ test('shared identification observation wording does not identify the vehicle as
   }
 });
 
+test('reboot report evidence distinguishes inferred boot, saved choice, native readback and waiting recovery', async () => {
+  const f = setup();
+  f.records.set('current', [{ id: 1, at: now, kind: 'evidence', code: 'shelly-reboot-observed', policy: 'reboot-state',
+    firmware: 'synthetic-fw', reboot: { bootInterval: { lower: now - 3100, upper: now - 2000 },
+      samples: [{ uptime: 2, requestedAt: now - 100, receivedAt: now }],
+      intent: { automatic: true, chargeNow: false, pause: false }, continuityRetained: true } },
+  { id: 2, at: now + 1000, kind: 'evidence', code: 'shelly-reboot-restored', policy: 'reboot-state', reboot: { outcome: 'waiting' } }]);
+  await f.open(); const text = textOf(f.document.body);
+  assert.match(text, /Charger reboot observed/); assert.match(text, /Reboot-state reconciliation/);
+  assert.match(text, /Inferred boot between/); assert.match(text, /Uptime 2 s/);
+  assert.match(text, /Recorded choice: Automatic/); assert.match(text, /Saved session retained/);
+  assert.match(text, /Reconciled control: Waiting/); assert.match(text, /Physical draw is separate/);
+  assert.doesNotMatch(text, /Policy not recognized/);
+});
+
 function fixture() {
   const document = { activeElement: null };
   class Node {

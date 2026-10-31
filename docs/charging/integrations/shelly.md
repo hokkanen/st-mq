@@ -117,6 +117,14 @@ values, native source clocks, provenance, connection boundaries, counter state o
 permission events remain durable. Saved receipts retain their original clocks;
 restart requires new discovery and readback before observations or commands are
 ready. A transaction rollback also rolls back the duplicate comparison.
+`Sys.GetStatus` supplies optional correlated uptime evidence on each normal poll.
+Device reboot uses a separate persisted boot epoch; it is not inferred from an
+MQTT reconnect. Confirmed reboot recovery rechecks discovery and native state,
+retaining saved intent under the approved
+[reboot continuity policy](../execution-and-recovery.md#shelly-charger-reboots).
+The third [compatibility policy](../shelly-compatibility.md) admits only qualified
+startup timestamp regressions, preserving original clocks and ordinary command
+guards. Healthy electrical acquisition remains independent of recovery status.
 An admitted packet awaiting storage withholds mutations and new minimum-current
 matches, but does not erase still-fresh committed observations or the existing
 identification attempt. Native notification readback keeps its separate command

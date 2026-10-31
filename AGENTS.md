@@ -129,6 +129,9 @@ Require current equipment/session identity, live readiness and commissioning;
 owner approval alone is not device capability. Preserve native protection,
 independent instructions and durable restoration across failure/restart/model
 changes. Fresh readback, acknowledgement and physical proof remain distinct.
+The owner-approved 2026-10-31 [Shelly reboot recovery exception](docs/charging/execution-and-recovery.md#shelly-charger-reboots)
+retains a saved connected session across a confirmed same-device reboot without
+contrary evidence, accepting an unreported cable swap or native action in that gap.
 A coding request does not authorize deployment, household probing or live commands;
 honor applicable authorization already given. Details:
 [pairing](docs/pairing.md), [control/restoration](docs/learning-and-control.md),

@@ -54,6 +54,59 @@ test('SYS cycles between observations retain both edges and resolved findings wi
   assert.equal(Object.hasOwn(restarted.getReport({ chargerId: 'charger2', reportId: report.id }), 'permissionCursor'), false);
 });
 
+test('reboot incidents retain separate boot, reconciliation and control outcomes exactly once across replay', () => {
+  const { store, observer, observe } = fixture(), view = charger();
+  view.id = 'charger2'; view.provider = 'shelly-evse'; const clean = observe(view);
+  const incident = '12345678-1234-1234-1234-123456789abc';
+  const make = (sequence, code, detail = {}, incidentId = incident) => ({ sequence, at: now + sequence * 1000,
+    connectedAt: now, code, incidentId, policy: 'reboot-state', firmware: 'synthetic-fw', model: 'synthetic-model', reboot: detail });
+  const events = [make(1, 'shelly-reboot-observed', { samples: [{ uptime: 2, unixtime: (now + 1000) / 1000,
+    requestedAt: now + 1000, receivedAt: now + 1100 }], intent: { automatic: true, chargeNow: false, pause: false } }),
+  make(2, 'shelly-reboot-reconciliation', { continuityRetained: true }), make(3, 'shelly-reboot-baseline')];
+  view.control.snapshot.reboot = { events };
+  let report = observe(refresh(view, now + 4000), now + 4000);
+  assert.equal(report.findings.find(row => row.code === 'reboot-state-reconciliation').resolvedAt, null,
+    'A verified baseline alone is not restored control');
+  events.push(make(4, 'shelly-reboot-restored', { outcome: 'waiting' }));
+  report = observe(refresh(view, now + 5000), now + 5000);
+  assert.equal(report.findings.find(row => row.code === 'reboot-state-reconciliation').count, 1);
+  assert.equal(report.findings.find(row => row.code === 'reboot-state-reconciliation').resolvedAt, now + 4000);
+  const restarted = new ChargingSessionDiagnostics({ store, clock: () => now + 6000 });
+  restarted.observe([refresh(view, now + 6000)], now + 6000);
+  let rows = restarted.reportEvents({ chargerId: 'charger2', reportId: clean.id, limit: 100 }).events;
+  assert.equal(rows.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+  assert.equal(rows.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1);
+  assert.equal(rows.find(row => row.code === 'shelly-reboot-restored').reboot.outcome, 'waiting');
+  assert.equal(rows.find(row => row.code === 'shelly-reboot-observed').incidentId, incident);
+  assert.equal(Object.hasOwn(restarted.getReport({ chargerId: 'charger2', reportId: clean.id }), 'rebootCursor'), false);
+  const second = '22345678-1234-1234-1234-123456789abc';
+  events.push(make(5, 'shelly-reboot-reconciliation'), make(6, 'shelly-reboot-observed', {}, second),
+    make(7, 'shelly-reboot-reconciliation', {}, second));
+  restarted.observe([refresh(view, now + 8000)], now + 8000);
+  const current = restarted.getReport({ chargerId: 'charger2', reportId: clean.id });
+  assert.equal(current.findings.find(row => row.code === 'reboot-state-reconciliation').count, 2);
+  rows = restarted.reportEvents({ chargerId: 'charger2', reportId: clean.id, limit: 100 }).events;
+  assert.equal(new Set(rows.filter(row => row.code === 'shelly-reboot-observed').map(row => row.incidentId)).size, 2);
+});
+
+test('reboot report storage failure replays once, while another session and unvalidated evidence are excluded', () => {
+  const { store, observer, observe } = fixture(), view = charger(); view.id = 'charger2'; const initial = observe(view);
+  const event = { sequence: 1, at: now + 1000, connectedAt: now, code: 'shelly-reboot-observed',
+    incidentId: '12345678-1234-1234-1234-123456789abc', policy: 'reboot-state', reboot: {} };
+  view.control.snapshot.reboot = { events: [event] };
+  const original = store.setState;
+  store.setState = () => { throw new Error('Synthetic reboot report failure'); };
+  assert.throws(() => observe(refresh(view, now + 2000), now + 2000), /Synthetic reboot report failure/);
+  store.setState = original;
+  observe(refresh(view, now + 3000), now + 3000); observe(refresh(view, now + 4000), now + 4000);
+  view.control.snapshot.reboot.events.push({ ...event, sequence: 2, connectedAt: now - 1000 },
+    { ...event, sequence: 3, deviceId: 'forbidden-private-field' });
+  observe(refresh(view, now + 5000), now + 5000);
+  const rows = observer.reportEvents({ chargerId: 'charger2', reportId: initial.id, filter: 'evidence', limit: 100 }).events;
+  assert.equal(rows.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+  assert(!JSON.stringify(rows).includes('forbidden-private-field'));
+});
+
 test('active report readers project the current checkpoint without rewriting a duplicate stored summary', () => {
   const { store, observer, observe } = fixture(), view = charger();
   const initial = observe(view), cached = store.db.prepare('SELECT summary FROM charging_reports').get().summary;

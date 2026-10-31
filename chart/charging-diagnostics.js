@@ -19,6 +19,9 @@ const EVENTS = {
   'shelly-sys-off': 'SYS permission Stop observed', 'shelly-sys-on': 'SYS permission Enable observed',
   'shelly-permission-restored': 'Native permission restored', 'shelly-readback-reconciled': 'Start reconciled with SYS readback',
   'shelly-recovery-waiting': 'SYS startup recovery scheduled', 'shelly-recovery-attempt': 'SYS startup retry attempted',
+  'shelly-reboot-observed': 'Charger reboot observed', 'shelly-reboot-reconciliation': 'Reboot readings required reconciliation',
+  'shelly-reboot-baseline': 'Charger readings verified after reboot', 'shelly-reboot-restored': 'Control reconciled after reboot',
+  'shelly-reboot-blocked': 'Charger reboot recovery waiting', 'shelly-reboot-superseded': 'Recovery interrupted by another reboot',
   'shelly-recovery-restored': 'SYS startup recovery succeeded · sustained draw observed',
   'shelly-recovery-exhausted': 'SYS startup recovery exhausted', 'shelly-recovery-cancelled': 'SYS startup recovery cancelled',
   connected: 'Connection observed', 'observation-started': 'Monitoring began during this connection',
@@ -348,7 +351,23 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
     setText(p.label, `${evidenceTime(row.at, timezone)} · ${eventLabel(row)}`);
-    if (row.policy) details.push(lookup({ 'startup-retry': 'Startup retry recovery', 'permission-transition': 'Permission-transition reconciliation' }, row.policy) ?? 'Policy not recognized');
+    if (row.policy) details.push(lookup({ 'startup-retry': 'Startup retry recovery', 'permission-transition': 'Permission-transition reconciliation',
+      'reboot-state': 'Reboot-state reconciliation' }, row.policy) ?? 'Policy not recognized');
+    if (row.reboot) {
+      const proof = row.reboot;
+      if (proof.bootInterval) details.push(`Inferred boot between ${evidenceTime(proof.bootInterval.lower, timezone)} and ${evidenceTime(proof.bootInterval.upper, timezone)}`);
+      for (const sample of proof.samples ?? []) details.push(`Uptime ${sample.uptime} s · Requested ${evidenceTime(sample.requestedAt, timezone)} · Received ${evidenceTime(sample.receivedAt, timezone)}`);
+      for (const side of ['before', 'after']) for (const [role, field] of Object.entries(proof[side] ?? {})) {
+        if (field) details.push(`${side === 'before' ? 'Before' : 'After'} · ${lookup({ start_charging: 'Start permission', current_limit: 'Current setting', work_state: 'Native state' }, role)}: ${field.value}${role === 'current_limit' ? ' A' : ''} · Updated ${evidenceTime(field.measuredAt, timezone)} · Received ${evidenceTime(field.receivedAt, timezone)}`);
+      }
+      if (proof.intent) details.push(`Recorded choice: ${proof.intent.pause ? 'Pause' : proof.intent.chargeNow ? 'Charge now' : proof.intent.automatic ? 'Automatic' : 'Automatic off'}`);
+      if (proof.continuityRetained) details.push('Saved session retained across the reboot gap under the approved continuity policy.');
+      if (proof.outcome) details.push(`Reconciled control: ${lookup({ waiting: 'Waiting', paused: 'Paused', active: 'Active', released: 'Released', provisional: 'Provisional', manual: 'Independent instruction retained', off: 'Automatic off' }, proof.outcome)}. Physical draw is separate.`);
+      if (proof.reason) details.push(lookup({ checking: 'Checking boot evidence', 'readback-required': 'Waiting for complete stable readback',
+        'control-changed': 'Control changed during verification', 'native-restriction': 'Native restriction or unsupported state',
+        'independent-instruction': 'Independent instruction requires ordinary reconciliation', 'session-changed': 'Physical connection changed',
+        'clock-unconfirmed': 'Clock evidence is unconfirmed', 'reboot-unconfirmed': 'Another boot requires verification', reconciled: 'Current readings reconciled' }, proof.reason) ?? 'Recovery evidence unconfirmed');
+    }
     if (row.origin) details.push(lookup({ 'charge-now': 'Charge now', scheduled: 'Scheduled charging' }, row.origin) ?? 'Instruction origin not recognized');
     if (Number.isInteger(row.attempt)) details.push(`Retry ${row.attempt} of 3`);
     if (Number.isFinite(row.currentA)) details.push(`Current setting ${number(row.currentA)} A`);

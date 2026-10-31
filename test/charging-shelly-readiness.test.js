@@ -41,7 +41,8 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW, m
     const frame = JSON.parse(payload);
     calls.push({ ...frame, topic, options });
     let result;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = info;
+    if (frame.method === 'Sys.GetStatus') result = {};
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = info;
     else if (frame.method === 'Shelly.GetComponents') result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status, attributes });
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;

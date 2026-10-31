@@ -57,7 +57,8 @@ test('positive vehicle demand below the pilot minimum preserves electrical and z
   assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 8 }).currentA, 8);
 });
 function fixture(t, extra={}, backingStore=null) {
-  let now=NOW, authority=true, failSave=false, holdReply=null;
+  let now=NOW, authority=true, failSave=false, failSaveWhen=null, holdReply=null;
+  let bootAt = null;
   const deviceInfo = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
@@ -71,13 +72,15 @@ function fixture(t, extra={}, backingStore=null) {
       if (['start_charging','current_limit'].includes(role)) {
         if (settingClock.get(role)?.value !== value) settingClock.set(role,{value,at:now});
         return {value,last_update_ts:settingClock.get(role).at/1000,...(sources.has(role)?{source:sources.get(role)}:{})};
-      } else return {value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000};
+      } else return {value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000,
+        ...(sources.has(role) ? { source: sources.get(role) } : {})};
   };
   const components = () => Object.fromEntries(roles.map(role => [role, role==='current_limit'?structuredClone(currentComponent):{id:ids[role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']} ]));
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
-    if(frame.method==='Shelly.GetDeviceInfo')result=structuredClone(deviceInfo);
+    if(frame.method==='Sys.GetStatus')result=bootAt === null ? {} : { uptime: Math.floor((now - bootAt) / 1000), unixtime: Math.floor(now / 1000) };
+    else if(frame.method==='Shelly.GetDeviceInfo')result=structuredClone(deviceInfo);
     else if(frame.method==='Shelly.GetComponents')result=shellyComponentReply(frame.params.keys,{service,serviceStatus,components:components(),status});
     else if(frame.method==='Service.GetConfig')result=structuredClone(service);
     else if(frame.method==='Schedule.List')result=structuredClone(schedules);
@@ -92,14 +95,14 @@ function fixture(t, extra={}, backingStore=null) {
     const reply=()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{});
     cb?.();if(!holdReply?.(frame,reply))queueMicrotask(reply);
   };
-  const store=backingStore??{writeHealth:createWriteHealth(()=>now),getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+  const store=backingStore??{writeHealth:createWriteHealth(()=>now),getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave||failSaveWhen?.(value))throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
-  const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
+  const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,monotonicClock:()=>now-NOW,canControl:()=>authority});
   let adapter=createAdapter();
   t.after(()=>adapter.close());
   return {get adapter(){return adapter;},health:store.writeHealth,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
-    holdReplies:value=>holdReply=value,
+    holdReplies:value=>holdReply=value, setBootAt:value=>bootAt=value, setFailWhen:value=>failSaveWhen=value,
     componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components: components(),
       status: role => Object.hasOwn(overrides, role) ? overrides[role] : status(role) }); },
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
@@ -118,6 +121,277 @@ function fixture(t, extra={}, backingStore=null) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+
+async function rebootFixture(t, { autoCharge = false, limiterEnabled = false } = {}) {
+  const f = fixture(t, { limiterEnabled }); f.setBootAt(NOW - 100000); f.service.auto_charge = autoCharge; await f.ready();
+  const session = f.adapter.snapshot().session;
+  f.setBootAt(NOW + 5000); f.setNow(NOW + 10000);
+  f.fields.work_state = 'charger_insert'; f.setSourceTime('work_state', NOW - 1000);
+  f.fields.start_charging = autoCharge; f.setSourceTime('start_charging', NOW - 1000);
+  f.fields.current_limit = 12; f.setSourceTime('current_limit', NOW - 1000);
+  for (const role of ['work_state', 'start_charging', 'current_limit']) f.sources.set(role, 'sys');
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
+  return { f, session };
+}
+test('confirmed charger reboot reconciles backward initialization without a plug edge or another SYS incident', async t => {
+  const { f, session } = await rebootFixture(t);
+  await f.adapter.refresh(); assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-reboot-checking');
+  f.setNow(NOW + 15000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().reboot.incident.phase, 'reconciling');
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  const s = f.adapter.snapshot();
+  assert.equal(s.reboot.incident.phase, 'ready'); assert.equal(s.controlReady, true);
+  assert.deepEqual(s.session, session); assert.equal(s.fields.work_state.value, 'charger_insert');
+  assert.equal(s.fields.work_state.measuredAt, NOW - 1000);
+  assert.equal(s.fields.work_state.rebootBaseline, s.reboot.epoch);
+  assert.equal(s.permissionEvents.length, 0);
+  assert.equal(s.reboot.events.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+  assert.equal(s.reboot.events.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1);
+  validateShellyAcquisitionState(f.values.values().next().value, f.adapter.association);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  assert(f.gaps.some(row => row.quality.includes('meter-report-gap')));
+});
+test('reboot recovery restores Automatic charging through the normal command path', async t => {
+  const { f, session } = await rebootFixture(t);
+  const saved = { version: 1, association: f.adapter.association, sessionId: session.sessionId,
+    phase: 'released', manual: null, ownedPause: false, pending: null, lastStart: true, lastStartAt: NOW };
+  const c = createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now, canControl: () => true });
+  t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input);
+  f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(result.devicePermissionHeld, false); assert.equal(f.fields.start_charging, true);
+  assert.equal(result.phase, 'released'); assert.equal(result.pending, null);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
+  assert.equal(f.adapter.snapshot().reboot.events.filter(row => row.code === 'shelly-reboot-restored').length, 1);
+});
+test('reboot waiting and Pause recover without claiming a new Stop or physical charging', async t => {
+  for (const pause of [false, true]) await t.test(pause ? 'Pause' : 'economic wait', async t => {
+    const { f, session } = await rebootFixture(t);
+    const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+      sessionId: session.sessionId, phase: 'waiting', manual: null, ownedPause: true, pending: null,
+      lastStart: false, lastStartAt: NOW }, clock: f.now, canControl: () => true });
+    t.after(() => c.close());
+    const input = { enabled: true, plan: { id: 'synthetic-reboot-plan', deadlineAt: NOW + 120000,
+      periods: [{ startAt: NOW + 60000, endAt: null }] },
+      ...(pause ? { sessionPause: { connectedAt: session.connectedAt, requestedAt: NOW + 1 } } : {}) };
+    await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+    f.setNow(NOW + 20000); const result = await c.update(input);
+    assert.equal(result.pending, null); assert.equal(result.phase, 'waiting');
+    assert.equal(result.pauseConfirmed, true);
+    assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+    assert.equal(f.adapter.snapshot().reboot.events.findLast(row => row.code === 'shelly-reboot-restored')?.reboot.outcome, 'waiting');
+  });
+});
+
+test('restart during reboot verification revalidates two rounds and never renews the physical session', async t => {
+  const { f, session } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  const epoch = f.adapter.snapshot().reboot.epoch;
+  f.restartAdapter(); f.setNow(NOW + 20000); await f.ready();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true); assert.equal(f.adapter.snapshot().reboot.epoch, epoch);
+  assert.deepEqual(f.adapter.snapshot().session, session);
+  assert.equal(f.adapter.snapshot().reboot.events.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+});
+test('a later independent Stop during reboot verification wins over saved Automatic intent', async t => {
+  const { f, session } = await rebootFixture(t);
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW }, clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 17000); f.delta('start_charging', { value: false, source: 'rpc' });
+  await new Promise(resolve => setImmediate(resolve)); await c.update(input);
+  f.setNow(NOW + 22000); await c.update(input);
+  f.setNow(NOW + 27000); const result = await c.update(input);
+  assert.equal(f.fields.start_charging, false); assert.equal(result.manual?.kind, 'stop');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 0);
+});
+test('failed reboot baseline persistence leaves the previous fields and session intact', async t => {
+  const { f, session } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  const prior = f.adapter.snapshot().fields.work_state;
+  f.setNow(NOW + 20000); f.setFail(true); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.deepEqual(f.adapter.snapshot().fields.work_state, prior); assert.deepEqual(f.adapter.snapshot().session, session);
+  f.setFail(false); f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+test('another reboot supersedes an unfinished incident without refreshing SYS retry budgets', async t => {
+  const { f } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  const first = f.adapter.snapshot().reboot.epoch;
+  f.setBootAt(NOW + 18000); f.setNow(NOW + 20000); await f.adapter.refresh();
+  f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.notEqual(f.adapter.snapshot().reboot.epoch, first);
+  const events = f.adapter.snapshot().reboot.events;
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-observed').length, 2);
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-superseded').length, 1);
+  assert.equal(events.filter(row => row.code === 'shelly-reboot-restored').length, 0);
+});
+test('a stale reply in the previous boot cannot replace a reconciled current field', async t => {
+  const { f } = await rebootFixture(t); let release;
+  f.holdReplies((frame, reply) => frame.method === 'Enum.GetStatus' ? (release = reply, true) : false);
+  const old = f.adapter.rpc('Enum.GetStatus', { owner: 'service:0', role: 'work_state' }, { statusReadback: true });
+  await new Promise(resolve => setImmediate(resolve));
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  const before = f.adapter.snapshot().fields.work_state;
+  release(); await old;
+  assert.deepEqual(f.adapter.snapshot().fields.work_state, before);
+});
+
+test('retained Charge now recovers with Automatic off and keeps both SYS retry budgets', async t => {
+  const { f, session } = await rebootFixture(t);
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW, compatibility: { sessionId: session.sessionId, connectedAt: session.connectedAt,
+      sequence: 0, scheduledRetries: 5, requestAt: NOW, chargeNowRetries: 2, start: null, incident: null, events: [] } },
+  clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const input = { enabled: false, chargeNow: { connectedAt: session.connectedAt, requestedAt: NOW } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(f.fields.start_charging, true); assert.equal(result.pending, null); assert.equal(result.enabled, false);
+  assert.equal(result.compatibility.scheduledRetries, 5); assert.equal(result.compatibility.chargeNowRetries, 2);
+  assert.equal(result.snapshot.powerKw, 0, 'A confirmed Start is not invented physical charging');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+});
+test('fresh native restrictions withhold reboot recovery and clear through ordinary polling', async t => {
+  const { f } = await rebootFixture(t); f.serviceStatus.flags = ['synthetic-protection'];
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().reboot.incident.reason, 'native-restriction');
+  f.serviceStatus.flags = []; f.setNow(NOW + 20000); await f.adapter.refresh();
+  f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+test('a fresh independent scalar event fences an already staged reboot baseline', async t => {
+  const { f } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  let release;
+  f.holdReplies((frame, reply) => frame.method === 'Schedule.List' ? (release = reply, true) : false);
+  f.setNow(NOW + 20000); const read = f.adapter.refresh(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof release, 'function');
+  f.setNow(NOW + 21000); f.delta('start_charging', { value: false, source: 'rpc', last_update_ts: (NOW + 21000) / 1000 });
+  await new Promise(resolve => setImmediate(resolve)); release(); await read;
+  const s = f.adapter.snapshot();
+  assert.equal(s.controlReady, false); assert.notEqual(s.reboot.incident.phase, 'ready');
+  assert.equal(s.fields.start_charging.commandSource, 'rpc');
+  assert.equal(s.fields.start_charging.measuredAt, NOW + 21000);
+});
+
+test('reboot initialization cannot replace a saved manual current ceiling', async t => {
+  const { f, session } = await rebootFixture(t, { limiterEnabled: true });
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, manualCurrentA: 8, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW, lastCurrent: 8, lastCurrentAtSource: NOW, lastCurrentInstructionAt: NOW },
+  clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(result.manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
+  assert.equal(f.fields.start_charging, true); assert.equal(result.pending, null);
+});
+test('a confirmed reboot cannot turn an older command acknowledgement into current confirmation', async t => {
+  const { f, session } = await rebootFixture(t);
+  const original = { association: f.adapter.association, sessionId: session.sessionId, role: 'start_charging', value: true,
+    stage: 'accepted', dispatchedAt: NOW, acceptedAt: NOW + 1, expiresAt: NOW + 10000, revision: 1, reason: 'economic-window' };
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'uncertain', manual: null, ownedPause: false, pending: original },
+  clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(result.phase, 'uncertain'); assert.deepEqual(result.pending, original);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  assert.equal(f.adapter.snapshot().reboot.incident.controlRestoredAt, null);
+});
+test('boot tracking can be introduced without invalidating ordinary current-format command readback', async t => {
+  const f = fixture(t); await f.ready(); const session = f.adapter.snapshot().session;
+  f.setBootAt(NOW - 100000); f.setNow(NOW + 1000);
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW }, clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const result = await c.update({ enabled: true, plan: { periods: [{ startAt: NOW + 60000, endAt: null }] } });
+  assert.equal(result.pending, null); assert.equal(f.fields.start_charging, false);
+  assert.equal(f.adapter.snapshot().reboot.incident, null);
+  assert.equal(f.adapter.snapshot().reboot.events.length, 0);
+});
+
+test('a cached preboot electrical sample cannot qualify recovery even with a fresh correlated receipt', async t => {
+  const { f } = await rebootFixture(t);
+  f.fields.phase_info.total_power = 8.28;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 12, power: 2.76 });
+  f.setSourceTime('phase_info', NOW);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().reboot.incident.reason, 'readback-required');
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
+  f.setNow(NOW + 25000); f.setSourceTime('phase_info', NOW + 25000); await f.adapter.refresh();
+  f.setNow(NOW + 30000); f.setSourceTime('phase_info', NOW + 30000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
+test('an old disconnected startup value cannot retain a live connection or invent an unplug boundary', async t => {
+  const { f, session } = await rebootFixture(t);
+  f.fields.work_state = 'charger_free'; f.setSourceTime('work_state', NOW - 1000);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  const blocked = f.adapter.snapshot();
+  assert.equal(blocked.controlReady, false); assert.equal(blocked.pluggedIn, null);
+  assert.equal(blocked.reboot.incident.reason, 'session-changed');
+  assert.deepEqual(blocked.session, session, 'The saved scope is historical until a supported physical boundary arrives');
+  assert.equal(blocked.reboot.events.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1,
+    'The startup inconsistency is recorded even while recovery is blocked');
+  f.setNow(NOW + 21000); f.delta('work_state', { value: 'charger_free', source: 'sys', last_update_ts: (NOW + 21000) / 1000 });
+  await new Promise(resolve => setImmediate(resolve)); await f.adapter.refresh();
+  f.setNow(NOW + 26000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().session.connected, false);
+  assert.equal(f.adapter.snapshot().session.lastDisconnectedAt, NOW + 21000);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
+test('failure at the baseline publication itself rolls back every staged setting and can retry', async t => {
+  const { f, session } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  const before = f.adapter.snapshot().fields.work_state;
+  f.setFailWhen(state => state.boot?.incident?.phase === 'ready');
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().reboot.incident.phase, 'reconciling');
+  assert.deepEqual(f.adapter.snapshot().fields.work_state, before);
+  assert.deepEqual(f.adapter.snapshot().session, session);
+  f.setFailWhen(null); f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().reboot.events.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1);
+});
+
+test('unacknowledged reboot evidence stays bounded without corrupting persisted state on overflow', async t => {
+  const { f } = await rebootFixture(t);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  const key = `charging:shelly:${f.adapter.association}`, saved = f.values.get(key);
+  const evidence = saved.boot.events.find(row => row.code === 'shelly-reboot-observed');
+  saved.boot.events = Array.from({ length: 128 }, (_, index) => ({ ...structuredClone(evidence), sequence: index + 1 }));
+  saved.boot.sequence = 128; f.values.set(key, saved); f.restartAdapter(); await f.ready();
+  f.setBootAt(NOW + 25000); f.setNow(NOW + 30000); await f.adapter.refresh();
+  f.setNow(NOW + 35000); await f.adapter.refresh();
+  const blocked = f.adapter.snapshot();
+  assert.equal(blocked.controlReady, false); assert.equal(blocked.error, 'evse-reboot-report-overflow');
+  assert.equal(blocked.commandBlockReason, 'evse-reboot-report-overflow');
+  assert.equal(blocked.reboot.events.length, 128); assert.equal(blocked.reboot.sequence, 128);
+  validateShellyAcquisitionState(f.values.get(key), f.adapter.association);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
 
 test('a failed worker source-time save preserves an independently started native read', { timeout: 10_000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-worker-requests-'));

@@ -180,6 +180,7 @@ const CHARGING_CODES = {
   'deadline-missed': 'Ready-by target was missed', 'completion-unknown': 'Completion was unconfirmed',
   'sys-permission-interruption': 'Native system permission Stop observed', 'sys-pause-interruption': 'Native permission interrupted an owned pause',
   'sys-startup-recovery': 'Bounded startup recovery recorded', 'control-unconfirmed': 'Charger command was unconfirmed', 'charging-during-hold': 'Charging draw observed during a hold',
+  'reboot-state-reconciliation': 'Charger reboot readings required reconciliation',
   'no-draw-while-allowed': 'No charging draw while permission allowed', 'vehicle-feed-stale': 'Vehicle evidence was unavailable', 'charger-feed-stale': 'Charger evidence was unavailable',
   'energy-coverage-gap': 'Charging energy coverage was incomplete', 'shared-current-mismatch': 'Reported current exceeded the active ceiling',
   'shared-priority-mismatch': 'Shared priority assessment did not match', 'shared-allocation-inconsistent': 'Shared allocation evidence was inconsistent',

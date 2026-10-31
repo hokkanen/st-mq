@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { sharedChargingAssessment, advanceSharedAssessment, sharedAssessmentKey, sharedPlanningKey, validSharedAssessment } from './shared-assessment.js';
 import { compactReportEvent, expandReportEvents } from './report-contexts.js';
+import { validShellyRebootEvent, validShellyBootEpoch } from './shelly-compatibility.js';
 
 /** The history index begins with namespace. Seek one latest report per
  * namespace instead of sorting every saved report to open an offline viewer. */
@@ -45,6 +46,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
   'evse-notification-readback-required', 'evse-permission-event-overflow',
   'evse-input-persistence-pending', 'evse-source-time-pending',
+  'conflicting-evse-reading', 'evse-reboot-checking', 'evse-reboot-blocked', 'evse-reboot-report-overflow',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
   'device-permission-held', 'session-pause',
@@ -348,6 +350,25 @@ function observation(view, now) {
 // Passive incident ingestion is independent of the removable recovery policy.
 // Cursor and immutable rows commit together, including native cycles between views.
 function deviceIncidents(record, view, now) {
+  const reboot = view.control?.snapshot?.reboot;
+  for (const entry of reboot?.events ?? []) {
+    if (!validShellyRebootEvent(entry) || entry.sequence <= (record.rebootCursor ?? 0) || entry.at > now) continue;
+    record.rebootCursor = entry.sequence;
+    if (entry.connectedAt !== record.startedAt) continue;
+    event(record, entry.at, 'evidence', entry.code, { incidentId: entry.incidentId, policy: entry.policy,
+      ...(entry.model === undefined ? {} : { model: entry.model }),
+      ...(entry.firmware === undefined ? {} : { firmware: entry.firmware }), reboot: clone(entry.reboot) });
+    if (entry.code === 'shelly-reboot-reconciliation' && record.rebootIssueId !== entry.incidentId) {
+      // One occurrence per boot, even if an earlier boot is still unresolved.
+      finding(record, 'reboot-state-reconciliation', false, entry.at, 'attention', 'superseded-by-reboot');
+      record.rebootIssueId = entry.incidentId;
+      finding(record, 'reboot-state-reconciliation', true, entry.at);
+    }
+    if (entry.code === 'shelly-reboot-restored' && record.rebootIssueId === entry.incidentId)
+      finding(record, 'reboot-state-reconciliation', false, entry.at, 'attention', 'reboot-control-reconciled');
+    if (entry.code === 'shelly-reboot-superseded' && record.rebootIssueId === entry.incidentId)
+      finding(record, 'reboot-state-reconciliation', false, entry.at, 'attention', 'superseded-by-reboot');
+  }
   for (const entry of view.control?.compatibility?.events ?? []) {
     if (!Number.isSafeInteger(entry.sequence) || entry.sequence <= (record.permissionCursor ?? 0)
       || !time(entry.at) || entry.at > now) continue;
@@ -565,7 +586,7 @@ function publicReport(record, now) {
   if (record?.version !== VERSION) throw unsupported();
   // Observer comparison context can hold large price and plan arrays. Detach
   // only the public projection; copying discarded context serves no reader.
-  const omitted = new Set(['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association', 'permissionCursor']);
+  const omitted = new Set(['pendingChecks', 'expectationAt', 'planContext', 'events', 'findingContext', 'association', 'permissionCursor', 'rebootCursor', 'rebootIssueId']);
   const result = clone(Object.fromEntries(Object.keys(record).filter(key => !omitted.has(key))
     .map(key => [key, record[key]])));
   const stale = result.endedAt === null && !fresh(result.observedAt, now, 3 * MINUTE);
@@ -637,7 +658,7 @@ function pageLimit(value) {
 const unsupported = () => new Error('Unsupported charging diagnostics; start a fresh development database');
 function validateRecord(row, id) {
   const keys = 'association,chargerId,counts,coverage,current,endReason,endedAt,events,expectationAt,findings,firstChargingAt,id,observedAt,observedFrom,outcome,pendingChecks,planContext,saved,savedAt,startedAt,vehicleId,version';
-  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).filter(key => !['shared', 'permissionCursor'].includes(key)).sort().join(',') !== keys
+  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).filter(key => !['shared', 'permissionCursor', 'rebootCursor', 'rebootIssueId'].includes(key)).sort().join(',') !== keys
     || !/^[a-f0-9]{64}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.association)
     || !time(row.startedAt) || !time(row.observedFrom) || !time(row.observedAt) || row.observedAt < row.startedAt
     || !time(row.expectationAt) || row.firstChargingAt !== null && !time(row.firstChargingAt)
@@ -645,6 +666,8 @@ function validateRecord(row, id) {
     || typeof row.saved !== 'boolean' || row.savedAt !== null && !time(row.savedAt) || row.saved !== (row.savedAt !== null)
     || row.shared !== undefined && !validSharedAssessment(row.shared)
     || row.permissionCursor !== undefined && !time(row.permissionCursor)
+    || row.rebootCursor !== undefined && !time(row.rebootCursor)
+    || row.rebootIssueId !== undefined && !validShellyBootEpoch(row.rebootIssueId)
     || !row.current || !row.outcome || !row.coverage || COVERAGE.some(name => !row.coverage[name])
     || Object.keys(row.coverage).some(name => !COVERAGE.includes(name)) || !row.pendingChecks
     || !row.counts || ['events', 'plans', 'findings'].some(key => !time(row.counts[key]))
@@ -748,6 +771,8 @@ export class ChargingSessionDiagnostics {
       const freshDisconnect = nowConnected === false && connected.retained !== true && liveConnection
         && (connected.measuredAt == null || time(connected.measuredAt) && connected.measuredAt <= now);
       if (slot.current && (freshDisconnect || id && id !== slot.current.id && nowConnected === true && connectedAt > slot.current.startedAt)) {
+        // Drain boot evidence into its original report before retiring scope.
+        deviceIncidents(slot.current, view, now);
         finish(slot.current, now, freshDisconnect ? 'unplugged' : 'connection-replaced', freshDisconnect
           ? { source: source(connected.source), measuredAt: at(connected.measuredAt), receivedAt: at(connected.receivedAt) } : {});
         touched.set(`${slot.current.chargerId}:${slot.current.id}`, slot.current); slot.closedThrough = slot.current.startedAt; slot.current = null; changed = true;

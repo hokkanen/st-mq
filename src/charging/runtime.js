@@ -693,6 +693,9 @@ export class ChargingRuntime {
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
         saveState: state => {
           const shelly = id === 'charger2' && item.definition.provider === 'shelly-evse';
+          const reboot = shelly ? adapter.snapshot().reboot : null;
+          const rebootUnreported = reboot?.events?.length
+            && reboot.sequence > (this.sessionDiagnostics.state.chargers[id]?.current?.rebootCursor ?? 0);
           const scope = shelly ? { association: item.association, adapterGeneration: generation, sessionId: state?.sessionId,
             physical: state?.limiter?.scope } : null;
           if (shelly) {
@@ -701,7 +704,7 @@ export class ChargingRuntime {
             if (!this.closed && !this.store.readOnly && !this.store.transactionDepth && !this.writeAbort.signal.aborted
               && !this.store.writeQueue?.closed && !this.store.writeQueue?.running && !this.store.writeQueue?.pendingLength
               && !item.adapterPending && generation === item.adapterGeneration
-              && item.adapter === adapter && ownershipWriter.unchanged(this.ownershipKey(id), state, scope))
+              && item.adapter === adapter && !rebootUnreported && ownershipWriter.unchanged(this.ownershipKey(id), state, scope))
               return Promise.resolve();
           }
           return this.write(() => {
@@ -709,13 +712,17 @@ export class ChargingRuntime {
             else this.store.setState(this.ownershipKey(id), state);
             // Persist native incident rows in the same ownership admission before
             // acknowledging their native cursor. No extra polling or commands.
-            if (shelly && state.compatibility?.sequence > (this.sessionDiagnostics.state.chargers[id]?.current?.permissionCursor ?? 0)) {
+            if (shelly && (rebootUnreported || state.compatibility?.sequence > (this.sessionDiagnostics.state.chargers[id]?.current?.permissionCursor ?? 0))) {
               const diagnostics = this.sessionDiagnostics;
               const previous = { state: diagnostics.state, lastSavedAt: diagnostics.lastSavedAt, lastPrunedAt: diagnostics.lastPrunedAt };
               this.store.afterRollback(() => Object.assign(diagnostics, previous));
               try {
                 diagnostics.observe(this.views(this.clock(), { readEnergy: noRecordedEnergy }).filter(view => view.id === id),
                   this.clock(), this.coordination, { project: false });
+                const cursor = diagnostics.state.chargers[id]?.current?.rebootCursor;
+                if (cursor !== undefined) this.store.afterCommit(() => {
+                  void adapter.acknowledgeRebootEvents?.(cursor).catch(() => { this.diagnosticsError = 'Session diagnostics could not be saved.'; });
+                });
               } catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
             }
             this.store.afterCommit(() => { item.ownershipAdmitted = true; });

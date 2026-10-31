@@ -1,5 +1,9 @@
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+export { validShellyBootState, validShellyRebootEvent, validShellyBootSample, validShellyBootEpoch, shellyBootInterval,
+  classifyShellyBoot, shellyRebootBaseline, shellyRebootSettings, SHELLY_REBOOT_ROLES,
+  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline } from './shelly-reboot.js';
+import { isShellyRebootBaseline } from './shelly-reboot.js';
 
 export function validShellyDeviceHold(value) {
   return value == null || typeof value === 'object' && !Array.isArray(value)
@@ -68,7 +72,7 @@ export function shellyDevicePermission({ hold, sessionId, ownedPause, pending, l
     }
     previous = event.value;
   }
-  if (fresh(field) && field.commandSource === 'sys') {
+  if (fresh(field) && field.commandSource === 'sys' && !isShellyRebootBaseline(field, snapshot)) {
     if (field.value === true) {
       pauseBroken ||= paused;
       // A cached matching true is insufficient, including after restart. The

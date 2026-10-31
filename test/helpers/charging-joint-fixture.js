@@ -75,7 +75,8 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
       return;
     }
     let result, error;
-    if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-joint-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
+    if (frame.method === 'Sys.GetStatus') result = {};
+    else if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-joint-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
     else if (frame.method === 'Shelly.GetComponents') { if (frame.params.keys.includes('service:0')) reads.charger2++; result = shellyComponentReply(frame.params.keys, { service, serviceStatus, components, status }); }
     else if (frame.method === 'Service.GetConfig') result = service;
     else if (frame.method === 'Service.GetStatus') { reads.charger2++; result = { state: 'running' }; }

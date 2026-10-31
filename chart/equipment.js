@@ -8,6 +8,7 @@ import { FLOOR_PREHEAT_DEVICE } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
 import { createFloorControls, floorChannels, floorManualAllowed, floorCommandError, floorRequestId } from './floor-preheat.js';
+import { chargingControlReason } from './charging-status.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
@@ -471,7 +472,8 @@ function shellyChargerConnection(status) {
   return { id: 'connection:shelly-evse:garage', label: 'Charger 2', area: 'garage', kind: 'charger', source: 'Shelly EVSE',
     enabled: health.enabled, topics: health.topics ?? [], mqttStatus: mqtt, lastReportAt: mqtt?.lastLiveAt,
     connectionState: { label, state },
-    connectionDetail: 'Charger 2 reports electricity use and charger state through its local Shelly MQTT connection. RPC requests read device status and apply charging settings.',
+    connectionDetail: 'Charger 2 reports electricity use and charger state through its local Shelly MQTT connection. RPC requests read device status and apply charging settings.'
+      + (health.controlReady === false && health.controlReason ? ` Charging control: ${chargingControlReason(health.controlReason)}` : ''),
     packetDetail: mqtt ? `Broker connection: ${mqtt.brokerConnected === true ? 'connected' : mqtt.brokerConnected === false ? 'disconnected' : 'unknown'}.` : '',
   };
 }

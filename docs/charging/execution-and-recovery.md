@@ -76,6 +76,8 @@ wait may be interrupted; an active native operation keeps its owner. Fresh nativ
 readback, current session and intent, manual instructions, schedules, pending
 uncertainty and command guards still apply. The accepted gap supplies no new
 Start permission. After confirmed Stop and fresh noncharging evidence, the
+accepted program continues to govern while replacement planning returns no
+result; an absent plan cannot release its gap. After that Stop, the
 existing idle-current rule may apply the configured fallback within tighter
 limits without waiting for the same calculation. If physical idle is confirmed
 on a later read, only the exact acknowledged same-session Stop and its unchanged
@@ -430,6 +432,53 @@ remains unverified; software cannot promise an autonomous hardware fallback.
 The ready-by time becomes one concrete occurrence when the physical connection starts. Midnight, identification, progress updates, priority changes and restart do not roll it forward. A deliberate session ready-by edit may change it. Late identification replaces default-derived vehicle inputs without splitting the physical session or resetting its costs.
 
 ## Restart and compatibility
+
+### Shelly charger reboots
+
+The owner approved this lasting, Shelly-specific continuity exception on
+2026-10-31: after a confirmed reboot of the same charger, preserve the saved
+connected session when the charger returns connected without contrary evidence.
+This explicitly accepts that the available API may miss an unreported cable swap
+or native action during the reboot gap. Observed unplug, replacement equipment,
+independent instructions, restrictions and unknown commands retain precedence.
+Reboot alone creates neither a plug boundary nor a new charging request.
+
+The adapter reads `Sys.GetStatus` on the normal five-second poll. Uptime samples
+retain request/receipt times and corroborating device time. Whole-second uptime
+and round-trip intervals bound boot time; a live process compares progression
+against a monotonic clock. A second read at least five seconds later must agree
+with the candidate boot. A new process revalidates the saved anchor; without a
+comparable monotonic reference, lower uptime and a later boot interval are
+required. With no earlier anchor, bootstrap requires boot entirely after a saved
+successful work-state read. Uncertain clocks establish no reboot. MQTT reconnect,
+SYS origin and backward setting timestamps alone are insufficient. Optional
+system-read failure does not revoke otherwise valid ordinary charging.
+
+Confirmed reboot closes command admission and requires new discovery and two
+complete stable native read rounds at least five seconds apart, bracketed by
+consistent system reads. The narrowly scoped compatibility policy can establish
+current SYS startup settings whose original update clocks precede boot. Those
+clocks remain unchanged and separate from current readback receipts. Native
+evidence is scoped to its boot epoch; late earlier-boot replies cannot confirm a
+current command. Unknown origins, unresolved ordering, faults, permissions and
+native schedules keep their ordinary authority. Publication is atomic; failed
+persistence retains the previous committed evidence.
+
+The normal serialized controller then re-evaluates current intent and allocation:
+Automatic may charge or wait, Pause remains a hold, Charge now retains its request,
+and Automatic OFF grants no new Start. Native current choices remain bounded by
+present hardware/installation/vehicle limits. An already-off startup baseline may
+satisfy a retained hold without inventing a Stop or ACK; physical zero is assessed
+separately. A reboot does not renew identification budgets, deadlines or SYS retry
+allowances, erase restoration duties, or prove an uncertain command succeeded.
+The first post-reboot native counter starts a new integration baseline and keeps
+unproven coverage as a gap.
+
+The [compatibility module](shelly-compatibility.md) owns the exceptional
+interpretation, and [session reports](evidence-and-reporting.md#session-reports)
+retain separate boot, baseline, control-reconciliation and physical evidence.
+
+### Saved scope
 
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, integration profile/service or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 

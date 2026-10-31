@@ -174,6 +174,27 @@ proof of a defect or its correction. Normal retention and explicit Save apply;
 workarounds never automatically save a report. Historical events remain readable
 without the [compatibility policies](shelly-compatibility.md).
 
+The third Shelly compatibility finding is **Reboot-state reconciliation**. Each
+confirmed charger reboot records a neutral evidence event with its own opaque
+incident ID, original uptime request/receipt clocks, inferred boot interval and
+observed firmware/model. A separate finding records inconsistent startup state
+that requires backward-clock reconciliation. Before/after native values retain
+their original update and receipt times. Recorded charging intent and any retained
+session continuity describe the recovery policy, not proof of uninterrupted cable
+presence. Baseline verification, waiting/blocking, supersession by another reboot
+and reconciled control remain separate lifecycle events. Waiting, Pause or
+Automatic OFF may be the intended recovered state; measured charging is separate.
+
+Each issue counts once per confirmed boot, including repeated boots in one
+session. Polling, retries, restart, handover and report replay do not add an
+occurrence. Findings retain their counts and evidence after recovery. A subsequent
+boot can supersede an unfinished attempt without claiming success. Structured
+incident IDs, event codes, timestamps, firmware and outcomes support later
+frequency analysis through existing report events. Only observed intervals and
+retained reports support such counts: missing coverage is not zero incidents.
+Normal retention and explicit Save apply; no workaround automatically archives
+reports permanently. A report read never initiates recovery or sends a command.
+
 ## Physical evidence and findings
 
 Charger-reported charging state and measured draw remain separate evidence.

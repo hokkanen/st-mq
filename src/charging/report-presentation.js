@@ -1,6 +1,7 @@
 // Shared presentation of current diagnostic facts. This module does not change
 // recording, finding lifetimes, control thresholds or device authority.
 const FINDINGS = {
+  'reboot-state-reconciliation': ['Reboot-state reconciliation', 'The charger returned inconsistent startup readings after a confirmed reboot. Saved intent was retained while current native state was reconciled. This does not establish a firmware cause or physical charging success.'],
   'sys-pause-interruption': ['SYS pause interruption', 'A system permission transition interrupted an owned pause. The controller invalidated continuous-pause proof and retained the original identification bounds.'],
   'sys-permission-interruption': ['SYS permission interruption', 'The charger reported a system permission Stop. This records native provenance, not who caused it.'],
   'sys-startup-recovery': ['SYS startup recovery', 'Bounded recovery followed a system permission Stop after an acknowledged Start. The events retain each attempt and its observed outcome.'],
@@ -22,6 +23,9 @@ const FINDINGS = {
 export const chargingFinding = code => typeof code === 'string' && Object.hasOwn(FINDINGS, code) ? FINDINGS[code] : undefined;
 
 export function chargingFindingRecovery(row) {
+  if (row.kind === 'recovery' && row.code === 'reboot-state-reconciliation') return row.resolution === 'superseded-by-reboot'
+    ? { label: 'Reboot recovery superseded', description: 'Another reboot interrupted this recovery. Its evidence remains recorded; this does not establish successful recovery.' }
+    : { label: 'Control reconciled after reboot', description: 'The controller reconciled its current instruction with fresh charger evidence. Waiting or Pause can be the intended result; physical charging is recorded separately.' };
   // This finding closes only when the current assessment has a vehicle ID.
   // A changed request or reconciled evidence alone is not that confirmation.
   if (row.kind === 'recovery' && row.code === 'identity-unavailable' && row.resolution === undefined) {
