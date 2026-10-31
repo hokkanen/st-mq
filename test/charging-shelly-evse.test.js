@@ -240,6 +240,34 @@ test('reboot waiting and Pause recover without claiming a new Stop or physical c
   });
 });
 
+test('reboot with native auto-charge enabled reapplies retained Pause through a real Stop', async t => {
+  const { f, session } = await rebootFixture(t, { autoCharge: true });
+  const c = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => c.close());
+  const input = { enabled: true, sessionPause: { connectedAt: session.connectedAt, requestedAt: NOW } };
+  await c.update(input);
+  f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(result.phase, 'waiting'); assert.equal(f.fields.start_charging, false);
+  assert.equal(result.sessionPause.confirmed, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === false).length, 1);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 0);
+  assert.deepEqual(f.adapter.snapshot().session, session);
+});
+test('a positively ordered post-reboot unplug ends the retained physical session', async t => {
+  const { f, session } = await rebootFixture(t);
+  f.fields.work_state = 'charger_free'; f.setSourceTime('work_state', NOW + 10000);
+  await f.adapter.refresh();
+  f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  const snapshot = f.adapter.snapshot();
+  assert.equal(snapshot.reboot.incident.phase, 'ready');
+  assert.equal(snapshot.session.connected, false);
+  assert.notEqual(snapshot.session.sessionId, session.sessionId);
+  assert.equal(snapshot.reboot.incident.connectedAt, null, 'the witnessed unplug preceded boot confirmation');
+  assert.equal(snapshot.reboot.incident.reason, 'reconciled');
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
 test('restart during reboot verification revalidates two rounds and never renews the physical session', async t => {
   const { f, session } = await rebootFixture(t);
   await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
