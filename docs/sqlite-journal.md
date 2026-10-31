@@ -25,7 +25,7 @@ still writes in the accepting transaction. Its derived card view has a
 when due, and important control, session, plan, restriction and source-availability
 changes force an earlier view. The previous complete view and its plan references
 remain intact between saves. Each newly saved view carries its own `recordedAt`;
-a replica uses that date rather than the newer database publication time and
+a slave uses that date rather than the newer database publication time and
 does not overlay newer control or plan fragments onto an older card. A genuinely
 absent date is unknown. Receipt clocks and already-recorded metering/progress
 can wait for the view cadence, as can unchanged coordination and Shelly allowance

@@ -104,7 +104,7 @@ export function chargingConfirmationMissing(charger) {
  * presentation: the saved hold and confirmed:false retain their control meaning. */
 export function chargingDeviceHoldOnly(charger) {
   const control = charger.control ?? {}, values = charger.values ?? {};
-  // A verified standby projection describes the saved master's observation,
+  // A verified slave projection describes the saved master's observation,
   // with its dated caveat. Omitted live native health is not a recorded fault.
   const recorded = charger.readOnly === true && charger.recorded === true
     && Number.isSafeInteger(charger.snapshotAt) && charger.snapshotAt > 0

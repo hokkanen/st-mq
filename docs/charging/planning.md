@@ -462,7 +462,7 @@ request is bound to the existing equipment association, physical connection and
 request revision, with a bounded idempotent action receipt. Admin and
 family-password users may open and refresh the comparison, allow one more day
 and cancel an active allowance. The same session and control checks apply to
-both roles; read-only replicas grant neither role write authority. Ordinary
+both roles; slaves grant neither role write authority. Ordinary
 defaults, charge progress and delivered energy retain their original owners.
 
 There is at most one unconsumed allowance. Until the earlier ready-by checkpoint,

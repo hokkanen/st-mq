@@ -1,7 +1,7 @@
 # Deploy a development commit to Home Assistant
 
 For a pair, follow the [Linux–HA deployment sequence](paired-deployment.md) so the
-standby is verified before control moves. Both [Linux deployment](linux-deployment.md)
+slave is verified before control moves. Both [Linux deployment](linux-deployment.md)
 and HA deployment use the same two modes:
 
 | Command | Required state | Result |
@@ -93,8 +93,8 @@ unknown fields are rejected.
    synchronize with the same master. Fresh peer clocks are assessed on the
    originating computer; the local synchronization deadline defaults to 15 minutes.
    If ordinary synchronization resumes during the final readiness check, it waits
-   under the same strict running-standby checks and timeout instead of declaring
-   a deployment failure from that single observation.
+   under the same strict checks and timeout for a running slave instead of
+   declaring a deployment failure from that single observation.
 
 The status probe runs inside the selected app container. It uses the current
 application configuration to authenticate locally; web tokens remain inside that

@@ -165,7 +165,7 @@ restart and expired permission require release. Restart never recreates a manual
 ON request. Missing OFF confirmation keeps restoration pending and blocks a new
 treatment. Replacing the device or broker never transfers authority or erases the
 old obligation. Malformed and retired saved formats cannot supply permission.
-Standby and authority loss cancel pending activation; graceful shutdown/handover
+Becoming a slave or losing authority cancels pending activation; graceful shutdown/handover
 releases owned outputs while the original master still has authority.
 
 Manual Home **Preheat** remains a single fixed lease for both the floor treatment

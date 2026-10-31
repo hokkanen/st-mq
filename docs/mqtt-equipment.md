@@ -327,7 +327,7 @@ bounded writer queue. A failed save cannot undo live state or command confirmati
 later recording marks the missing interval rather than inventing missed movement.
 Saved and retained door states remain last-reported context after restart, never
 command authority. This behavior requires an already running controller; it does
-not bypass startup storage validation or grant a replica control.
+not bypass startup storage validation or grant a slave control.
 
 Switch requests use the same bounded observation-storage wait as native
 heating and circulation commands. H66 setting writes, Garage heat-pump commands

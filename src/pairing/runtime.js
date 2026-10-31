@@ -354,7 +354,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
             allowSourceSeed = false;
             initialMasterSeedAllowed = false;
             // Keep the last successfully applied local configuration across a
-            // later standby/promote cycle. Its configured storage path remains
+            // later slave/promotion cycle. Its configured storage path remains
             // distinct from the runtime's selected promoted database copy.
             config = inheritConfigurationSnapshot(currentConfig, { ...currentConfig, role: config.role, dbPath: config.dbPath });
           } }, installSignalHandlers: false,

@@ -610,7 +610,7 @@ actionable failure visible in the pairing alert and operation message.
 
 An explicitly confirmed outage promotion may bind its current routes after
 validating the accepted snapshot's existing source context and current
-integration definitions. A replica cannot invent missing source context from
+integration definitions. A slave cannot invent missing source context from
 its own endpoints. A copied database, retained MQTT publication or a binding
 record alone never grants command permission or proves a live device identity.
 Malformed or contradictory context stays protected instead of being repaired
@@ -834,7 +834,7 @@ file/byte or backup counts. History-dependent dashboard requests are temporarily
 unavailable, and no equipment controls are enabled. Family users may view progress
 but cannot initiate or retry reset. Password access and HA ingress remain available;
 remembered access uses the current authority's bounded records during its reset,
-while a standby still requires its current master's authentication response.
+while a slave still requires its current master's authentication response.
 
 Backup archives use private permissions and are named by time and operation ID:
 

@@ -4,7 +4,7 @@ import { ocppHandoverRequirements, assertOcppHandoverReady } from '../acquisitio
 import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
 import { pairError } from './state.js';
 
-/** Reserve no service on standby: only check that its future listener can bind. */
+/** Reserve no service on the slave: only check that its future listener can bind. */
 export async function probeOcppListener(config) {
   const local = localOcppConfiguration(config.connections.easee.local_ocpp);
   const host = local.host === config.pair.vip.address ? '0.0.0.0' : local.host;

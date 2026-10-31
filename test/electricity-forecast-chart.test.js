@@ -115,7 +115,7 @@ test('Electricity prices lists the independent feed without confusing official a
   assert.ok(group.datasets.slice(0, -1).every(row => row.state === 'Available'));
   status.readOnly = true;
   group = dashboardProviders(status, options).find(row => row.key === 'market');
-  assert.equal(group.datasets.at(-1).state, 'Unavailable on this replica');
+  assert.equal(group.datasets.at(-1).state, 'Unavailable in this read-only view');
   assert.equal(group.datasets.at(-1).reported, null, 'Transient forecast clocks are not evidence on a replica');
   assert.equal(group.datasets.at(-1).tone, 'pending');
 });

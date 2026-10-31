@@ -98,7 +98,7 @@ function ageLabel(ms) {
   const count = Math.floor(ms / 86400_000); return `${count} ${count === 1 ? 'day' : 'days'} ago`;
 }
 
-/** Only report verified facts from the local receiver, never primary online flags. */
+/** Only report verified facts from the local receiver, never master online flags. */
 export function replicaDisplay(status, { now = status?.now ?? Date.now(), formatTime = at => new Date(at).toISOString() } = {}) {
   const sync = status?.sync ?? {};
   const stoppedController = status?.controlAuthority?.state === 'protected';

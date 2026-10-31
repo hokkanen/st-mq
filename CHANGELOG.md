@@ -124,7 +124,7 @@ below describe the complete transition from 0.7.5 to 0.9.5.
 
 - Standalone operation, a read-only SSH mirror and a manually managed Linux–HA
   pair share core behavior and data semantics. Only the explicitly authorized
-  master commands equipment; a replica or timeout never grants control authority.
+  master commands equipment; a slave or timeout never grants control authority.
 - Pairing provides verified synchronization, explicit handover, protected-history
   recovery and archived reset choices. Native device readiness and MQTT/OCPP
   continuity remain separate from a completed role transfer.

@@ -10,7 +10,7 @@ Both computers select `controller.topology: "mirror"`; their local
 role-change workflow, automatic control takeover or reverse database recovery.
 Use [pair mode](pairing.md) when the second computer must take control manually.
 
-The viewer keeps the dashboard cards visible with recorded values and explicit
+The slave keeps the dashboard cards visible with recorded values and explicit
 snapshot age. Main-database edits, controller-choice changes and device commands are disabled
 in both the dashboard and API. History navigation and downloading a verified
 database copy remain available. Saving a new database copy on the server is a
@@ -21,9 +21,9 @@ optional [saved-learning verification](reconstruction-and-versioning.md#coeffici
 retain their separate per-computer ownership; neither changes the replicated
 model or grants equipment authority.
 
-Use the same ST-MQ release on both computers. The viewer checks the database
+Use the same ST-MQ release on both computers. The slave checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already
-running viewer keeps its previous readable generation and reports the problem.
+running slave keeps its previous readable generation and reports the problem.
 The SSH prepare/ready handshake uses version 3 and the exact current physical
 database schema. The receiver refuses another contract before directory
 initialization, recovery or publication work; the sender refuses an incompatible
@@ -34,7 +34,7 @@ on the master, which records it in the current schema before replication.
 
 Each read request pins and checks its selected publication checkpoint before
 serving rows. A database that has advanced before its manifest is published can
-temporarily refuse a request; the viewer never serves a mismatched boundary.
+temporarily refuse a request; the slave never serves a mismatched boundary.
 If a checkpoint read or validation fails after the request transaction opens,
 that transaction is rolled back before rejecting the request. Cleanup preserves
 the original failure and does not grant authority to malformed saved data.
@@ -77,7 +77,7 @@ On the slave, choose a **dedicated, initially empty directory** for received
 snapshots, such as `/srv/st-mq-mirror`, accessible to the receiver and viewer.
 Run the receiver and viewer as the same Unix user (or run the viewer as root);
 private directory and file permissions intentionally do not grant group access.
-Start the viewer with:
+Start the slave with:
 
 ```sh
 STMQ_TOPOLOGY=mirror STMQ_MIRROR_ROLE=slave STMQ_MIRROR_DIR=/srv/st-mq-mirror npm start
@@ -87,7 +87,8 @@ Alternatively set `controller.topology` to `mirror`, `mirror.role` to
 `slave` and `mirror.directory` in that machine's private configuration.
 A mirror slave does not need outgoing SSH settings. Until the first verified
 snapshot arrives, the UI reports that it is waiting. Use the existing web-token
-and binding settings for authenticated LAN access; no token is needed for the default loopback-only viewer.
+and binding settings for authenticated LAN access; no token is needed for the
+slave’s default loopback-only web access.
 
 On the master, configure an SSH host alias for the slave, including its user,
 identity file and verified host key. The service uses unattended authentication
@@ -123,7 +124,7 @@ master's private settings. This invented example assumes the slave checkout is
 }
 ```
 
-`remote_directory` must match the viewer's local directory. The executable
+`remote_directory` must match the slave's local directory. The executable
 `rsync_path` runs on the master; `node_path`, `receiver_path` and
 `remote_rsync_path` run on the slave. Use absolute paths if those executables
 are not available through the noninteractive SSH PATH. Restart ST-MQ after
@@ -140,7 +141,7 @@ directory. If its systemd hardening hides home directories, use a private
 `/etc/st-mq/ssh` directory and an executable under `/usr/local/bin` instead.
 Keep installation paths and environment settings explicit in that service.
 The repository's [Linux deployment tools](linux-deployment.md) manage paired
-standbys; they do not install or update independent SSH mirrors.
+slaves; they do not install or update independent SSH mirrors.
 
 ## Outages and large catch-ups
 
@@ -218,7 +219,7 @@ not a prerequisite for every normal synchronization.
 
 The header shows **Mirror · Master** on the source and **Mirror · Slave** on
 the viewer. The **Database mirroring** section shows synchronization status.
-The viewer shows the master checkpoint time and last successful synchronization.
+The slave shows the master checkpoint time and last successful synchronization.
 The synchronization verification time confirms journal continuity; optional full
 verification has its own result and completion time. The checkpoint timestamp
 describes when the source read was pinned, not when a long transfer finished.
@@ -250,7 +251,7 @@ digest detects content mismatch and is not a substitute for authentication.
 | Private setting | Environment override | Default |
 | --- | --- | --- |
 | `controller.topology` | `STMQ_TOPOLOGY` | `standalone`; choose `mirror` on both computers |
-| `mirror.role` | `STMQ_MIRROR_ROLE` | `master`; choose `slave` for the viewer |
+| `mirror.role` | `STMQ_MIRROR_ROLE` | `master`; choose `slave` on the receiving computer |
 | `mirror.directory` | `STMQ_MIRROR_DIR` | `<database directory>/mirror` |
 | `mirror.ssh_host` | `STMQ_MIRROR_SSH_HOST` | Required when sending; SSH alias |
 | `mirror.ssh_config` | `STMQ_MIRROR_SSH_CONFIG` | Empty: normal SSH configuration; otherwise absolute local path passed with `-F` |
@@ -267,9 +268,9 @@ digest detects content mismatch and is not a substitute for authentication.
 The default topology is `standalone`, which does not synchronize databases.
 `mirror` has no `enabled` flag: selecting the topology starts the appropriate
 master or slave runtime. No remote computer is configured by installation.
-The app can send to a Linux slave; a Home Assistant app viewer also works when its
+The app can send to a Linux slave; a Home Assistant app slave also works when its
 configured snapshot directory is populated by a receiver with access to that
-directory. The viewer itself does not start an SSH server.
+directory. The slave itself does not start an SSH server.
 
 Implementation references: [SQLite remote-copy tool](https://sqlite.org/rsync.html),
 [SQLite online backup API](https://sqlite.org/backup.html), and the unchanged

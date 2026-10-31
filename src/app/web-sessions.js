@@ -35,7 +35,7 @@ export function rememberedCookie(token, expiresAt) {
 export const clearRememberedCookie = () => `${REMEMBERED_LOGIN_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`;
 
 /** Authentication state uses the existing committed/replicated state journal.
- * A standby forwards to its active peer; it never grants access from a delayed
+ * A slave forwards to its master; it never grants access from a delayed
  * replica or writes its read-only database. Only token hashes enter storage. */
 export function createWebSessions({ store, getAccess, writable = () => true, peer, clock = Date.now }) {
   let suspended = false, retained = null;

@@ -105,7 +105,7 @@ const operationReasons = { 'operation-failed': 'The cause is not established her
   'worker-lost': 'The worker became unavailable.', 'cleanup-failed': 'Cleanup failed.', cancelled: 'The task was cancelled.',
   superseded: 'Newer work superseded this task.', stale: 'The task no longer matched its original context.',
   capacity: 'Capacity was unavailable; the task did not start.' };
-const operationScopes = { runtime: 'Recording context', history: 'History or saved copy', standby: 'Local standby', shared: 'Local application' };
+const operationScopes = { runtime: 'Recording context', history: 'History or saved copy', standby: 'Local read-only tasks', shared: 'Local application' };
 const operationStages = { queued: 'Queued', starting: 'Starting', reading: 'Reading', copying: 'Copying', verifying: 'Verifying',
   rebuilding: 'Rebuilding', publishing: 'Publishing', cleanup: 'Cleaning up', running: 'Running' };
 const outcomeKeys = Object.keys(operationOutcomes);

@@ -400,9 +400,9 @@ it returns to the password prompt without stopping requested operations. Changin
 the corresponding password invalidates its remembered logins. Admins on HTTPS
 may choose **Sign out remembered browsers** to revoke all remembered logins,
 including their own. Browser data removal can require an earlier sign-in.
-Remembered access on a standby uses the active peer over the authenticated,
-encrypted pair channel; an unavailable peer does not authorize from stale replica
-state. Ordinary password access remains available for standby diagnosis. Token
+Remembered access on a slave uses the master over the authenticated,
+encrypted pair channel; an unavailable peer does not authorize from stale copied
+state. Ordinary password access remains available to diagnose the slave. Token
 creation and revocation use the active writer and existing database journal.
 For ingress, use Home Assistant to log out.
 

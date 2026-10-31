@@ -1,4 +1,4 @@
-// Independent access, replica and pending-request restrictions share one native
+// Independent access, read-only and pending-request restrictions share one native
 // baseline. Releasing one restriction must never restore another one's lock.
 const states = new WeakMap();
 

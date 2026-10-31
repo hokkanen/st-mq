@@ -104,7 +104,7 @@ a cached completed response. Filters, visible membership, source/snapshot clocks
 and checkpoint identity retain their boundaries. Queueing counts toward the read
 deadline. Cancelling one subscriber preserves other subscribers; the last active
 subscriber waits for database cleanup before releasing its read context.
-Replica requests pin the verified checkpoint; worker cleanup
+Slave requests pin the verified checkpoint; worker cleanup
 finishes before publishing its result. A same-database forward-checkpoint hint
 can trigger one fresh verified read context, including when a legitimate
 coalesced publication has pruned the old transaction prefix. The hint supplies

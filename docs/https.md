@@ -86,7 +86,7 @@ message; it is not accepted or replayed automatically.
    `controller.web_token`. An optional distinct family password must meet the
    same network-access requirement. Ingress still uses Home Assistant login.
    If paired, choose the certificate owner explicitly; it is independent of the
-   master/standby role. Both nodes need suitable network passwords.
+   master/slave role. Both nodes need suitable network passwords.
 2. Choose **Set up HTTPS**. Fresh installations do not download or start Tailscale
    until this administrator action. There are no Tailscale binaries in Git or
    bundled in the Home Assistant image. Authorize the dedicated certificate node
@@ -194,7 +194,7 @@ The application reports these observations automatically and stores no client
 test acknowledgement or completion flag.
 
 In a pair, the selected certificate owner also owns the remote entrance,
-independently of master/standby roles. Forwarding targets the shared VIP so ordinary
+independently of master/slave roles. Forwarding targets the shared VIP so ordinary
 controller handovers keep the address. The certificate-owner computer must remain
 running for remote access; its outage is separate from LAN VIP/controller failover.
 Disabling local HTTPS on the owner retains renewal and forwarding while the paired
@@ -325,7 +325,8 @@ namespaces the existing data-directory path. Setup creates storage only when
 requested and rejects paths physically inside a Git checkout before downloading.
 Disabling HTTPS
 retains reusable identity and certificates. Node management is available to an
-authenticated standby administrator without granting household-control authority.
+authenticated administrator on the slave without granting household-control
+authority.
 
 ## Certificates and helper updates
 
@@ -429,7 +430,7 @@ this action. Current normal operation creates neither artifact.
 ## Paired nodes and backups
 
 Choose a certificate owner explicitly during paired setup. This is separate from
-master/standby control ownership. Only the owner runs the dedicated Tailscale
+master/slave control ownership. Only the owner runs the dedicated Tailscale
 identity; the other node installs validated certificate generations through the
 existing authenticated-encrypted pair channel. Keys are not database content and
 never enter ordinary database replication or export. Each node serves its own

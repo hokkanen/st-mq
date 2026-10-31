@@ -56,7 +56,7 @@ criteria. The appliance's measured humidity appears beside its fan and report ti
 the air sensor keeps its own reading above, without a duplicate in Power check.
 Humidity readings remain optional live information. Native settings
 and policy edits are locked while the test or its restoration is active. Family
-and replica views keep their read-only restrictions.
+and slave views keep their read-only restrictions.
 
 Installation entity IDs and credentials stay outside the repository. Set up the
 local integration and bridge in this order:
@@ -380,7 +380,7 @@ drying/cooling procedure and five-minute restart fence remain unchanged.
 
 Qualification is never filled backwards into the test or an earlier reporting
 gap. Device control authority is required for the
-test and restoration; read-only replicas cannot send these commands.
+test and restoration; slaves cannot send these commands.
 
 Native power timing uses one strict current optional state contract. A genuinely
 absent new timing record is established by actual admitted reports; malformed

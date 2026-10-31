@@ -108,11 +108,11 @@ budget or update learning.
 The admin action applies a reviewed scenario to a specific upcoming opportunity,
 with a visible expiry. Home must already permit Automatic heating. Approval does
 not enable it, override a manual action or grant control to a history viewer or
-standby instance. The server enforces this independently of the buttons.
+slave. The server enforces this independently of the buttons.
 The approved opportunity must start within six hours; it has a five-minute
 latest-start grace period. The outer scope expires after the planned reduction
 and the configured recovery timeout, or earlier when the cycle ends. History and
-standby views show recorded-plan context; live simulation is unavailable there.
+slave views show recorded-plan context; live simulation is unavailable there.
 
 The approval uses server-held comparison data. It is bound to the current
 equipment and configuration, expires, and is checked again before the cycle

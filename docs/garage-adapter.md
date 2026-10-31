@@ -5,7 +5,7 @@ The current pump contract is `shelly-cn105/v2`, with device-scoped MQTT `state`,
 unsupported. Configuration names the route; fresh device identity, boot and
 challenge authorize a bounded command attempt. Retained state may be displayed
 as recorded evidence but does not authorize a write. Reconnect never replays an
-old ordinary command. Read-only replicas cannot publish commands.
+old ordinary command. Slaves cannot publish commands.
 
 Pump commands and protection-sender configuration can wait briefly for received
 MQTT observations to finish saving. The wait retains the original command and

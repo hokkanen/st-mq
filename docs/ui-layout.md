@@ -12,6 +12,13 @@ sender”, “heat-pump controller” and “Bluetooth gateway”. Name hardware
 as tested examples or in device-specific instructions, describe required
 capabilities, and distinguish tested installations from unverified candidates.
 
+Use **master** and **slave** when naming computer roles in the UI and current
+documentation. Do not introduce competing role names such as “primary”, “replica”
+or “standby”. Descriptions such as “read-only viewer” and natural references such
+as “this computer” are welcome when the role is clear. These names do not replace
+distinct concepts such as database replicas, provider standby or certificate
+ownership.
+
 Mitsubishi readings show real reported fields, including valid zero/false values.
 Omit never-observed or unsupported placeholders. During temporary loss, keep
 previously observed fields visible as unavailable with source/quality details.

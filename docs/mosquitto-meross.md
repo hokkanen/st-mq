@@ -1,7 +1,7 @@
 # Mosquitto configuration for MSG200
 
 The paired installation uses two local Mosquitto brokers and one device endpoint
-at `VIP:8883`. ST-MQ's TCP frontend forwards TLS unchanged to the active node's
+at `VIP:8883`. ST-MQ's TCP frontend forwards TLS unchanged to the master's
 broker. Existing broker users, subscriptions and retained stores remain local.
 
 ## Prerequisites and backups
@@ -226,7 +226,7 @@ handover in both directions. The final role and authority checks are separate
 from contact-state readback.
 
 Certificate renewal is performed on both broker upstreams using the paired
-standby-first procedure. Credential changes are applied to both brokers before
+slave-first procedure. Credential changes are applied to both brokers before
 changing the device. Existing broker stores are not replicated; a reconnect
 requires fresh device reports. Restore original files and binding from the
 private backups if validation fails, preserving any newer unrelated changes.

@@ -1,7 +1,7 @@
 # Automation and manual heating
 
 The header identifies Live, Simulation or History viewer. It does not grant
-control. History viewers and read-only replicas cannot send equipment commands.
+control. History viewers and slaves cannot send equipment commands.
 
 ## Independent choices
 

@@ -81,7 +81,7 @@ test('backup age is factual, not an invented schedule or present verification', 
 
 test('snapshot has local disk evidence and read-only recording without inferred stalls', () => {
   const view = recordingHealthView(health({ scope: 'snapshot', recording: { state: 'read-only', lastSourceCheckAt: now - 7 * 86400_000 } }), undefined, now);
-  assert.equal(view.scope, 'On this server · Read-only replica');
+  assert.equal(view.scope, 'On this server · Recorded snapshot');
   assert.match(view.recording.coverage, /recorded history.*not acquiring/);
   assert.equal(view.recording.label, 'Read-only history');
   assert.equal(view.disk.free, '60 GB');
@@ -863,7 +863,7 @@ test('local operations render actual collector outcomes in standby and preserve 
   assert.equal(rendered.groups[0].label, 'Learning & recovery');
   const publication = rendered.rows.find(row => row.kind === 'learning-publication');
   assert.equal(publication.summary, 'Earlier problems');
-  assert.match(publication.latest, /Local standby.*save committed; follow-up work failed.*commit was confirmed/i);
+  assert.match(publication.latest, /Local read-only tasks.*save committed; follow-up work failed.*commit was confirmed/i);
   assert.match(publication.duration, /Average 80 ms.*worst 80 ms.*1 finished task/);
   assert.equal(rendered.rows.some(row => row.kind === 'csv-import'), false);
   assert.equal(rendered.coverage.some(row => row.kind === 'csv-import'), false, 'Separate CLI processes are explained once, not rendered as missing app capabilities');

@@ -239,7 +239,7 @@ function nextStep(state, { tlsReady, certificateValid, certificateExpired, uncon
   if (!state.enabled && state.phase === 'disabled' && !retainedRenewal) return { title: savedSetup ? 'Re-enable HTTPS' : 'Set up secure browser access',
     help: peerOwner ? 'Select Enable HTTPS to use the certificate from the already selected paired owner. Complete any certificate renewal on that computer.'
       : state.pair?.paired && !state.pair.ownerId
-      ? 'Choose which computer will issue and renew the certificate, then select Set up HTTPS. This choice stays separate from the master/standby role.'
+      ? 'Choose which computer will issue and renew the certificate, then select Set up HTTPS. This choice stays separate from the master/slave role.'
       : savedSetup ? 'Select Enable HTTPS to reuse the saved HTTPS setup. Its helper identity and any saved certificate stay in place. Renewed authorization uses the current sign-in link displayed in this panel.'
       : 'Select Set up HTTPS, then sign in to Tailscale using the displayed authorization link. An existing host or Home Assistant Tailscale connection does not enroll this dedicated certificate helper.' };
   if (certificateExpired && state.helper?.state !== 'authorization_required') return { title: peerOwner ? 'Renew the certificate on the paired computer' : 'Renew the certificate',
@@ -453,7 +453,7 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
 }
 
 /** This panel owns computer-local web management. It deliberately has no
- * equipment write scope, so an authenticated standby can repair its entrance. */
+ * equipment write scope, so an administrator on the slave can manage web access. */
 export function createSecureWebAccessPanel({ document, request, getAccess = () => null,
   onAccess = () => {}, ingress = false, now = Date.now, confirm = confirmAction }) {
   const $ = id => document.getElementById(id), fold = $('secure-web-access-details');
@@ -480,7 +480,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     $('secure-web-access-expiry-row').hidden = !view.hasCertificate;
     $('secure-web-access-admin').hidden = !admin;
     $('secure-web-access-standby').hidden = status?.readOnly !== true && status?.role !== 'slave';
-    setText('secure-web-access-standby', status?.role === 'slave' ? 'Standby · web access can be managed here.'
+    setText('secure-web-access-standby', status?.role === 'slave' ? 'Slave · web access can be managed here.'
       : 'Web access can be managed here while household control is unavailable.');
     $('secure-web-access-owner-choice').hidden = !view.pairSetup;
     $('secure-web-access-owner').hidden = !view.owner;

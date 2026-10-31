@@ -219,7 +219,7 @@ export function createModelReconstruction({ directory, acquire, clock = Date.now
       if (running) throw error('model_reconstruction_busy');
       let source;
       try { source = await acquire(); }
-      catch { /* Disposal also works while a standby has no usable snapshot. */ }
+      catch { /* Disposal also works while a slave has no usable snapshot. */ }
       finally { await source?.release?.(); }
       // Delete only this service's exact disposable filenames. A misconfigured
       // directory can never turn Discard into recursive main-history deletion.

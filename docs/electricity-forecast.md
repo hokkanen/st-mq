@@ -86,7 +86,7 @@ it does not require persisting hourly provider values.
 
 The master exposes safe feed metadata through `providers.electricityForecast`
 and the current bounded RAM snapshot through the separate forecast API. The
-replica has no acquisition service or transient peer forecast channel; it
+slave has no acquisition service or transient peer forecast channel; it
 reports the feed as unavailable on the read-only instance instead of deriving
 current predictions from copied history. No prices are added to replication.
 Promotion starts the ordinary master acquisition pathway and requests fresh
@@ -112,7 +112,7 @@ separate issue times and backup solar provenance. A status refresh never renews
 these clocks. A forecast outage does not change published-price availability.
 An enabled feed that is unavailable or out of date shows **Needs attention**,
 including in the Electricity prices overview. Disabled feeds, a download in
-progress and forecasts unavailable on a replica retain their neutral states.
+progress and forecasts unavailable on a slave retain their neutral states.
 
 Each eligible connected charger shares its existing footer with a compact
 **One extra day** comparison button. Its two-line label shows the available

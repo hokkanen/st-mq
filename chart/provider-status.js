@@ -530,7 +530,7 @@ function withPriceForecast(group, status, options) {
   const now = options?.now ?? status.now ?? Date.now();
   const available = forecast.enabled && forecast.available && now < forecast.expiresAt && !recordedView(status);
   const attention = forecast.enabled && !recordedView(status) && !available && forecast.status !== 'running';
-  const state = !forecast.enabled ? 'Not enabled' : recordedView(status) ? 'Unavailable on this replica'
+  const state = !forecast.enabled ? 'Not enabled' : recordedView(status) ? 'Unavailable in this read-only view'
     : available ? 'Available' : attention ? 'Needs attention' : 'Updating';
   const description = 'Hourly estimates extend the price chart up to 48 hours and support charging schedules and the one-extra-day comparison. Recorded costs and heating use published prices.';
   const detail = !forecast.enabled ? 'Enable Electricity price forecast in configuration for private, non-commercial use.'

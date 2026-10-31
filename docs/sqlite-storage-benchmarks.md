@@ -67,7 +67,7 @@ the recorder's 0.5 V floor and must likewise retain one observation. These fresh
 reports still advance persisted reporting coverage and statistics.
 
 The large-state case first saves a 256 KiB high-entropy document, then changes one
-counter. It preserves the exact document and counter on the replica. The no-op
+counter. It preserves the exact document and counter in the replicated database. The no-op
 case performs identical state saves and equal SQL updates; both allocated growth
 and WAL writes must remain zero. The append case retains every synthetic event.
 

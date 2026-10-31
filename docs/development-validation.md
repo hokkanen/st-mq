@@ -45,7 +45,7 @@ the selected receipt window and exact source/device result fixed; current report
 outage, import and recovery-selection semantics remain part of the checks.
 Saved charging-report pages keep their selected reports and keyset cursor meaning
 while newer unsaved reports grow; the saved subset has its own sparse history index.
-Replica equipment tests hold missing and inactive configured streams fixed while
+Slave equipment tests hold missing and inactive configured streams fixed while
 another protocol's archive grows, preserving actual device IDs, selected imports
 and source/receipt cutoffs in both exact-device and source-only projections.
 Sensor-action cases retain direct/inherited request precedence and rollback
@@ -82,7 +82,7 @@ outcomes. See [Event log](event-log.md) for evidence and coverage boundaries.
 Event-log read regressions also cover indexed older-page query plans, selective
 Important filtering without changing source rows, offscreen/hidden-tab suspension,
 bounded concurrent subscribers, queued deadlines, per-subscriber cancellation and
-native rollback before the last read lease is released. Replica HTTP checks reuse
+native rollback before the last read lease is released. Slave HTTP checks reuse
 one event worker across verified publication advances and replace it for a new
 physical file. Run `test/event-log-service.test.js`, `test/replica-chart-owner.test.js`
 and `test/replica-viewer.test.js` alongside the event-log API/UI tests. The browser
@@ -349,7 +349,7 @@ history. Adapter suites exercise the same accounting at native boundaries.
 `test/source-feed-health.test.js` checks the real Engine/Recorder outdoor
 fresh/stale/unavailable/failed/never-observed matrix, provider identity, both
 weather/market failures, partial solar/prices, recovery, original clocks,
-shared-cooldown provenance, privacy and replica boundaries. The isolated browser
+shared-cooldown provenance, privacy and slave boundaries. The isolated browser
 fixture `node test/browser/source-feed-health-smoke.js` renders the exact
 **Sources needing attention** section at 320/390/768/1440 pixels in both
 themes, with collapsed and expanded cards, preserved disclosure/focus and
@@ -393,7 +393,7 @@ snapshot results while cheap views remain independent.
 cache continuity, corrections, receipt cutoffs, clock rollback and exact energy
 parity, including synthetic mixed week/month/year workloads. These densities
 and developer-host timings do not qualify Raspberry Pi storage. Read-only API
-access on standby and safe failures are covered by
+access on the slave and safe failures are covered by
 `test/recorded-data-api.test.js`; browser request cancellation and late-response
 fences are covered by `test/energy-check-refresh.test.js`. Date-scoped checks
 include complete meter/session boundaries, empty selections, DST days, concurrent
@@ -411,7 +411,7 @@ browser fixture also renders all History tools and recorded-data job states at
 `node test/browser/dashboard-refresh-smoke.js` runs the complete built dashboard
 against a disposable simulation. It checks matching seven-day defaults for cost
 comparisons and Energy checks, lazy comparison requests, initial render, repeat
-status updates, role changes, advancing standby snapshots, energy refresh and
+status updates, role changes, advancing slave snapshots, energy refresh and
 reload. It asserts that the dashboard error banner stays hidden as well as
 checking uncaught browser exceptions: errors handled inside the dashboard refresh
 path must fail validation.
@@ -890,8 +890,8 @@ text without echoing response fragments.
 `node test/browser/secure-web-access-smoke.js` loads the dashboard’s actual runtime
 stylesheet imports in their production order. It checks optional HTTPS setup,
 missing authorization links, current faults and past receipts, certificate and
-listener readiness, owner/standby/admin/family boundaries, custom selectors,
-keyboard focus and mounted disclosure state. Its layout cases cover both themes
+listener readiness, certificate ownership, master/slave and admin/family boundaries,
+custom selectors, keyboard focus and mounted disclosure state. Its layout cases cover both themes
 at 320, 390 and 1440 px, all ten rounded section folds including Home learning,
 and the distinct leading markers for comparisons and Recording details. Long
 status text and a visible recording warning badge are included. The fixture uses
@@ -1293,7 +1293,7 @@ Storage health and durability changes have focused offline checks in
 `test/recording-health.test.js`, `test/storage-health-api.test.js`, `test/storage-publication.test.js`,
 `test/database-export.test.js`, `test/backup-catalog.test.js`,
 `test/backup-inspection.test.js` and `test/recorder.test.js`. They cover actual
-SQLite full/busy failures, unchanged readings, read-only replicas, authenticated
+SQLite full/busy failures, unchanged readings, slaves, authenticated
 health fallback, flush failures and adaptive-budget isolation from unrelated
 writes. Health producer tests also distinguish current writer availability from
 successful save receipts and source status, reject missing/malformed availability
@@ -1304,7 +1304,7 @@ checkpoint evidence. `test/storage-scheduling-health.test.js` checks real owning
 connection policy, status-only versus periodic SQLite capability, SQL-free health
 reads, background/foreground failure separation, and distinct building, commit and
 checkpoint measurements. UI regressions cover dynamic thresholds, active background
-turns, stale evidence, standby scope, and preserved disclosure focus. The browser
+turns, stale evidence, read-only scope, and preserved disclosure focus. The browser
 fixture includes these current-contract fields and the expanded save-stage hierarchy.
 `node test/browser/recording-health-smoke.js` checks the real dashboard
 health elements at narrow and wide widths in both themes, including focus,
@@ -1750,7 +1750,7 @@ and highest-phase bars, matching phase colours, missing coverage, unchanged
 right-axis meaning and removal of the separate fallback series. The runtime allowance
 regression also runs both production charger adapters with synthetic devices,
 records Charger 1 with Automatic off and verifies both histories reach the chart.
-It covers native zero, unknown evidence and replica/configuration fencing.
+It covers native zero, unknown evidence and slave/configuration fencing.
 Charger 1 session
 checks remain accessible in All series. The charging-controls suite covers
 compact footer allowances, action-message replacement, unknown/inactive states,

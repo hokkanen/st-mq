@@ -31,7 +31,7 @@ The optional [Finnish electricity-price prediction feed](electricity-forecast.md
 has a separate lifetime from official market prices. Published prices always win
 on overlap. Neither routine forecast polls nor their hourly values are recorded;
 the session's explicit one-day approval and binding deadline are durable charging
-intent, not electricity-price observations. A read-only replica does not fetch
+intent, not electricity-price observations. A slave does not fetch
 or reconstruct transient predictions from copied history.
 
 Open-Meteo outdoor temperature, Open-Meteo weather/solar forecasts and Elering
@@ -41,7 +41,7 @@ also counts as a check and postpones its next standby request. These checks use
 the same configured location/market, requests and decoders as actual fallback.
 They respect shared provider access/rate-limit cooldowns and `Retry-After`, retain
 their last completed result and due time across ordinary restart, and yield to
-foreground acquisition. No request runs on a replica or after loss of authority.
+foreground acquisition. No request runs on a slave or after loss of authority.
 
 Standby results are compact diagnostics under the corresponding
 `providers:health` job's `standby` field. They do not select a provider, update
@@ -102,7 +102,7 @@ Open-Meteo observations do not override a newer completed backup check. Other
 measurement warnings, including unavailable Garage estimates, remain independent.
 Grouping precedes the bounded display limit; impact counts include omitted items.
 These read-only projections do not select providers, ingest standby results or
-renew cached evidence; replicas show recorded history rather than live recording
+renew cached evidence; slaves show recorded history rather than live recording
 health.
 
 The shared provider HTTP transport keeps its original finite request deadline
@@ -522,7 +522,7 @@ on every poll. Repeated unchanged confirmations update bounded RAM coverage;
 the next actual observation at least 60 seconds after the previous coverage
 save for Charger 1, or five seconds for Charger 2, persists the endpoint and
 accumulated confirmation count. Semantic transitions are saved immediately.
-Database-backed charts and replicas can show an unknown recent tail until that
+Database-backed charts and slaves can show an unknown recent tail until that
 confirmed coverage is saved, even while the live allowance remains available.
 Before a transition or an orderly stop with recording authority, confirmed
 pending endpoints are flushed with their original source clocks. A crash,
@@ -788,8 +788,8 @@ quiet stream. Selected records, recorded-byte totals and saved timestamp extrema
 commit immediately with their observation; adaptive precision, open energy
 intervals, source coverage and learning inputs keep their existing durability.
 Live recording statistics include pending totals without writing during a status
-read. Replicas and restart see only committed statistics, so optional diagnostic
-totals can lag or lose the unsaved tail after a crash. Pending buckets are capped
+read. Slaves see only committed statistics, as does the master after restart, so
+optional diagnostic totals can lag or lose the unsaved tail after a crash. Pending buckets are capped
 at 256, and expired statistics cannot be resurrected after a long suspension.
 
 For a repeatable offline comparison, run
@@ -1659,7 +1659,7 @@ describes filesystem capacity. Database allocation and growth figures have their
 single home in the upper **Storage & growth** fold, alongside available disk space.
 **Recorded data** contains Adaptive measurements, Other recorded data and Recorded
 energy checks; it does not repeat a storage fold. The subtitle names this server
-and distinguishes live recording, simulation, a read-only replica and a history
+and distinguishes live recording, simulation, a recorded snapshot and a history
 viewer. Local disk and saved-copy information describe this server, even when
 its recorded history came from another computer.
 
@@ -1690,7 +1690,7 @@ mark retained readings as **Last known** rather than current. A recorded snapsho
 or history viewer is explicitly labelled and is not expected to record locally.
 The disk meter uses space available to the application's account, excluding
 filesystem-reserved blocks. It describes this computer's database filesystem,
-including on a replica; it does not imply that another export filesystem has the
+including on a slave; it does not imply that another export filesystem has the
 same free space. The disk is checked at most once per minute. Low-space attention
 starts below the larger of 1 GiB and 5% of capacity, with that percentage allowance
 capped at 5 GiB. Critical attention starts below the larger of 256 MiB and 1% of
@@ -1936,7 +1936,7 @@ Its `POST` body accepts exactly `{action:"refresh"}` or `{action:"cancel"}`.
 One shared job runs at a time. A different period waits for it without cancelling
 it or receiving its results; cancellation only applies to the requested period. The old
 inventory refresh query is unsupported. These read-only inspections are available
-to authenticated admin and family users on master and standby, independently of
+to authenticated admin and family users on master and slave, independently of
 actuator and main-database write authority. Jobs and results belong to the current
 application/store lifetime; they are replaceable caches, not durable history.
 
@@ -2643,7 +2643,7 @@ Historical failure counts remain after recovery and are separate from current
 writer status.
 
 **Local tasks** is separate process-local evidence, available on this computer
-even while it displays a snapshot or runs as standby. Current activity lists
+even while it displays a snapshot or runs as a slave. Current activity lists
 running or queued work regardless of the selected history period. The diagnostic
 disclosure shows task types with activity or outcomes, grouped as **Backups &
 checks**, **Learning & recovery**, **Synchronization & maintenance**, and **Queries
@@ -2712,7 +2712,7 @@ SQLite connection when it opens; the dedicated writer supplies its own settings,
 not those of the parent's read connection. Queue and checkpoint policy values
 come from the same constants used by execution. Health polling performs no SQL.
 The nested `recording.storage` contract is version 1, scoped to `local-store`;
-it is distinct from the active master's memory-only save history. Standby can
+it is distinct from the active master's memory-only save history. The slave can
 show its own local queue and policy without borrowing the master's measurements.
 Missing or unsupported evidence remains unknown.
 
@@ -2896,7 +2896,7 @@ controller phase records describe requests, not measured heat. Public event
 details contain allowlisted facts, never arbitrary payload or exception text.
 
 Decision events retain each controller decision. Their current use also supplies
-replica status freshness, so deduplicating repeated summaries requires a separate
+slave status freshness, so deduplicating repeated summaries requires a separate
 heartbeat design. Disposable state versions and hourly recording statistics have
 their own bounded retention. Sparse supported learning checkpoints remain
 available independently; neither retention policy deletes reconstruction inputs.
@@ -2952,7 +2952,8 @@ source or exact device stream, including unavailable-sensor attempts. It preserv
 invalid-unit and retained-report diagnostics without traversing an older archive.
 Saved charging-report pages seek the saved subset directly, including when newer
 unsaved reports remain in the same charger's history.
-Replica equipment evidence seeks its configured source/device/signal directly.
+Recorded equipment evidence on the slave seeks its configured source/device/signal
+directly.
 A source-only temperature selection merges device-prefix candidates without
 assuming a provenance device ID; missing or old configured streams do not walk
 another protocol's newer archive.
@@ -2995,8 +2996,8 @@ writer. Source-selection changes, damaged cache bodies and unverified restored
 branches fail cache reuse closed. Rejected publication supplies no anchored prefix
 proof; an independently verified retained source prefix remains usable. Paired read-only chart workers request
 only these bounded proof records through their authenticated writable peer; they
-never mutate a replica or acquire equipment authority. Local node identity keeps
-two hosts with identical configured paths from sharing proof ownership.
+never mutate a slave’s database or acquire equipment authority. Local node identity
+keeps two hosts with identical configured paths from sharing proof ownership.
 
 The chronological chart-coverage index is not created by a chart request or by opening an incompatible database.
 For this chronological chart-coverage index only, the owner approved a one-time controlled installation upgrade

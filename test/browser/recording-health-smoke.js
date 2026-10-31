@@ -804,7 +804,7 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status-issues').hidden"), true);
   assert.equal(await evaluate("document.getElementById('recording-status-freshness').hidden"), true);
   assert.equal(await evaluate("document.getElementById('recording-recording-state').textContent"), 'Read-only history');
-  assert.match(await evaluate("document.getElementById('recording-health-scope').textContent"), /On this server.*Read-only replica/);
+  assert.match(await evaluate("document.getElementById('recording-health-scope').textContent"), /On this server.*Recorded snapshot/);
   assert.match(await evaluate("document.getElementById('recording-status-disk').textContent"), /this computer|local disk/i,
     'Snapshot storage identifies the local computer rather than the source of the recording');
   await evaluate(`payload.recordingHealth.checkedAt = ${now - 86400_000}; panel.update(payload)`);

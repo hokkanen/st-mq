@@ -106,7 +106,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       && (readOnly || ['ready', 'saving'].includes(writer)),
     recordingScope: current.scope === 'snapshot' ? 'Recorded snapshot' : current.scope === 'history' ? 'History viewer'
       : current.scope === 'simulated' ? 'Simulated recording' : 'Recording',
-    scope: `On this server · ${{ live: 'Live recording', simulated: 'Simulated recording', snapshot: 'Read-only replica', history: 'History viewer' }[current.scope] ?? 'scope unknown'}`,
+    scope: `On this server · ${{ live: 'Live recording', simulated: 'Simulated recording', snapshot: 'Recorded snapshot', history: 'History viewer' }[current.scope] ?? 'scope unknown'}`,
     checked: validTime(current.checkedAt) ? `Checked ${recordingEvidenceTime(current.checkedAt, now)}` : 'Health has not been checked yet.',
     attention: Array.isArray(current.attention) ? current.attention.filter(item => ['warning', 'critical'].includes(item?.severity))
       .sort((a, b) => Number(b.severity === 'critical') - Number(a.severity === 'critical')) : [],

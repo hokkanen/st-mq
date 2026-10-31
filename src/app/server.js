@@ -292,7 +292,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (maintenance()) return json(503, { error: 'Pairing reset is in progress. Pairing status remains available.', pair: pairContext?.status(), webAccess });
         // These jobs write only this computer's disposable verification progress.
-        // Standby operation has no main-database or device-command authority.
+        // Slave operation has no main-database or device-command authority.
         if (url.pathname === '/api/model-reconstruction' && req.method === 'GET') {
           if ([...url.searchParams.keys()].length) return json(400, { error: 'Unsupported model reconstruction query.' });
           if (!modelReconstruction) return json(200, { available: false, state: 'unavailable' });
@@ -387,7 +387,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
-        // Pair management and read-only verification above are explicit standby exceptions. Even
+        // Pair management and read-only verification above are explicit exceptions for the slave. Even
         // saving a new database file on this host requires the active master;
         // downloading existing history remains available through GET.
         if (writesBlocked() && !['GET', 'HEAD'].includes(req.method))

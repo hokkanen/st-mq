@@ -77,7 +77,7 @@ export class MqttFrontend {
     });
   }
 
-  /** Standby has no VIP. Probe its fixed interface address, never wildcard:
+  /** The slave has no VIP. Probe its fixed interface address, never wildcard:
    * a wildcard would conflict with the intentionally loopback-only broker. */
   async prepare() {
     const generation = this.generation;
