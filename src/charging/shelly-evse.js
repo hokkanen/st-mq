@@ -15,7 +15,6 @@ import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } f
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
 import { createShellyRpcDiagnostics } from './shelly-rpc-diagnostics.js';
-import { chargingDiagnosticSessionId } from './session-diagnostics.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -120,8 +119,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let lastRpcTimeout = null;
   const rpcRecording = { pending: 0, failed: 0, dropped: 0 };
   const rpcScope = () => ({ generation, bootEpoch: bootCandidate ? null : state.boot?.epoch ?? null,
-    reportId: chargingDiagnosticSessionId({ association, request: { sessionId: state.connection?.sessionId },
-      control: { session: { connectedAt: state.connection?.connectedAt } } }) });
+    reportId: engine.charging?.sessionDiagnostics?.rpcReportId(association, state.connection) ?? null });
   const rpcDiagnostics = createShellyRpcDiagnostics({ clock, monotonicClock,
     record(code, payload) {
       if (rpcRecording.pending >= 64) { rpcRecording.dropped++; return; }

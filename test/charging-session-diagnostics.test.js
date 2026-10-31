@@ -35,6 +35,17 @@ function fixture() {
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
+test('RPC requests resolve the retained report even when native and canonical session tokens differ', () => {
+  const { observer, observe } = fixture(), view = charger(); view.id = 'charger2';
+  const report = observe(view), native = { connected: true, connectedAt: now, sessionId: 'fixture-different-native-session' };
+  assert.notEqual(native.sessionId, view.request.sessionId);
+  assert.equal(observer.rpcReportId(view.association, native), report.id);
+  assert.equal(observer.rpcReportId('fixture-other-equipment', native), null);
+  assert.equal(observer.rpcReportId(view.association, { ...native, connectedAt: now + 1 }), null);
+  assert.equal(observer.rpcReportId(view.association, { ...native, connected: false }), null);
+  assert.equal(observer.rpcReportId(view.association, null), null);
+});
+
 test('RPC diagnostics append to the original active or closed report without changing physical assessments', () => {
   const { store, observer, observe } = fixture(), view = charger(); view.id = 'charger2';
   const initial = observe(view);

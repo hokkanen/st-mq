@@ -17,7 +17,6 @@ import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { createWriteHealth } from '../src/storage/write-health.js';
-import { chargingDiagnosticSessionId } from '../src/charging/session-diagnostics.js';
 const NOW = 1800000000000;
 const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
   limiterEnabled:false,marginA:[0,0,0],...extra}}}).chargers.charger2);
@@ -683,7 +682,7 @@ for (const kind of ['success', 'error', 'query', 'reconnect', 'report', 'recordi
 test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`, async t => {
   const f = fixture(t); await f.ready();
   const captured = [];
-  if (kind === 'report') f.engine.charging = { sessionDiagnostics: { recordRpcDiagnostic(code, payload) {
+  if (kind === 'report') f.engine.charging = { sessionDiagnostics: { rpcReportId: () => 'c'.repeat(64), recordRpcDiagnostic(code, payload) {
     captured.push({ type: code, payload }); return true;
   } } };
   if (kind === 'recording-failure') f.store.event = (type, payload) => {
@@ -735,8 +734,7 @@ test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`
   assert.equal(late[0].payload.outcome, kind === 'error' ? 'error' : 'success');
   assert.equal(late[0].payload.requestedValue, query ? undefined : false);
   assert.equal(late[0].payload.sameConnection, kind !== 'reconnect');
-  assert.equal(late[0].payload.reportId, chargingDiagnosticSessionId({ association: f.adapter.association,
-    request: { sessionId: f.adapter.snapshot().session.sessionId }, control: { session: f.adapter.snapshot().session } }));
+  assert.equal(late[0].payload.reportId, kind === 'report' ? 'c'.repeat(64) : null);
   assert.deepEqual(f.adapter.snapshot().fields, before, 'Late replies admit no readings');
   if (query) assert.equal(f.adapter.snapshot().fields.current_limit.value, original.current_limit.value);
   reply(); await new Promise(resolve => setImmediate(resolve));

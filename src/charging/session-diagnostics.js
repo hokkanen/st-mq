@@ -710,6 +710,13 @@ export class ChargingSessionDiagnostics {
   writable() {
     if (this.store.readOnly) throw new Error('Charging reports are read-only');
   }
+  rpcReportId(association, connection) {
+    const record = this.state.chargers.charger2?.current;
+    // The runtime retains its canonical request/session identity across native
+    // recovery. An adapter-local session token cannot reconstruct that report.
+    return record && typeof association === 'string' && record.association === hash(association)
+      && connection?.connected === true && record.startedAt === connection.connectedAt ? record.id : null;
+  }
   recordRpcDiagnostic(code, rpc) {
     this.writable();
     if (!['shelly-rpc-timeout', 'shelly-rpc-late-reply'].includes(code)
