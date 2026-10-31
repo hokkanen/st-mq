@@ -585,11 +585,14 @@ rejects any attempt to create a full snapshot, retains the same database inode a
 reports incremental handover latency and filesystem I/O. On Linux it also bounds
 `/proc/self/io` read/write bytes, so cached full-file scans cannot hide behind zero
 physical read blocks. These process-wide counters also include repeated worker
-module loading and schema validation: a syscall trace attributed about 30 MiB of
-the roughly 36 MiB warm read total to application/dependency files. Every run
-therefore includes a 1 MiB payload baseline, limits read growth to 4 MiB above it,
-and retains a 48 MiB absolute read cap and 8 MiB write cap. The default larger
-payloads are 32 and 128 MiB; custom scales also run the baseline. To run a larger case:
+module loading and schema validation: the October 2026 syscall trace attributed
+about 42 MiB of the roughly 48.5 MiB warm read total to application/dependency
+files. Every run therefore includes a 1 MiB payload baseline, limits read growth
+to 4 MiB above it, and retains a 64 MiB baseline read cap and 8 MiB write cap.
+The baseline ceiling
+allows bounded module growth; larger cases must still stay within the separate
+4 MiB growth limit. The default larger payloads are 32 and 128 MiB; custom scales
+also run the baseline. To run a larger case:
 
 ```sh
 STMQ_PAIR_SCALE_MIB=512 node scripts/test-offline.js --file test/extended/pair-handover-scale.test.js 180000
