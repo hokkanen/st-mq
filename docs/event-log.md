@@ -52,9 +52,15 @@ Automatic checks fetch events only while the log panel is on screen and the
 browser tab is visible, after dashboard history becomes available. Returning to
 the panel checks again. Explicit Refresh, filter and paging actions can read
 without waiting for the viewport observer to report the panel on screen; hidden
-tabs and unavailable history still prevent reads. Leaving the panel or hiding
-the tab cancels unused reads while preserving fetched rows and their original
-check time. This does not change recording cadence, retention or charging behavior.
+tabs and unavailable history still prevent reads. Refresh stays available during
+an outstanding read and replaces it, so a stalled browser transport cannot block
+recovery. Leaving the panel, hiding the tab or suspending the window cancels
+unused reads while preserving fetched rows and their original check time. Window
+focus and page restoration recheck available history even before viewport
+notifications catch up; a delayed offscreen notification cannot cancel that read.
+A dropped connection or temporary gateway failure gets one retry within the same
+read deadline before a failure is shown. This does not change recording cadence,
+retention or charging behavior.
 
 Refreshing retains matching row nodes, open details, focus and reading position.
 New entries wait behind **New events** while the user reads. **Load older events**

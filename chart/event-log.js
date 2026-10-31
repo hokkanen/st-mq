@@ -43,11 +43,12 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   const refreshButton = $('event-log-refresh'), olderButton = $('event-log-older'), newerButton = $('event-log-new');
   const coverage = $('event-log-coverage'), range = $('event-log-range');
   const nodes = new Map();
-  let epoch = 0, pending = null, cancellation = null, closed = false;
+  let epoch = 0, pending = null, cancellation = null, closed = false, pendingManual = false;
   let context = null, rows = [], nextBefore = null, hasNewEvents = false, hasSuccessfulCheck = false;
   let browsingHistory = false, failed = false, historyNotice = false;
-  let enabled = false, inView = !IntersectionObserverClass;
-  const readable = (manual = false) => enabled && (manual || inView) && !document.hidden && !closed;
+  const window = document.defaultView;
+  let enabled = false, inView = !IntersectionObserverClass, focused = document.hasFocus?.() ?? true;
+  const readable = (manual = false) => enabled && (manual || inView && focused) && !document.hidden && !closed;
 
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -58,10 +59,11 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   function setText(node, value) { if (node.textContent !== value) node.textContent = value; }
   function invalidate() {
     epoch++;
-    cancellation?.abort(); cancellation = null; pending = null;
+    cancellation?.abort(); cancellation = null; pending = null; pendingManual = false;
   }
   function controls() {
-    refreshButton.disabled = Boolean(pending);
+    // Refresh can replace a stalled read after browser suspension.
+    refreshButton.disabled = false;
     olderButton.disabled = Boolean(pending);
     olderButton.hidden = !nextBefore;
     newerButton.disabled = Boolean(pending);
@@ -196,17 +198,30 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   }
   async function load(kind = 'refresh', { manual = false } = {}) {
     if (!readable(manual)) return;
-    if (pending) return pending;
+    if (pending) {
+      if (!manual || kind !== 'refresh') return pending;
+      invalidate();
+    }
     if (kind === 'older' && !nextBefore) return;
     const captured = epoch, controller = cancellation = new AbortController();
     const path = url(kind);
     if (!hasSuccessfulCheck) showMessage('Loading recorded events…');
     failed = false;
-    const operation = withReadDeadline(signal => request(path, { signal }), { signal: controller.signal }).then(value => {
-      if (closed || captured !== epoch) return;
+    const operation = withReadDeadline(async signal => {
+      try { return await request(path, { signal }); }
+      catch (error) {
+        // A suspended browser may discard its connection. Retry that read once
+        // inside the same deadline; malformed responses and access failures
+        // still follow their ordinary failure path.
+        if (signal.aborted || captured !== epoch || !readable(manual)
+          || !(error instanceof TypeError || [502, 503, 504].includes(error?.status))) throw error;
+        return request(path, { signal });
+      }
+    }, { signal: controller.signal }).then(value => {
+      if (closed || captured !== epoch || !readable(manual)) return;
       accept(checkedPage(value), kind);
     }).catch(error => {
-      if (closed || captured !== epoch) return;
+      if (closed || captured !== epoch || !readable(manual)) return;
       if (kind === 'older' && error?.code === 'event_log_context_changed') {
         invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; historyNotice = true;
         showMessage('The selected history changed. Loading its current events…');
@@ -217,9 +232,9 @@ export function createEventLog({ document, request, onOpenReport = () => {},
         : 'Event history is unavailable. Try Refresh again.', true);
       if (!hasSuccessfulCheck) status.textContent = 'No successful event check yet';
     }).finally(() => {
-      if (pending === operation) { pending = null; cancellation = null; controls(); }
+      if (pending === operation) { pending = null; cancellation = null; pendingManual = false; controls(); }
     });
-    pending = operation; controls(); return operation;
+    pending = operation; pendingManual = manual; controls(); return operation;
   }
   function changeFilter() {
     invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
@@ -230,13 +245,35 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     if (!readable()) { invalidate(); controls(); return; }
     void load();
   }
+  function suspended() {
+    focused = false; invalidate(); controls();
+  }
+  function resumed() {
+    focused = true;
+    if (!readable(true)) return;
+    // Focus/pageshow can arrive before viewport notifications in suspended
+    // mobile windows. Replace the old transport rather than joining it.
+    invalidate();
+    void load('refresh', { manual: true });
+  }
+  function documentVisibilityChanged() {
+    if (document.hidden) { invalidate(); controls(); }
+    else resumed();
+  }
+  window?.addEventListener('blur', suspended);
+  window?.addEventListener('focus', resumed);
+  window?.addEventListener('pagehide', suspended);
+  window?.addEventListener('pageshow', resumed);
   const observer = IntersectionObserverClass ? new IntersectionObserverClass(entries => {
     const entry = entries.find(value => value.target === $('event-log-panel'));
     if (!entry || inView === entry.isIntersecting) return;
-    inView = entry.isIntersecting; visibilityChanged();
+    inView = entry.isIntersecting;
+    // A delayed offscreen notification must not cancel an explicit read.
+    if (!inView && pendingManual) return;
+    visibilityChanged();
   }) : null;
   observer?.observe($('event-log-panel'));
-  document.addEventListener?.('visibilitychange', visibilityChanged);
+  document.addEventListener?.('visibilitychange', documentVisibilityChanged);
   view.addEventListener('change', changeFilter); area.addEventListener('change', changeFilter);
   // Explicit actions need not wait for a viewport observer to catch up after
   // backgrounding. Hidden documents and unavailable history remain fenced.
@@ -266,7 +303,11 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     },
     close() {
       closed = true; invalidate(); observer?.disconnect();
-      document.removeEventListener?.('visibilitychange', visibilityChanged);
+      document.removeEventListener?.('visibilitychange', documentVisibilityChanged);
+      window?.removeEventListener('blur', suspended);
+      window?.removeEventListener('focus', resumed);
+      window?.removeEventListener('pagehide', suspended);
+      window?.removeEventListener('pageshow', resumed);
     },
   };
 }

@@ -178,13 +178,13 @@ try {
   const refresh = async () => {
     const previous = requests.length;
     await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});window.dispatchEvent(new Event('online'));true");
-    await until('document.getElementById("event-log-refresh").disabled===false');
+    await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
     for (let attempt = 0; requests.length === previous && attempt < 400; attempt++) await pause(30);
-    assert(requests.length > previous); await until('document.getElementById("event-log-refresh").disabled===false');
+    assert(requests.length > previous); await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
   };
   const filter = async (id, value) => {
     await evaluate(`document.getElementById(${JSON.stringify(id)}).value=${JSON.stringify(value)};document.getElementById(${JSON.stringify(id)}).dispatchEvent(new Event('change',{bubbles:true}));true`);
-    await until('document.getElementById("event-log-refresh").disabled===false');
+    await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
   };
   await navigate(); await until('document.getElementById("auth")?.hidden===false');
   await evaluate(`document.getElementById('token').value=${JSON.stringify(admin)};document.getElementById('auth').requestSubmit();true`);
@@ -227,7 +227,7 @@ try {
   await refresh(); await until('document.getElementById("event-log-new").hidden===false');
   assert.equal(await evaluate('window.savedEvent.isConnected'), true);
   await evaluate('document.getElementById("event-log-new").click();true');
-  await until('document.getElementById("event-log-refresh").disabled===false');
+  await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
   const freshKey = `event:${String(freshId).padStart(16, '0')}`;
   assert.equal(await evaluate(`document.getElementById('events').textContent.length>0 && Boolean(document.querySelector('[data-event-id="${freshKey}"]'))`), true);
 
@@ -235,11 +235,11 @@ try {
     await until('document.getElementById("event-log-older").disabled===false');
     assert.equal(await evaluate('document.getElementById("event-log-older").hidden'), false);
     await evaluate('document.getElementById("event-log-older").click();true');
-    await until('document.getElementById("event-log-refresh").disabled===false');
+    await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
     assert(await evaluate('document.getElementById("events").children.length') <= 200);
   }
   await evaluate('document.getElementById("event-log-new").click();true');
-  await until('document.getElementById("event-log-refresh").disabled===false');
+  await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
   const checked = await evaluate('document.getElementById("event-log-status").textContent');
   failure = true; statusNow += 120000; await refresh();
   assert.equal(await evaluate('document.getElementById("event-log-status").textContent'), checked);
@@ -250,6 +250,21 @@ try {
   assert.equal(app.engine.settings.occupancy.mode, 'away');
   assert.equal(await evaluate('document.getElementById("temporary-message").classList.contains("form-error")'), false);
   failure = false; await refresh();
+  // DeX-style window suspension can leave the tab visible while its transport
+  // is stalled. Focus must recover without a page navigation.
+  let beganSuspended, releaseSuspended;
+  const suspendedRead = new Promise(resolve => { beganSuspended = resolve; });
+  hold = { started: beganSuspended, wait: new Promise(resolve => { releaseSuspended = resolve; }) };
+  await evaluate('document.getElementById("event-log-refresh").click();true'); await suspendedRead;
+  const beforeResume = requests.length;
+  try {
+    assert.equal(await evaluate('document.getElementById("event-log-refresh").disabled'), false);
+    await evaluate('window.dispatchEvent(new Event("blur"));window.dispatchEvent(new Event("focus"));true');
+    for (let attempt = 0; requests.length === beforeResume && attempt < 400; attempt++) await pause(30);
+    assert(requests.length > beforeResume, 'Returning to the window starts a fresh event read');
+    await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
+    assert.equal(await evaluate('document.getElementById("event-log-message").dataset.state'), 'neutral');
+  } finally { releaseSuspended(); }
   await filter('event-log-view', 'all');
   assert.equal(await evaluate('document.getElementById("event-log-message").dataset.state'), 'neutral');
   await filter('event-log-area', 'caravan');
@@ -314,7 +329,7 @@ try {
   assert.equal(await evaluate('document.querySelectorAll("#events > li").length'), 0, 'Sign-out discards history and fences delayed responses, including after login-page navigation');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: firefox ? 'Firefox' : 'Chromium', layouts: layoutCases,
-    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
+    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, stalled read replacement after window resume, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { const done = new Promise(resolve => browser.once('exit', resolve)); browser.kill(); await done; }
