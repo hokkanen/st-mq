@@ -31,7 +31,11 @@ command loop. Pending commands and physical restoration obligations stay in the
 core controller, outside removable retry state.
 
 Boot evidence is equipment-scoped acquisition state, not part of a session's SYS
-retry counters. The owner-approved reboot-gap continuity policy does not reset
+retry counters. A recent verified uptime anchor is checkpointed with existing
+acquisition evidence writes, without a separate polling heartbeat. After process
+restart or handover it remains the conservative reference for detecting a later
+boot. An inconclusive sample seeds only volatile monotonic observation; it cannot
+replace the durable epoch or authorize backward-clock reconciliation. The owner-approved reboot-gap continuity policy does not reset
 either retry budget. Startup baseline reads are not new SYS interruption events;
 genuine subsequent transitions still pass through permission reconciliation.
 

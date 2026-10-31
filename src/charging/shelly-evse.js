@@ -34,7 +34,11 @@ const phaseReadingError = value => !value || !PHASE_KEYS.every(key => ['voltage'
   : value.total_power > 90 || PHASE_KEYS.some(key => value[key].voltage > 300 || value[key].current > 100 || value[key].power > 30)
     ? 'invalid-evse-electrical-range' : null;
 function acquisitionMeaning(state) {
-  return { ...state, fields: Object.fromEntries(Object.entries(state.fields).map(([role, field]) => {
+  const { boot, ...rest } = state;
+  // The uptime anchor is a replaceable restart checkpoint. Its advancement
+  // piggybacks on new acquisition evidence rather than creating a heartbeat.
+  const { anchor, ...bootMeaning } = boot ?? {};
+  return { ...rest, ...(boot ? { boot: bootMeaning } : {}), fields: Object.fromEntries(Object.entries(state.fields).map(([role, field]) => {
     const { receivedAt, readback, ...native } = field;
     if (readback) {
       const { requestedAt, receivedAt, admittedAt, ...source } = readback;
@@ -108,7 +112,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
   let lastRpcTimeout = null;
-  let systemSample = null, systemMonotonic = null, bootCandidate = null, rebootRound = null, firstRebootRound = null;
+  let systemSample = null, systemMonotonic = null, verifiedSystem = null, bootCandidate = null, rebootRound = null, firstRebootRound = null;
   let rebootIntent = null;
   const rebootPending = () => Boolean(bootCandidate || state.boot?.incident && state.boot.incident.phase !== 'ready');
   let statusObserver = null;
@@ -232,10 +236,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     // does not need another durable copy of its acquisition checkpoint. Restart
     // always requires fresh discovery/readback in the new transport generation.
     if (isDeepStrictEqual(persistedMeaning, acquisitionMeaning(state))) return;
-    const snapshot = copy(state), previous = persistedMeaning;
+    const snapshot = copy(state), previous = persistedMeaning, previousAnchor = state.boot?.anchor;
+    if (snapshot.boot && !bootCandidate && verifiedSystem?.epoch === snapshot.boot.epoch
+      && clock() >= verifiedSystem.sample.receivedAt && clock() - verifiedSystem.sample.receivedAt <= config.maxAgeMs)
+      snapshot.boot.anchor = copy(verifiedSystem.sample);
     store.setState(key, snapshot);
+    if (state.boot) state.boot.anchor = snapshot.boot.anchor;
     persistedMeaning = acquisitionMeaning(snapshot);
-    store.afterRollback?.(() => { persistedMeaning = previous; });
+    store.afterRollback?.(() => {
+      persistedMeaning = previous;
+      if (state.boot && state.boot.epoch === snapshot.boot?.epoch) state.boot.anchor = previousAnchor;
+    });
   };
   function scheduleKind(job) {
     const targetsPermission = call => {
@@ -909,7 +920,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const elapsedMs = systemSample ? response.monotonicRequestedAt - systemMonotonic : undefined;
     const prior = systemSample ?? state.boot?.anchor;
     const classification = classifyShellyBoot({ previous: prior, sample, elapsedMs, lastReadAt });
-    if (classification === 'unknown') { firstRebootRound = null; return null; }
+    if (classification === 'unknown') {
+      // Keep a live monotonic reference even when a process restart left no
+      // provable relationship to the durable boot. This grants no epoch or
+      // baseline, but lets a subsequent positively observed reboot recover.
+      systemSample = sample; systemMonotonic = response.monotonicRequestedAt;
+      verifiedSystem = null; firstRebootRound = null; return null;
+    }
     if (bootCandidate) {
       const continuation = classifyShellyBoot({ previous: bootCandidate.sample, sample,
         elapsedMs: response.monotonicRequestedAt - bootCandidate.monotonic });
@@ -949,6 +966,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       });
     }
     systemSample = sample; systemMonotonic = response.monotonicRequestedAt;
+    verifiedSystem = !bootCandidate && state.boot
+      && (isDeepStrictEqual(state.boot.anchor, sample)
+        || classifyShellyBoot({ previous: state.boot.anchor, sample }) === 'same')
+      ? { epoch: state.boot.epoch, sample } : null;
     return { sample, classification, monotonic: response.monotonicRequestedAt };
   }
   async function finishRebootRound(round, systemBefore) {

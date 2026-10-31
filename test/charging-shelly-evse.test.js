@@ -134,6 +134,59 @@ async function rebootFixture(t, { autoCharge = false, limiterEnabled = false } =
   for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
   return { f, session };
 }
+test('durable uptime anchor follows meaningful acquisition writes without heartbeat writes', async t => {
+  const f = fixture(t); f.setBootAt(NOW - 100000);
+  for (const role of ['work_state', 'phase_info']) f.setSourceTime(role, NOW);
+  await f.ready();
+  const key = `charging:shelly:${f.adapter.association}`;
+  let writes = 0;
+  const set = f.values.set.bind(f.values);
+  f.values.set = (...args) => { writes++; return set(...args); };
+  f.setNow(NOW + 5000); await f.adapter.refresh();
+  f.setNow(NOW + 10000); await f.adapter.refresh();
+  assert.equal(writes, 0, 'uptime alone creates no durable acquisition heartbeat');
+  f.setNow(NOW + 200000); f.setSourceTime('phase_info', NOW + 200000);
+  await f.adapter.refresh();
+  f.setNow(NOW + 205000); f.setSourceTime('phase_info', NOW + 205000); await f.adapter.refresh();
+  assert.ok(f.values.get(key).boot.anchor.uptime >= 300, 'existing physical evidence write checkpoints recent uptime');
+});
+test('restart detects reboot whose uptime exceeds the original tracking anchor', async t => {
+  const f = fixture(t); f.setBootAt(NOW - 100000); await f.ready();
+  const session = f.adapter.snapshot().session;
+  f.setNow(NOW + 200000); await f.adapter.refresh();
+  f.setNow(NOW + 205000); await f.adapter.refresh();
+  f.restartAdapter(); f.setBootAt(NOW + 220000); f.setNow(NOW + 370000);
+  f.fields.work_state = 'charger_insert'; f.fields.start_charging = false; f.fields.current_limit = 12;
+  for (const role of ['work_state', 'start_charging', 'current_limit']) {
+    f.sources.set(role, 'sys'); f.setSourceTime(role, NOW - 1000);
+  }
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
+  await f.ready();
+  f.setNow(NOW + 375000); await f.adapter.refresh();
+  f.setNow(NOW + 380000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().reboot.incident?.phase, 'ready');
+  assert.deepEqual(f.adapter.snapshot().session, session);
+});
+test('unprovable boot seeds only volatile tracking so a later observed reboot can recover', async t => {
+  const f = fixture(t); f.setBootAt(NOW - 100000); await f.ready();
+  const key = `charging:shelly:${f.adapter.association}`;
+  const original = structuredClone(f.values.get(key).boot.anchor);
+  f.restartAdapter(); f.setNow(NOW + 300000); f.setBootAt(NOW + 150000); await f.ready();
+  assert.equal(f.adapter.snapshot().reboot.incident, null, 'an unprovable boot creates no incident');
+  assert.deepEqual(f.values.get(key).boot.anchor, original, 'an unverified epoch cannot replace the durable anchor');
+  f.fields.work_state = 'charger_insert'; f.fields.start_charging = false; f.fields.current_limit = 12;
+  for (const role of ['work_state', 'start_charging', 'current_limit']) {
+    f.sources.set(role, 'sys'); f.setSourceTime(role, NOW - 1000);
+  }
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
+  f.setNow(NOW + 600000); f.setBootAt(NOW + 480000); await f.adapter.refresh();
+  f.setNow(NOW + 605000); await f.adapter.refresh();
+  f.setNow(NOW + 610000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().reboot.incident?.phase, 'ready');
+  assert.equal(f.adapter.snapshot().reboot.events.filter(row => row.code === 'shelly-reboot-observed').length, 1);
+});
 test('confirmed charger reboot reconciles backward initialization without a plug edge or another SYS incident', async t => {
   const { f, session } = await rebootFixture(t);
   await f.adapter.refresh(); assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-reboot-checking');
