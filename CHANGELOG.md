@@ -7,7 +7,8 @@ Versions follow Semantic Versioning.
 ## Unreleased
 
 - Charger 2 session reports retain reply timeouts and late replies with timing
-  and original-session context. The five-second timeout and charging-control
+  and original-session context. Shelly reads and commands allow ten seconds for
+  replies, reducing false timeouts during slow responses. Charging-control
   confirmation rules remain unchanged.
 
 - Meross MSG200 garage doors support signed local MQTT contact reports and

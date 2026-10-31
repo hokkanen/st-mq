@@ -276,7 +276,7 @@ test('a timed-out current read does not delay independent physical state or mete
   f.advance(16000);
   // The RPC timeout is intentionally unref'ed in production. Keep this
   // synthetic observation alive through its real timeout, without a retry.
-  const timeout = new Promise(resolve => setTimeout(resolve, 5100));
+  const timeout = new Promise(resolve => setTimeout(resolve, 10100));
   const refresh = f.adapter.refresh();
   await physicalRead;
   assert.equal(f.adapter.normalize().connected.value, true, 'Work-state readback arrives before the unrelated timeout');
@@ -287,7 +287,7 @@ test('a timed-out current read does not delay independent physical state or mete
   const timeoutEvidence = f.adapter.snapshot().lastRpcTimeout;
   assert.equal(timeoutEvidence.method, 'Shelly.GetComponents'); assert.equal(timeoutEvidence.role, null);
   assert.equal(timeoutEvidence.requestedAt, f.now()); assert.equal(timeoutEvidence.timedOutAt, f.now());
-  assert.ok(timeoutEvidence.elapsedMs >= 4900); assert.ok(timeoutEvidence.timerOverrunMs >= 0);
+  assert.ok(timeoutEvidence.elapsedMs >= 9900); assert.ok(timeoutEvidence.timerOverrunMs >= 0);
   assert.deepEqual(Object.keys(timeoutEvidence).sort(), ['elapsedMs', 'method', 'requestedAt', 'role', 'timedOutAt', 'timerOverrunMs']);
   assert.equal(f.adapter.normalize().connected.value, true);
   assert.deepEqual(f.adapter.snapshot().session, originalSession);
@@ -382,7 +382,7 @@ test('a missed ordinary read retains a still-fresh accepted Stop without grantin
   const refreshing = controller.update({ enabled: true, plan });
   await new Promise(resolve => setImmediate(resolve));
   const evidence = structuredClone(f.adapter.snapshot().fields);
-  f.advance(5000); t.mock.timers.tick(5000); await refreshing;
+  f.advance(10000); t.mock.timers.tick(10000); await refreshing;
   assert.equal(f.adapter.snapshot().error, 'evse-read-timeout');
   assert.equal(f.adapter.snapshot().observationReady, true);
   assert.equal(f.adapter.snapshot().controlReady, false);
@@ -431,7 +431,7 @@ test('an active identification keeps fresh observations through a missed query w
   const update = controller.update({ enabled: true });
   await new Promise(resolve => setImmediate(resolve));
   const evidence = structuredClone(f.adapter.snapshot().fields);
-  f.advance(5000); t.mock.timers.tick(5000); await update;
+  f.advance(10000); t.mock.timers.tick(10000); await update;
   const view = controller.status();
   assert.equal(view.snapshot.controlReady, false);
   assert.equal(view.snapshot.identificationReady, true);
@@ -462,7 +462,7 @@ test('read publication failures and lost write replies retain distinct outcomes'
   f.client.publish = (_topic, _payload, _options, done) => done?.();
   const command = assert.rejects(f.command('start_charging', false), { code: 'evse-command-unconfirmed' });
   await Promise.resolve();
-  t.mock.timers.tick(5000);
+  t.mock.timers.tick(10000);
   await command;
   assert.equal(f.adapter.snapshot().lastRpcTimeout.method, 'Boolean.Set');
   assert.equal(f.adapter.snapshot().lastRpcTimeout.role, 'start_charging');

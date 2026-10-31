@@ -443,8 +443,11 @@ The ready-by time becomes one concrete occurrence when the physical connection s
 
 ### Shelly RPC reply diagnostics
 
-The native reply timeout remains five seconds, shared with any input-admission
-wait. After that timeout, a passive recorder keeps at most 64 expired request
+All Shelly RPC reads and commands use a ten-second reply budget, shared with any
+input-admission wait. Intent persistence retains its separate lifetime; this is
+not a deadline for the whole action or proof of charging. Polling, native evidence
+freshness and reboot-confirmation timings are unchanged. After a reply timeout,
+a passive recorder keeps at most 64 expired request
 references for two minutes, measured on the process's monotonic clock. Matching
 non-retained replies from the configured charger may then be recorded as late
 success or error responses. They never resolve the expired request, admit native

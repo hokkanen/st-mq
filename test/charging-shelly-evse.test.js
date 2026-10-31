@@ -678,8 +678,40 @@ test('a failed worker source-time save preserves an independently started native
   await original;
 });
 
+for (const mutation of [false, true]) for (const delay of [7700, 9999])
+test(`Shelly ${mutation ? 'command acknowledgement' : 'native read'} succeeds after ${delay} ms`, async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let elapsed = 0, reply, settled = false;
+  t.mock.method(performance, 'now', () => elapsed);
+  const method = mutation ? 'Boolean.Set' : 'Number.GetStatus';
+  f.holdReplies((frame, respond) => {
+    if (frame.method !== method) return false;
+    reply = respond; return true;
+  });
+  const before = structuredClone(f.adapter.snapshot().fields.current_limit);
+  if (!mutation) f.fields.current_limit = 7;
+  const request = f.adapter.rpc(method, { owner: 'service:0', role: mutation ? 'start_charging' : 'current_limit',
+    ...(mutation ? { value: false } : {}) }, mutation ? { mutation: true, guard: () => true } : { statusReadback: true })
+    .finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof reply, 'function');
+  elapsed = delay; f.setNow(NOW + 1000 + delay); t.mock.timers.tick(delay);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'The original request remains pending beyond five seconds');
+  assert.deepEqual(f.adapter.snapshot().fields.current_limit, before, 'A pending reply supplies no new native evidence');
+  reply(); await request;
+  t.mock.timers.tick(10000 - delay);
+  assert.equal(f.adapter.snapshot().lastRpcTimeout, null);
+  assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 0);
+  assert.equal(f.events.some(row => row.type.startsWith('shelly-rpc-')), false);
+  if (!mutation) assert.equal(f.adapter.snapshot().fields.current_limit.value, 7);
+  assert.equal(f.writes.filter(row => row.method === method).length, 1, 'One publication, without replay');
+});
+
 for (const kind of ['success', 'error', 'query', 'reconnect', 'report', 'recording-failure'])
-test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`, async t => {
+test(`late RPC recording is passive and keeps the ten-second deadline: ${kind}`, async t => {
   const f = fixture(t); await f.ready();
   const captured = [];
   if (kind === 'report') f.engine.charging = { sessionDiagnostics: { rpcReportId: () => 'c'.repeat(64), recordRpcDiagnostic(code, payload) {
@@ -693,7 +725,7 @@ test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`
   const timeout = globalThis.setTimeout;
   const timerMock = t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
     const timer = timeout(callback, ms, ...args);
-    if (ms === 5000) { expire = callback; handle = timer; }
+    if (ms === 10000) { expire = callback; handle = timer; }
     return timer;
   });
   const query = kind === 'query', method = query ? 'Number.GetStatus' : 'Boolean.Set';
@@ -709,7 +741,7 @@ test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`
   { code: query ? 'evse-read-timeout' : 'evse-command-unconfirmed' });
   await new Promise(resolve => setImmediate(resolve)); timerMock.mock.restore();
   assert.equal(typeof expire, 'function'); clearTimeout(handle);
-  f.setNow(NOW + 5000); expire(); await rejected;
+  f.setNow(NOW + 10000); expire(); await rejected;
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(rows.filter(row => row.type === 'shelly-rpc-timeout').length, 1);
   assert.equal(f.adapter.snapshot().lastRpcTimeout.requestedAt, NOW);
@@ -719,7 +751,7 @@ test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`
     assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 1);
   }
   const before = structuredClone(f.adapter.snapshot().fields);
-  f.setNow(NOW + 6500);
+  f.setNow(NOW + 11500);
   const body = { id: frame.id, src: 'synthetic-evse', dst: frame.src, result: null };
   for (const [change, packet] of [[{ src: 'fixture-other-device' }, {}], [{ dst: 'fixture-other-client' }, {}], [{}, { retain: true }]])
     f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ ...body, ...change })), packet);
@@ -730,7 +762,8 @@ test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`
   } else reply();
   await new Promise(resolve => setImmediate(resolve));
   const late = rows.filter(row => row.type === 'shelly-rpc-late-reply'); assert.equal(late.length, 1);
-  assert.equal(late[0].payload.elapsedMs, 6500); assert.equal(late[0].payload.afterTimeoutMs, 1500);
+  assert.equal(late[0].payload.elapsedMs, 11500); assert.equal(late[0].payload.afterTimeoutMs, 1500);
+  assert.equal(late[0].payload.replyBudgetMs, 10000);
   assert.equal(late[0].payload.outcome, kind === 'error' ? 'error' : 'success');
   assert.equal(late[0].payload.requestedValue, query ? undefined : false);
   assert.equal(late[0].payload.sameConnection, kind !== 'reconnect');
@@ -756,7 +789,7 @@ test('worker source-time rollback cannot revive a timed-out native read', { time
   const timeout = globalThis.setTimeout;
   const timerMock = t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
     const handle = timeout(callback, ms, ...args);
-    if (ms === 5000) { expire = callback; t.after(() => clearTimeout(handle)); }
+    if (ms === 10000) { expire = callback; t.after(() => clearTimeout(handle)); }
     return handle;
   });
   f.fields.current_limit = 7;
@@ -824,10 +857,10 @@ test('worker input admission and native reply share the original command timeout
   assert.equal(dispatched, false, 'The command cannot pass the unsettled input');
   // Keep the real worker admission boundary, but inspect the scheduled reply
   // budget directly: a busy test host may delay either timer or worker receipt.
-  f.setNow(NOW + 5000); release();
+  f.setNow(NOW + 10000); release();
   await publication;
   assert(commandTimer.ms > 0 && commandTimer.ms <= 1000,
-    'The admitted command has at most one second left, not another five');
+    'The admitted command has at most one second left, not another ten');
   clearTimeout(commandTimer.handle); commandTimer.callback();
   await rejected;
   assert.equal(dispatched, true);
@@ -890,8 +923,8 @@ for (const scenario of ['ordinary', 'expired-wait', 'slow-ordinary-work', 'accum
         assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
         release = (async () => {
           for (let index = 0; index < 5; index++) await turn();
-          if (scenario === 'expired-wait') f.setNow(NOW + 7000);
-          if (scenario === 'accumulated-waits') f.setNow(f.now() + (injected === 1 ? 3000 : 2500));
+          if (scenario === 'expired-wait') f.setNow(NOW + 12000);
+          if (scenario === 'accumulated-waits') f.setNow(f.now() + (injected === 1 ? 6000 : 4500));
           writer.exec('ROLLBACK'); locked = false;
         })();
       } });
@@ -1077,14 +1110,14 @@ test('Shelly valid intent persistence does not shorten the native response deadl
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1,
     'Valid unchanged persistence work must not introduce a whole-action deadline');
   assert.equal(outcome, null);
-  elapsed = 10999; t.mock.timers.tick(4999);
+  elapsed = 15999; t.mock.timers.tick(9999);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(outcome, null, 'The device still owns its existing full response allowance');
-  elapsed = 11000; t.mock.timers.tick(1);
+  elapsed = 16000; t.mock.timers.tick(1);
   await command;
   assert.equal(outcome, 'evse-command-unconfirmed');
   assert.equal(f.adapter.snapshot().lastRpcTimeout.requestedAt, NOW + 6000);
-  assert.equal(f.adapter.snapshot().lastRpcTimeout.elapsedMs, 5000);
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.elapsedMs, 10000);
 });
 
 test('Shelly input admission keeps its bounded wait after ordinary intent persistence', async t => {
@@ -1100,10 +1133,10 @@ test('Shelly input admission keeps its bounded wait after ordinary intent persis
     } }).then(() => { outcome = 'published'; }, error => { outcome = error.code; });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
-  elapsed = 9799; t.mock.timers.tick(4999);
+  elapsed = 14799; t.mock.timers.tick(9999);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(outcome, null);
-  elapsed = 9800; t.mock.timers.tick(1);
+  elapsed = 14800; t.mock.timers.tick(1);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(outcome, 'evse-control-unavailable', 'A stationary wall clock cannot extend actual admission waiting');
   await command;
@@ -1125,7 +1158,7 @@ test('Shelly admission joins share actual waiting before and after persistence',
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(outcome, null);
   assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
-  elapsed = 5500; f.setNow(NOW + 800); t.mock.timers.tick(400);
+  elapsed = 10500; f.setNow(NOW + 800); t.mock.timers.tick(400);
   await command;
   assert.equal(outcome, 'evse-control-unavailable', 'A second receipt cannot restart the admission allowance');
   assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
@@ -2930,6 +2963,54 @@ test('a newer queued update cannot leave Shelly takeover pending or retain an ob
   assert.equal(controller.status().takeover.state, 'confirmed');
   await controller.update({ enabled: true });
   assert.equal(controller.status().takeover.state, undefined, 'later status describes current control rather than the old successful click');
+});
+
+for (const revoke of [false, true])
+test(`Shelly delayed Stop acknowledgement preserves readback and intent fencing: revoke=${revoke}`, async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let elapsed = 0, acknowledge, published, saved, acknowledged = false;
+  const readbacks = [];
+  t.mock.method(performance, 'now', () => elapsed);
+  const sent = new Promise(resolve => { published = resolve; });
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  const plan = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  f.holdReplies((frame, reply) => {
+    if (acknowledged && !revoke && frame.method === 'Shelly.GetComponents') {
+      readbacks.push(reply); return true;
+    }
+    if (frame.method !== 'Boolean.Set') return false;
+    acknowledge = reply; published(); return true;
+  });
+  const update = controller.update({ enabled: true, plan });
+  await sent;
+  elapsed = 7700; f.setNow(NOW + 1000 + elapsed); t.mock.timers.tick(7700);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(saved.pending.stage, 'dispatched', 'No acknowledgement is invented while waiting');
+  if (revoke) controller.invalidate();
+  acknowledged = true; acknowledge();
+  if (!revoke) {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(readbacks.length, 2);
+    assert.equal(saved.pending.stage, 'accepted', 'Acknowledgement alone cannot confirm Stop');
+    elapsed = 15400; f.setNow(NOW + 1000 + elapsed); t.mock.timers.tick(7700);
+    for (const reply of readbacks) reply();
+  }
+  await update;
+  assert.equal(f.adapter.snapshot().lastRpcTimeout, null);
+  if (revoke) {
+    assert.equal(saved.pending.stage, 'accepted', 'A revoked intent still retains the received acknowledgement');
+    assert.equal(saved.pending.acceptedAt, NOW + 8700);
+    f.holdReplies(null);
+    await controller.update({ enabled: true, plan });
+  }
+  assert.equal(controller.status().pending, null);
+  assert.equal(controller.status().manual, null);
+  assert.equal(controller.status().ownedPause, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Readback never replays Stop');
 });
 
 test('Shelly preserves an accepted stop when replanning revokes the in-flight intent', async t => {

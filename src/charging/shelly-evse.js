@@ -19,7 +19,7 @@ const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
 const PERMISSION_EVENT_LIMIT = 64;
-const RPC_TIMEOUT_MS = 5000;
+const RPC_TIMEOUT_MS = 10000;
 const PHASE_KEYS = ['phase_a', 'phase_b', 'phase_c'];
 const MUTATIONS = new Set(['Number.Set', 'Boolean.Set', 'Schedule.Update']);
 const METHODS = new Set(['Sys.GetStatus', 'Shelly.GetDeviceInfo', 'Shelly.GetComponents', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
