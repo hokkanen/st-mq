@@ -10,8 +10,18 @@ import { fileURLToPath } from 'node:url';
 import mqtt from 'mqtt';
 
 test('prepared Mosquitto 2.0 account authenticates a MAC username and retains password-file account access', { timeout: 15000 }, async t => {
-  const plugin = '/usr/lib/x86_64-linux-gnu/mosquitto_dynamic_security.so';
-  const available = !spawnSync('mosquitto', ['-h']).error && await access(plugin).then(() => true, () => false);
+  const broker = spawnSync('mosquitto', ['-h'], { encoding: 'utf8' });
+  const version = /mosquitto version (\d+\.\d+\.\d+)/i.exec(`${broker.stdout ?? ''}\n${broker.stderr ?? ''}`)?.[1];
+  // The Linux preparer targets 2.0's password-file deferral. HA uses the
+  // official broker app's authentication instead of this Linux preparation.
+  if (version && !version.startsWith('2.0.')) {
+    t.skip(`Linux authentication preparation targets Mosquitto 2.0; installed broker is ${version}`); return;
+  }
+  const multiarch = { x64: 'x86_64-linux-gnu', arm64: 'aarch64-linux-gnu' }[process.arch];
+  const candidates = ['/usr/lib/mosquitto_dynamic_security.so',
+    ...(multiarch ? [`/usr/lib/${multiarch}/mosquitto_dynamic_security.so`] : [])];
+  const plugin = (await Promise.all(candidates.map(path => access(path).then(() => path, () => null)))).find(Boolean);
+  const available = !broker.error && Boolean(version) && Boolean(plugin);
   if (!available && process.env.STMQ_REQUIRE_MQTT_TESTS !== '1') { t.skip('Requires Mosquitto 2.0 Dynamic Security plugin'); return; }
   assert.ok(available);
   const directory = await mkdtemp(join(tmpdir(), 'stmq-meross-auth-')), clients = [];

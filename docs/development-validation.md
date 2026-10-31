@@ -1161,7 +1161,11 @@ receipt even after a failure. It supplies an isolated home/configuration path
 and clears Home Assistant app mode for ordinary standalone fixtures; app-specific tests
 select their own synthetic configuration explicitly. Its synthetic Git commit supports installer
 fixtures; compare `sourceDigest` to identify the actual tested source. Retain
-the exit status and inspect declared optional-prerequisite skips. Remove only
+the exit status and inspect declared optional-prerequisite skips. The Linux
+Mosquitto 2.0 authentication-preparation fixture resolves the installed library's
+architecture and declares other broker versions inapplicable. It does not qualify
+HA's separate [official broker authentication path](mosquitto-meross.md#official-ha-mosquitto-add-on).
+Remove only
 the disposable qualification container after copying its results. Do not mount
 the Docker socket, installed configuration or household databases into it.
 
