@@ -78,8 +78,8 @@ For Charger 2, **Evidence** includes native RPC reply timeouts and late success
 or error replies, with their original request/timeout/receipt times and elapsed
 duration. Entries stay with the request's original report even when a late reply
 arrives after unplugging. A late reply does not reopen that session, confirm a
-physical outcome or complete the expired command. The five-second timeout is
-unchanged; [bounded late-reply recording](execution-and-recovery.md#shelly-rpc-reply-diagnostics)
+physical outcome or complete the expired command. The native RPC reply budget is
+ten seconds; [bounded late-reply recording](execution-and-recovery.md#shelly-rpc-reply-diagnostics)
 ends after two minutes, capacity eviction or process restart. Normal reply timing
 summaries accompany incidents without recording every routine poll.
 
