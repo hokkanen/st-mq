@@ -59,6 +59,10 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   const view = $('event-log-view'), area = $('event-log-area');
   const refreshButton = $('event-log-refresh'), olderButton = $('event-log-older'), newerButton = $('event-log-new');
   const coverage = $('event-log-coverage'), range = $('event-log-range');
+  // Native form restoration can clear a select without a user choice. Keep
+  // the selected view in this panel; controls render that state.
+  let filters = { view: view.value || view.options[0].value, area: area.value || area.options[0].value };
+  function restoreFilters() { view.value = filters.view; area.value = filters.area; }
   const nodes = new Map();
   let epoch = 0, pending = null, closed = false;
   let context = null, rows = [], nextBefore = null, hasNewEvents = false, hasSuccessfulCheck = false;
@@ -175,7 +179,8 @@ export function createEventLog({ document, request, onOpenReport = () => {},
       || [...nodes.values()].some(parts => parts.disclosure.open);
   }
   function url(kind) {
-    const params = new URLSearchParams({ view: view.value, area: area.value, limit: String(kind === 'older' || kind === 'latest' ? PAGE_SIZE : Math.max(PAGE_SIZE, rows.length)) });
+    restoreFilters();
+    const params = new URLSearchParams({ ...filters, limit: String(kind === 'older' || kind === 'latest' ? PAGE_SIZE : Math.max(PAGE_SIZE, rows.length)) });
     if (kind === 'older') params.set('before', nextBefore);
     if (rows.length) params.set('visible', rows.map(event => event.id).join(','));
     return `/api/events?${params}`;
@@ -205,7 +210,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
       nextBefore = page.nextBefore; hasNewEvents = false; browsingHistory = false;
     }
     hasSuccessfulCheck = true; failed = false; showStatus(page); coverage.textContent = page.coverage;
-    if (!rows.length) showMessage(view.value === 'important'
+    if (!rows.length) showMessage(filters.view === 'important'
       ? 'No important events in this view. All events includes routine controller activity.'
       : 'No recorded events in this view.');
     else showMessage(changed || historyNotice ? 'The selected history changed. Showing its current events.' : '');
@@ -249,6 +254,10 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     controls(); return operation.promise;
   }
   function changeFilter() {
+    const next = { view: view.value || filters.view, area: area.value || filters.area };
+    const changed = next.view !== filters.view || next.area !== filters.area;
+    filters = next; restoreFilters();
+    if (!changed) return;
     invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
     status.textContent = 'Loading this view…'; coverage.textContent = '';
     void load('refresh', { manual: true });

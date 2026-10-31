@@ -13,7 +13,10 @@ and session outcomes. Routine shared current/readiness assessments, repeated dra
 observations, charger status and verification checks are excluded from Important.
 **All events** also shows routine controller decisions and other supported
 diagnostics. The area filter selects Home, Charging, Garage, Caravan or System.
-Filtering changes presentation, never retained source records.
+Filtering changes presentation, never retained source records. The panel owns the
+selected filters. If browser form restoration clears either dropdown, the next
+read restores the last selection before constructing its query. An empty native
+selection does not change filters or clear fetched history.
 
 Each entry has an occurrence time, area, readable explanation and evidence
 classification. Expand it for structured facts and a complete timestamp in

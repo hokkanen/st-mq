@@ -209,6 +209,8 @@ try {
     for (const recorded of [false, true]) {
       snapshot = recorded;
       await activate(otherTab); await until('document.hidden===true');
+      await evaluate("document.getElementById('event-log-view').selectedIndex=-1;document.getElementById('event-log-area').selectedIndex=-1;true");
+      assert.equal(await evaluate("document.getElementById('event-log-view').value+document.getElementById('event-log-area').value"), '', 'Both native filter selections are actually cleared');
       let started, release;
       const waiting = new Promise(resolve => { started = resolve; });
       statusHold = { started, wait: new Promise(resolve => { release = resolve; }) };
@@ -352,6 +354,17 @@ try {
     assert(enlarged.titleFont >= 13 * factor - 0.1, 'The check actually enlarges explicitly sized text');
     await evaluate('window.eventFontStyles.forEach(({node,original})=>{node.style.fontSize=original;});delete window.eventFontStyles;true');
   }
+  // A native selection reset must preserve a deliberate nondefault filter too.
+  await filter('event-log-view', 'all'); await filter('event-log-area', 'charging');
+  await evaluate("document.getElementById('event-log-view').selectedIndex=-1;document.getElementById('event-log-area').selectedIndex=-1;document.getElementById('event-log-refresh').click();true");
+  await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
+  const restoredQuery = new URL(requests.at(-1), 'http://fixture');
+  assert.equal(restoredQuery.searchParams.get('view'), 'all');
+  assert.equal(restoredQuery.searchParams.get('area'), 'charging');
+  assert.equal(await evaluate("document.getElementById('event-log-view').value"), 'all');
+  assert.equal(await evaluate("document.getElementById('event-log-area').value"), 'charging');
+  assert.equal(await evaluate("document.getElementById('event-log-message').dataset.state"), 'neutral');
+  await filter('event-log-area', 'all'); await filter('event-log-view', 'important');
   const oldRows = await evaluate('document.getElementById("events").children.length'); assert(oldRows > 0);
   let started;
   const blocked = new Promise(resolve => { started = resolve; }); let release;
@@ -362,7 +375,7 @@ try {
   assert.equal(await evaluate('document.querySelectorAll("#events > li").length'), 0, 'Sign-out discards history and fences delayed responses, including after login-page navigation');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: firefox ? 'Firefox' : 'Chromium', layouts: layoutCases,
-    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, real tab return without Refresh for master and slave views, stalled read replacement, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
+    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, cleared native selections during real tab return and explicit Refresh, real tab return without Refresh for master and slave views, stalled read replacement, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { const done = new Promise(resolve => browser.once('exit', resolve)); browser.kill(); await done; }

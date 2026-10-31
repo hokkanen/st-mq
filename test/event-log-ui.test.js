@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createEventLog, eventLogTime } from '../chart/event-log.js';
+import { eventLogQuery } from '../src/app/event-log.js';
 
 const NOW = Date.parse('2026-10-25T10:10:01Z');
 const id = (n, source = 'event') => `${source}:${String(n).padStart(16, '0')}`;
@@ -50,6 +51,8 @@ function fixture(options = {}) {
     node.id = name; elements.set(name, node); document.body.append(node);
   }
   const $ = name => elements.get(name);
+  $('event-log-view').options = [{ value: 'important' }, { value: 'all' }];
+  $('event-log-area').options = ['all', 'home', 'charging', 'garage', 'caravan', 'system'].map(value => ({ value }));
   $('event-log-view').value = 'important'; $('event-log-area').value = 'all';
   document.getElementById = $;
   const requests = [], reports = [];
@@ -365,5 +368,29 @@ test('failed reads explain their stage without exposing private exceptions and r
   assert.doesNotMatch(f.$('event-log-message').textContent, /fixture-private/);
   f.document.createElement = create;
   await f.refresh([row(2)]);
+  assert.equal(f.$('event-log-message').hidden, true);
+});
+
+
+test('cleared native filter selections never enter the event query, including first load and Refresh', async t => {
+  const f = fixture(); t.after(() => f.panel.close());
+  f.$('event-log-view').value = ''; f.$('event-log-area').value = '';
+  const first = f.panel.refresh(); await settle();
+  const query = index => eventLogQuery(new URL(f.requests[index].path, 'http://fixture'));
+  assert.equal(query(0).view, 'important'); assert.equal(query(0).area, 'all');
+  await f.answer([row(3)]); await first;
+  f.$('event-log-view').value = 'all'; f.$('event-log-area').value = 'charging';
+  f.$('event-log-area').dispatch('change'); await settle();
+  await f.answer([row(2, { area: 'charging' })]);
+  const node = f.list.children[0], checked = f.$('event-log-status').textContent;
+  f.$('event-log-view').value = ''; f.$('event-log-area').value = '';
+  f.$('event-log-area').dispatch('change'); await settle();
+  assert.equal(f.requests.length, 2, 'A lost native selection does not reset the selected history');
+  assert.equal(f.list.children[0], node); assert.equal(f.$('event-log-status').textContent, checked);
+  f.$('event-log-view').value = ''; f.$('event-log-area').value = '';
+  f.$('event-log-refresh').dispatch('click'); await settle();
+  assert.equal(query(2).view, 'all'); assert.equal(query(2).area, 'charging');
+  assert.equal(f.$('event-log-view').value, 'all'); assert.equal(f.$('event-log-area').value, 'charging');
+  await f.answer([row(2, { area: 'charging' })]);
   assert.equal(f.$('event-log-message').hidden, true);
 });
