@@ -150,6 +150,32 @@ test('durable uptime anchor follows meaningful acquisition writes without heartb
   f.setNow(NOW + 205000); f.setSourceTime('phase_info', NOW + 205000); await f.adapter.refresh();
   assert.ok(f.values.get(key).boot.anchor.uptime >= 300, 'existing physical evidence write checkpoints recent uptime');
 });
+test('failed evidence commit rolls back its piggybacked uptime anchor and retries cleanly', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-boot-checkpoint-'));
+  const store = new Store(join(directory, 'recording.sqlite')), f = fixture(t, {}, store);
+  t.after(async () => { f.adapter.close(); await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  f.setBootAt(NOW - 100000); await f.ready();
+  const key = `charging:shelly:${f.adapter.association}`;
+  const original = structuredClone(store.getState(key).boot.anchor);
+  const runWrite = store.runWrite.bind(store); let failCommit = true, rejected = false;
+  store.runWrite = (operation, options) => runWrite(() => {
+    const result = operation();
+    if (failCommit && store.getState(key)?.boot.anchor.uptime >= 300) {
+      rejected = true; throw new Error('Synthetic failure after uptime checkpoint write');
+    }
+    return result;
+  }, options);
+  f.setNow(NOW + 200000); await f.adapter.refresh();
+  f.setNow(NOW + 205000); await f.adapter.refresh();
+  assert.equal(rejected, true);
+  assert.deepEqual(store.getState(key).boot.anchor, original);
+  assert.deepEqual(f.adapter.snapshot().reboot.anchor, original);
+  failCommit = false;
+  f.setNow(NOW + 210000); await f.adapter.refresh();
+  assert.ok(store.getState(key).boot.anchor.uptime >= 300);
+  assert.deepEqual(f.adapter.snapshot().reboot.anchor, store.getState(key).boot.anchor);
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
 test('restart detects reboot whose uptime exceeds the original tracking anchor', async t => {
   const f = fixture(t); f.setBootAt(NOW - 100000); await f.ready();
   const session = f.adapter.snapshot().session;
