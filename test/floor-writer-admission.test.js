@@ -43,7 +43,7 @@ test('an obligation COMMIT delayed beyond its challenge cannot publish late acti
   await gate.ready;
   f.advance(2001);
   gate.release();
-  assert((await action) instanceof Error);
+  assert.equal((await action)?.code, 'FLOOR_ACTIVATION_TIMEOUT');
   assert.equal(f.wire.some(row => row.op === 'acquire' || row.op === 'renew'), false);
   assert.equal(f.nativeMask, 0);
   const saved = f.committedState();

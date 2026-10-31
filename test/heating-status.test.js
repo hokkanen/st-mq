@@ -13,6 +13,10 @@ test('heating status distinguishes not dispatched from delivery and readback unc
   assert.match(detail('MQTT_STORAGE_PENDING'), /command was not sent.*waiting to be saved/);
   assert.match(detail('SHELLY_READBACK_TIMEOUT'), /did not confirm.*may already have changed/);
   assert.match(detail('MQTT_AUTHORITY_LOST'), /no longer owns device control/);
+  assert.match(detail('FLOOR_ACTIVATION_TIMEOUT'), /activation window expired.*1\.8-second/);
+  assert.match(detail('FLOOR_STALE'), /device, connection or control request changed/);
+  assert.match(detail('FLOOR_EXPIRED'), /original deadline has expired/);
+  assert.match(detail('FLOOR_UNCONFIRMED'), /no confirming GPIO report/);
   for (const code of ['invented-private-code', 'constructor', '__proto__']) {
     assert.match(detail(code), /detailed cause is unavailable/);
     assert.doesNotMatch(detail(code), /invented private/);

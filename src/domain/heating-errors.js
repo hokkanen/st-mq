@@ -1,5 +1,8 @@
 /** Public heating causes shared by command responses and status presentation. */
+import { FLOOR_COMMAND_ERRORS } from './floor-command-errors.js';
+
 const MESSAGES = {
+  ...FLOOR_COMMAND_ERRORS,
   SHELLY_IDENTITY_UNAVAILABLE: 'The relay identity has not been confirmed. Wait for a fresh device report.',
   SHELLY_READBACK_UNAVAILABLE: 'Relay feedback became unavailable. The command may have reached the relay; check its reported state.',
   SHELLY_READBACK_TIMEOUT: 'The relay did not confirm this command before the timeout. It may already have changed; check its reported state.',

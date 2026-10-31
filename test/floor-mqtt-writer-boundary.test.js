@@ -280,7 +280,7 @@ async function timedOutAcquire(t, { unsent = false } = {}) {
   }
   f.advance(1801);
   const result = await action;
-  assert.equal(result.error?.code, 'FLOOR_UNCONFIRMED');
+  assert.equal(result.error?.code, 'FLOOR_ACTIVATION_TIMEOUT');
   assert.equal(f.state().lastRequest.status, 'failed');
   assert.equal(f.state().lastRequest.confirmed, false);
   assert.equal(f.state().outstanding.until, original.until);
@@ -339,7 +339,7 @@ test('timely acquire ingress whose real COMMIT outlives the request can still re
   assert.equal(f.byteCount, beforeBytes, 'No replacement or release bypasses the held COMMIT');
   commit.release();
   const result = await action;
-  assert.equal(result.error?.code, 'FLOOR_UNCONFIRMED');
+  assert.equal(result.error?.code, 'FLOOR_ACTIVATION_TIMEOUT');
   assert.equal(f.nativeMask, 0);
   assert.equal(f.state().outstanding, null);
   assert(f.state().retired.some(row => row.key === original.key && row.until === original.until));

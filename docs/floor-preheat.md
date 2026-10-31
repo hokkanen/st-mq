@@ -55,6 +55,28 @@ thermal priors, retained Online, copying a database or elapsed time grants no
 permission. Configuration owns device identity and commissioning; dashboard
 commands never rewrite them.
 
+### Request timing and failure causes
+
+Sonoff status reads and release requests each have a ten-second response and
+publication budget. A release can require a fresh status read followed by its
+own release request; ten seconds is not a deadline for that whole operation.
+The 30-second status poll and 90-second feedback freshness limit are unchanged.
+
+Activation and renewal retain the **1.8-second host window**, measured from the
+start of the challenge request. Challenge receipt, required persistence and
+activation publication/confirmation share that original window; no step renews
+it. The firmware's two-second challenge lifetime and device-local lease expiry
+remain unchanged. No firmware update is required.
+
+`FLOOR_ACTIVATION_TIMEOUT` identifies a missed activation window, including a
+native `stale-challenge` rejection. Manual controls, Home heating errors and the
+recorded heating failure cause show this separately from unavailable feedback,
+changed equipment/authority, an expired treatment and unconfirmed GPIO output.
+This failure does not prove that activation was unsent or that outputs are OFF.
+Any uncertain activation retains its release duty until fresh GPIO OFF feedback
+confirms release. Other transport failures keep their own authored public cause
+where available; native payloads and private lease capabilities are not shown.
+
 ## Individual timed controls
 
 An administrator can select **Override on** or **Release** for each circuit in

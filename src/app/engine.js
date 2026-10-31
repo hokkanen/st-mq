@@ -3,6 +3,7 @@ import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { outdoorStandbyStatus } from '../domain/provider-standby.js';
 import { unavailableElectricityForecast } from '../acquisition/electricity-forecast.js';
 import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } from '../control/floor-override.js';
+import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
@@ -1052,7 +1053,9 @@ export class Engine {
     } catch (error) {
       const message = heatingErrorMessage(error?.code);
       const code = message === heatingErrorMessage(undefined) ? 'EXECUTOR_UNCONFIRMED' : error.code;
-      const unconfirmed = ['SHELLY_READBACK_TIMEOUT', 'SHELLY_READBACK_UNAVAILABLE', 'SHELLY_COMMAND_UNCONFIRMED',
+      // A floor cause identifies the failed stage, not whether preceding
+      // heating writes or the uncertain activation reached their devices.
+      const unconfirmed = Object.hasOwn(FLOOR_COMMAND_ERRORS, code) || ['SHELLY_READBACK_TIMEOUT', 'SHELLY_READBACK_UNAVAILABLE', 'SHELLY_COMMAND_UNCONFIRMED',
         'H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_EXPIRED', 'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
       const result = { command, status: unconfirmed ? 'unconfirmed' : 'failed', sent: unconfirmed ? null : false,
         code, actual: null, requestedAt, at: this.clock(), error: message };

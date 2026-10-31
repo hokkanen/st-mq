@@ -321,13 +321,14 @@ valid subsequent increment, while recorded gaps remain intact. MQTT electrical
 acquisition and lifetime-meter recording remain useful independently of control
 availability.
 
-RPC requests keep their five-second response deadline from dispatch. Ordinary
-intent persistence does not consume that response allowance. Scoped mutations
-may join already-received input before and after persistence; those joins share
-five seconds of accumulated actual admission waiting, followed by fresh scope
+RPC reads and commands share a ten-second budget for response and received-input
+admission waiting. Ordinary intent persistence does not consume that response
+allowance. Scoped mutations may join already-received input before and after
+persistence; accumulated admission waiting consumes that same allowance, leaving
+the remaining budget for the native reply. Every join is followed by fresh scope
 and command-readiness checks. They do not retry an uncertain write or extend a
-physical duty deadline. A missed read reports a reading
-timeout; only an uncertain write reports an unconfirmed instruction. Receipt of a
+physical duty deadline. A missed read reports a reading timeout; only an uncertain
+write reports an unconfirmed instruction. Receipt of a
 matching reply cancels this response timer before persistence or source-time
 admission, while those admission steps still block subsequent commands. The live
 snapshot retains one `lastRpcTimeout` diagnostic with the method, supported role,
@@ -384,7 +385,7 @@ Native setting reports retain their command-source evidence. A same-value
 `sys` update without an intervening observed permission change is a device refresh
 and does not revoke saved command ownership.
 If a received telemetry packet is still awaiting persistence or source-time
-admission during takeover, its validation joins that pending work within five
+admission during takeover, its validation joins that pending work within ten
 seconds of accumulated admission waiting. Ordinary planning, reads and
 persistence do not consume that waiting allowance. Waiting sends no query or
 mutation and does not renew any native RPC timeout. The original action token, connection,

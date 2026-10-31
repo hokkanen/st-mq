@@ -35,6 +35,19 @@ function chargingRecord(store, { charger = 'charger2', report = 'a'.repeat(64), 
   return Number(store.db.prepare('SELECT MAX(id) id FROM charging_report_events').get().id);
 }
 
+test('Home failure history distinguishes floor activation expiry from changed feedback and unconfirmed output', t => {
+  const { store, read } = fixture(t);
+  for (const [index, code] of ['FLOOR_ACTIVATION_TIMEOUT', 'FLOOR_STALE', 'FLOOR_UNCONFIRMED'].entries())
+    store.event('control-execution-failed', { input: 'mqtt', code, reason: 'fixture-private-transport-error' }, NOW - index - 1);
+  const rows = read('area=home').events;
+  assert.equal(rows.length, 3);
+  const causes = rows.map(row => row.details.find(detail => detail.label === 'Recorded cause')?.value);
+  assert.match(causes[0], /activation window expired.*1\.8-second/);
+  assert.match(causes[1], /device, connection or control request changed/);
+  assert.match(causes[2], /no confirming GPIO report/);
+  assert.doesNotMatch(JSON.stringify(rows), /fixture-private/);
+});
+
 test('RPC timeout and late reply evidence is readable and private in report and operational event paths', t => {
   const { store, read } = fixture(t), reportId = 'a'.repeat(64);
   const rpc = { input: 'mqtt', reportId, method: 'Boolean.Set', role: 'start_charging', replyBudgetMs: 5000,

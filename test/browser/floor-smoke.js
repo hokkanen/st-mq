@@ -141,6 +141,8 @@ try {
         if (path !== '/api/equipment/floor') throw new Error('Unexpected mutation blocked by synthetic browser fixture');
         const body = JSON.parse(options.body); floorFixture.calls.push([path, body]);
         if (floorFixture.hold) await new Promise(resolve => { floorFixture.finish = resolve; });
+        if (floorFixture.errorCode) return new Response(JSON.stringify({ code: floorFixture.errorCode,
+          error: 'fixture-private-native-error' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
         floorFixture.mask = body.enabled ? floorFixture.mask | (1 << (body.channel - 1)) : floorFixture.mask & ~(1 << (body.channel - 1));
         floorFixture.mode = floorFixture.mask ? 'manual' : null;
         floorFixture.manualResult = { channel: body.channel, enabled: body.enabled, at: ${now}, status: 'confirmed', confirmed: true };
@@ -350,6 +352,19 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-floor-device').open`), false,
     'Unrelated navigation does not reopen the floor card');
   assert.equal(await evaluate('floorFixture.calls.length'), 0, 'Navigation and refresh send no floor commands');
+  for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.getElementById('home-equipment-details').open = true;
+      document.querySelector('${root}').open = true; floorFixture.errorCode = 'FLOOR_ACTIVATION_TIMEOUT';`);
+    await evaluate(`document.querySelector('${on(1)}').click()`);
+    await until(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent.includes('1.8-second')`);
+    assert.match(await evaluate(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent`), /activation window expired/);
+    await evaluate(`floorFixture.errorCode = 'FLOOR_STALE'; document.querySelector('${on(1)}').click()`);
+    await until(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent.includes('device, connection or control request changed')`);
+    assert.doesNotMatch(await evaluate(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent`), /1\.8-second|fixture-private/);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}px ${theme} failure messages fit`);
+    assert.equal(await evaluate('floorFixture.mask'), 0, 'Failure messages do not manufacture output confirmation');
+  }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'floor-browser-smoke-passed', artifacts,
     checks: ['Four independent bounded controls', 'Keyboard actions', 'Duplicate mutation blocked',

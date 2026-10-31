@@ -66,12 +66,15 @@ test('HTTP floor controls retain admin equipment permissions and never dispatch 
   response = await post('synthetic-floor-admin-password');
   assert.equal(response.status, 200); await response.json();
   assert.equal(f.calls.length, 1);
-  f.engine.floorOverride.manual = async () => { throw Object.assign(new Error('synthetic-sensitive-native-payload'), { code: 'FLOOR_UNCONFIRMED' }); };
-  response = await post('synthetic-floor-admin-password');
-  assert.equal(response.status, 409);
-  const rejected = await response.json();
-  assert.equal(rejected.code, 'FLOOR_UNCONFIRMED');
-  assert.doesNotMatch(JSON.stringify(rejected), /synthetic-sensitive/);
+  for (const code of ['FLOOR_UNCONFIRMED', 'FLOOR_ACTIVATION_TIMEOUT', 'FLOOR_STALE', 'FLOOR_EXPIRED']) {
+    f.engine.floorOverride.manual = async () => { throw Object.assign(new Error('synthetic-sensitive-native-payload'), { code }); };
+    response = await post('synthetic-floor-admin-password');
+    assert.equal(response.status, 409);
+    const rejected = await response.json();
+    assert.equal(rejected.code, code);
+    if (code === 'FLOOR_ACTIVATION_TIMEOUT') assert.match(rejected.error, /activation window expired.*1\.8-second/);
+    assert.doesNotMatch(JSON.stringify(rejected), /synthetic-sensitive/);
+  }
   f.engine.floorOverride.manual = async () => { throw new Error('synthetic-sensitive-transport-detail'); };
   response = await post('synthetic-floor-admin-password');
   assert.equal(response.status, 503);

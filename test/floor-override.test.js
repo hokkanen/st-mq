@@ -103,15 +103,137 @@ test('a missing poll reply neither invalidates fresh evidence nor lets a late re
   dropPoll = true; f.advance(30000);
   const poll = f.adapter.tick();
   await new Promise(resolve => setImmediate(resolve));
-  f.advance(5000); t.mock.timers.tick(5000); await poll;
+  f.advance(10000); t.mock.timers.tick(10000); await poll;
   assert.equal(f.adapter.status().devices[0].available, true);
   lateReply();
   assert.equal(f.adapter.status().devices[0].at, at);
   assert.equal(f.observations.length, observations);
-  f.advance(55001); t.mock.timers.tick(85001);
+  f.advance(50001); t.mock.timers.tick(80001);
   assert.equal(f.adapter.status().devices[0].available, false);
   assert(f.observations.slice(-4).every(row => row.value === null));
   await f.adapter.close({ restore: false });
+});
+
+for (const op of ['get', 'release']) for (const delay of [7700, 9999, 10000])
+test(`floor ${op} uses a ten-second budget without admitting expired replies: ${delay} ms`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let hold = false, reply, settled = false;
+  const f = fixture({ transport: ({ body, standard }) => {
+    if (hold && body.op === op) { reply = () => standard(body); return; }
+    standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false }));
+  await f.ready();
+  if (op === 'release') await f.adapter.lease({ owner: 'slow-release', until: f.now + 60000 });
+  else f.advance(30000);
+  hold = true;
+  const original = f.adapter.status().devices[0].at;
+  const action = (op === 'get' ? f.adapter.tick() : f.adapter.release()).finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof reply, 'function');
+  const admittedAt = f.adapter.status().devices[0].at;
+  f.advance(delay); t.mock.timers.tick(delay);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, delay === 10000);
+  reply(); const result = await action;
+  if (delay === 10000) {
+    assert.equal(f.adapter.status().devices[0].at, admittedAt, 'An expired reply cannot renew GPIO evidence');
+    if (op === 'release') {
+      assert.equal(result.released, false);
+      assert.equal(f.adapter.status().restorationPending, true, 'Missing confirmation retains the durable release duty');
+      hold = false; await f.adapter.tick();
+      assert.equal(f.adapter.status().restorationPending, false, 'A new fresh OFF read can settle release');
+    }
+  } else {
+    assert(f.adapter.status().devices[0].at > original);
+    assert.equal(f.adapter.status().devices[0].at, f.now);
+    if (op === 'release') assert.equal(result.released, true);
+  }
+  if (op === 'release') assert.equal(f.publications.filter(row => row.body.op === 'release').length, 1, 'Never replay an uncertain release');
+});
+
+for (const op of ['challenge', 'acquire', 'renew'])
+test(`floor ${op} identifies a missed original 1.8-second activation window`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let hold = false, settled = false;
+  const f = fixture({ transport: ({ body, standard }) => {
+    if (!hold || body.op !== op) standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false }));
+  await f.ready();
+  const until = f.now + 1800000;
+  if (op === 'renew') {
+    await f.adapter.lease({ owner: 'fixed-window', until });
+    f.advance(300000);
+    f.deliver(f.frame({ kind: 'state', op: 'state', now_ms: f.mono }));
+  }
+  hold = true;
+  const action = f.adapter.lease({ owner: 'fixed-window', until }).catch(error => error).finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(1799); t.mock.timers.tick(1799);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  f.advance(1); t.mock.timers.tick(1);
+  assert.equal((await action).code, 'FLOOR_ACTIVATION_TIMEOUT');
+  assert.equal(f.native.active, false);
+  assert.equal(f.saved?.outstanding ?? null, null);
+});
+
+test('challenge waiting consumes the original activation budget rather than granting acquire another window', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture({ transport: ({ body, standard, advance }) => {
+    if (body.op === 'challenge') advance(700);
+    if (body.op !== 'acquire') standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false })); await f.ready();
+  let settled = false;
+  const action = f.adapter.lease({ owner: 'shared-window', until: f.now + 60000 })
+    .catch(error => error).finally(() => { settled = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(1099); t.mock.timers.tick(1099);
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  f.advance(1); t.mock.timers.tick(1);
+  assert.equal((await action).code, 'FLOOR_ACTIVATION_TIMEOUT');
+});
+
+test('submillisecond timer rounding cannot confirm activation at or beyond the original window', async t => {
+  const f = fixture({ transport: ({ body, standard, respond, advance }) => {
+    if (body.op === 'challenge') {
+      advance(1799.5);
+      return respond(body, { now_ms: 11799, challenge: CHALLENGE, issued_ms: 11799, lifetime_ms: 2000 });
+    }
+    if (body.op === 'acquire') advance(.5);
+    standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false })); await f.ready();
+  await assert.rejects(f.adapter.lease({ owner: 'exact-window', until: f.now + 60000 }), { code: 'FLOOR_ACTIVATION_TIMEOUT' });
+  assert.equal(f.publications.filter(row => row.body.op === 'acquire').length, 1);
+  assert.equal(f.publications.filter(row => row.body.op === 'release').length, 1, 'Retain the timely capability solely for release');
+  assert.equal(f.native.active, false);
+  assert.equal(f.saved.outstanding, null);
+});
+
+for (const cause of ['activation-window', 'treatment-deadline', 'feedback-lost', 'native-stale-challenge', 'publication-failed'])
+test(`floor activation keeps its authored failure cause: ${cause}`, async t => {
+  let f;
+  f = fixture({ beforeSave: state => {
+    if (state.outstanding?.phase !== 'acquiring') return;
+    if (cause === 'activation-window') f.advance(1800);
+    if (cause === 'treatment-deadline') f.advance(60000);
+    if (cause === 'feedback-lost') f.deliver(f.frame({ v: 2 }));
+  }, transport: ({ body, standard, respond }) => {
+    if (body.op === 'acquire' && cause === 'native-stale-challenge') return respond(body, { accepted: false, code: 'stale-challenge' });
+    if (body.op === 'acquire' && cause === 'publication-failed') throw Error('fixture-private-publication-error');
+    standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false })); await f.ready();
+  const code = { 'activation-window': 'FLOOR_ACTIVATION_TIMEOUT', 'treatment-deadline': 'FLOOR_EXPIRED',
+    'feedback-lost': 'FLOOR_STALE', 'native-stale-challenge': 'FLOOR_ACTIVATION_TIMEOUT', 'publication-failed': 'FLOOR_UNCONFIRMED' }[cause];
+  await assert.rejects(f.adapter.lease({ owner: 'distinct-causes', until: f.now + 60000 }), error => {
+    assert.equal(error.code, code); assert.doesNotMatch(error.message, /fixture-private/); return true;
+  });
+  assert.equal(f.native.active, false);
+  if (['activation-window', 'treatment-deadline', 'feedback-lost'].includes(cause))
+    assert.equal(f.publications.some(row => row.body.op === 'acquire'), false);
 });
 
 test('failed polls cannot mask explicit disconnection, invalid feedback or hardware faults', async () => {

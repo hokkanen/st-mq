@@ -228,6 +228,19 @@ test('tariff readback timeout records uncertainty without claiming the command w
   assert.equal(JSON.stringify(store.events()).includes('synthetic-private-device'), false);
 });
 
+for (const code of ['FLOOR_ACTIVATION_TIMEOUT', 'FLOOR_UNCONFIRMED', 'FLOOR_STALE', 'FLOOR_EXPIRED', 'FLOOR_PENDING'])
+test(`Home manual failure retains its floor cause without inventing an unsent outcome: ${code}`, async t => {
+  const { engine, store } = setup(t, { commandTransport: { publish: async () => ({ sent: true }) } });
+  engine.executor.execute = async () => { throw Object.assign(Error('fixture-private-floor-capability'), { code }); };
+  await assert.rejects(engine.testHeating({ command: 'normal' }));
+  const result = engine.heatingTests().lastResult;
+  assert.equal(result.code, code);
+  assert.equal(result.status, 'unconfirmed');
+  assert.equal(result.sent, null, 'A stage-specific floor cause is not proof the whole heating action was unsent');
+  if (code === 'FLOOR_ACTIVATION_TIMEOUT') assert.match(result.error, /activation window expired.*1\.8-second/);
+  assert.doesNotMatch(JSON.stringify(store.events()), /fixture-private/);
+});
+
 test('manual request time precedes a qualifying report even when delivery finishes later', async t => {
   let now = Date.parse('2026-09-28T12:00Z'), reportedAt = now;
   const requestedAt = now;

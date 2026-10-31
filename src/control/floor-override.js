@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createControlAttempt } from '../storage/control-attempt.js';
 import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../domain/floor-circuits.js';
+import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 
 const KEY = 'floor-override:v1';
 export const FLOOR_MQTT_TOPICS = Object.freeze({ command: 'cmnd/sonoff4chpro/LEASE', state: 'stat/sonoff4chpro/LEASE', availability: 'tele/sonoff4chpro/LWT' });
@@ -12,12 +13,15 @@ const matches = (pattern, value) => typeof value === 'string' && pattern.test(va
 const UINT = 4294967295;
 const MAX_AGE = 90_000;
 const POLL_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 10_000;
+const ACTIVATION_WINDOW_MS = 1800;
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exact = (value, fields) => plain(value) && Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
 const integer = (value, min = 0, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(value) && value >= min && value <= max;
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const failure = (code, message) => Object.assign(new Error(message), { code });
 const fail = (code, message) => { throw failure(code, message); };
+const activationTimeout = () => failure('FLOOR_ACTIVATION_TIMEOUT', FLOOR_COMMAND_ERRORS.FLOOR_ACTIVATION_TIMEOUT);
 
 export function floorOverrideConfiguration(options = {}) {
   if (!plain(options)) throw new Error('Floor override configuration must be an object.');
@@ -234,7 +238,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         manualSelected: mode === 'manual' && Boolean(out.mask & (1 << (channel.id - 1))) })) });
     return result;
   };
-  const request = (op, fields = {}, { timeout = 5000, guard = () => {}, generation = null, recordingAttempt } = {}) => new Promise((resolve, reject) => {
+  const request = (op, fields = {}, { timeout = REQUEST_TIMEOUT_MS, guard = () => {}, generation = null, recordingAttempt } = {}) => new Promise((resolve, reject) => {
     if (!connected || closed || !settings.deviceMac || !publish || !canControl()) { reject(failure('FLOOR_UNAVAILABLE', 'Floor MQTT control is unavailable.')); return; }
     const id = randomBytes(16).toString('hex'), connectionEpoch = epoch, cancellation = new AbortController(), deadline = monotonicClock() + timeout;
     const body = { v: 1, op, id, device: settings.deviceMac, ...fields };
@@ -244,11 +248,15 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       if (done) return; done = true; clearTimeout(timer); pending.delete(id); cancellation.abort(); evidence.finish();
       if (error) reject(error); else resolve(value);
     };
-    const timer = setTimeout(() => finish(failure('FLOOR_UNCONFIRMED', 'Floor command or GPIO readback was not confirmed.')), timeout);
+    const timeoutError = () => ['challenge', 'acquire', 'renew'].includes(op) ? activationTimeout()
+      : failure('FLOOR_UNCONFIRMED', 'Floor command or GPIO readback was not confirmed.');
+    const timer = setTimeout(() => finish(timeoutError()), timeout);
     const beforePublish = () => {
-      if (done || !connected || closed || epoch !== connectionEpoch || !canControl() || monotonicClock() >= deadline)
+      if (done || !connected || closed || epoch !== connectionEpoch || !canControl())
         fail('FLOOR_AUTHORITY', 'Floor command authority changed before publication.');
-      guard(); if (!dispatched) sentMono = monotonicClock(); dispatched = true;
+      guard();
+      if (monotonicClock() >= deadline) throw timeoutError();
+      if (!dispatched) sentMono = monotonicClock(); dispatched = true;
     };
     const onFirstWrite = () => {
       evidence.dispatched();
@@ -266,7 +274,9 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     if (Buffer.byteLength(JSON.stringify(body)) > 640) { finish(failure('FLOOR_COMMAND', 'Floor command exceeds the supported protocol.')); return; }
     Promise.resolve().then(() => publish(FLOOR_MQTT_TOPICS.command, JSON.stringify(body), { qos: 1, retain: false, noReplay: true,
       beforePublish, beforeWrite: beforePublish, onFirstWrite, signal: cancellation.signal, recordingContext: 'floor-control', recordingKind: ['get', 'challenge'].includes(op) ? 'query' : 'mutation', recordingAttempt: evidence, recordingDeadlineExpired: () => monotonicClock() >= deadline }))
-      .catch(() => finish(failure('FLOOR_UNCONFIRMED', 'Floor command publication was not confirmed.')));
+      .catch(error => finish(Object.hasOwn(FLOOR_COMMAND_ERRORS, error?.code)
+        ? failure(error.code, FLOOR_COMMAND_ERRORS[error.code])
+        : failure('FLOOR_UNCONFIRMED', 'Floor command publication was not confirmed.')));
   });
   const refresh = async ({ allowFault = false } = {}) => {
     lastPoll = monotonicClock();
@@ -334,10 +344,12 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     if (existing && runtime && existing.mask === mask && monotonicClock() < runtime.renewAt) return { status: 'active', active: true, confirmed: true, leaseUntil: existing.until };
     const endMono = runtime?.endMono ?? monotonicClock() + (until - clock());
     const beforeChallenge = monotonicClock();
-    const challengeReply = await request('challenge', {}, { timeout: 1800 });
+    const challengeReply = await request('challenge', {}, { timeout: ACTIVATION_WINDOW_MS });
     const frame = challengeReply.frame, receivedMono = challengeReply.mono;
-    if (!frame.accepted || !frame.challenge || !healthy() || receivedMono - beforeChallenge >= 1800 || frame.now_ms - frame.issued_ms >= 2000)
-      fail('FLOOR_UNCONFIRMED', 'Floor activation challenge is unavailable or stale.');
+    if (!frame.accepted || !frame.challenge || !healthy())
+      fail('FLOOR_UNCONFIRMED', 'Floor activation challenge or GPIO feedback is unavailable.');
+    if (receivedMono - beforeChallenge >= ACTIVATION_WINDOW_MS || frame.now_ms - frame.issued_ms >= 2000)
+      throw activationTimeout();
     if (existing && (frame.generation !== existing.generation || !owns(frame))) fail('FLOOR_PENDING', 'The floor treatment lost device ownership.');
     if (!existing && frame.active) fail('FLOOR_BUSY', 'The floor device has another active treatment.');
     const remaining = Math.floor(endMono - receivedMono), deviceEnd = existing?.deviceEnd ?? frame.issued_ms + remaining;
@@ -356,24 +368,28 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       await persist(withRequest({ ...saved, sequence: Math.max(saved.sequence, treatment), outstanding: out,
         retired: saved.retired.filter(row => row.until > clock()) }, requestRecord));
       if (healthy() && canControl() && !closed && epoch === challengeReply.epoch && currentIdentity(saved.outstanding)
-        && monotonicClock() >= Math.min(endMono, beforeChallenge + 1800)) evidence.expire();
+        && monotonicClock() >= Math.min(endMono, beforeChallenge + ACTIVATION_WINDOW_MS)) evidence.expire();
     } catch (error) { evidence.fail(error); evidence.finish(); throw error; }
     finally { evidence.storageWaiting(false); }
     const guard = () => {
       if (!healthy() || !canControl() || !settings.commissioned || epoch !== challengeReply.epoch || snapshot.frame.generation !== out.generation
-        || monotonicClock() >= endMono || monotonicClock() - beforeChallenge >= 1800 || !currentIdentity(saved.outstanding))
-        fail('FLOOR_EXPIRED', 'Floor activation evidence or deadline changed.');
+        || !currentIdentity(saved.outstanding))
+        fail('FLOOR_STALE', 'Floor activation evidence or authority changed.');
+      if (monotonicClock() >= endMono) fail('FLOOR_EXPIRED', 'The floor treatment has ended.');
+      if (monotonicClock() - beforeChallenge >= ACTIVATION_WINDOW_MS) throw activationTimeout();
     };
     try {
       const reply = await request(existing ? 'renew' : 'acquire', { generation: out.generation, owner: out.owner, treatment, seq,
         challenge: frame.challenge, mask, ttl_ms: settings.leaseSeconds * 1000, end_ms: deviceEnd, ...(existing ? { token: out.token } : {}) },
-        { timeout: Math.max(1, Math.floor(1800 - (monotonicClock() - beforeChallenge))), generation: out.generation, guard, recordingAttempt: evidence });
+        { timeout: Math.max(1, Math.floor(ACTIVATION_WINDOW_MS - (monotonicClock() - beforeChallenge))), generation: out.generation, guard, recordingAttempt: evidence });
       const accepted = reply.frame;
       // A correlated capability can release partial activation even when GPIO
       // confirmation fails. It never grants a replacement activation.
       if (accepted.accepted && accepted.owner === out.owner && accepted.treatment === treatment
         && accepted.generation === out.generation && matches(NONCE, accepted.token ?? out.token ?? ''))
         recoveryToken = { generation: out.generation, treatment, token: accepted.token ?? out.token };
+      if (reply.mono - beforeChallenge >= ACTIVATION_WINDOW_MS
+        || !accepted.accepted && accepted.code === 'stale-challenge') throw activationTimeout();
       if (!accepted.accepted || accepted.duplicate || !accepted.active || !accepted.board_ok || !accepted.gpio_match
         || accepted.owner !== out.owner || accepted.treatment !== treatment || accepted.seq !== seq || accepted.mask !== mask
         || accepted.gpio_mask !== mask || accepted.end_ms !== deviceEnd || accepted.lease_until_ms <= accepted.now_ms

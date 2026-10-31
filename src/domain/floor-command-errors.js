@@ -9,5 +9,6 @@ export const FLOOR_COMMAND_ERRORS = Object.freeze({
   FLOOR_BUSY: 'Another floor treatment owns these outputs. End it before starting a different treatment.',
   FLOOR_STALE: 'The floor device, connection or control request changed. Refresh before trying again.',
   FLOOR_EXPIRED: 'The floor request or its original deadline has expired. Check the current outputs.',
+  FLOOR_ACTIVATION_TIMEOUT: 'The floor activation window expired (1.8-second host limit). Check the reported outputs; release may remain pending.',
   FLOOR_UNCONFIRMED: 'The request has no confirming GPIO report. Check the outputs; release may remain pending.',
 });

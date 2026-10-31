@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Sonoff floor status reads and releases allow ten seconds for replies. The
+  unchanged 1.8-second activation window has a distinct failure message in floor
+  controls and Home heating diagnostics, preserving uncertain release duties.
+
 - Charger 2 session reports retain reply timeouts and late replies with timing
   and original-session context. Shelly reads and commands allow ten seconds for
   replies, reducing false timeouts during slow responses. Charging-control

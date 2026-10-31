@@ -100,11 +100,13 @@ test('manual actions send a bounded scoped request and block duplicates while aw
   assert.match(actions.snapshot().message, /Channel 2/);
 });
 
-test('manual failure messages preserve floor evidence without leaking transport errors', async () => {
-  const actions = createEquipmentActions({ request: async () => { throw Object.assign(new Error('private-device-and-token'), { code: 'FLOOR_UNCONFIRMED' }); } });
+for (const [code, message] of [['FLOOR_UNCONFIRMED', /no confirming GPIO report/],
+  ['FLOOR_ACTIVATION_TIMEOUT', /activation window expired.*1\.8-second/], ['FLOOR_STALE', /device, connection or control request changed/]])
+test(`manual failure messages preserve floor evidence without leaking transport errors: ${code}`, async () => {
+  const actions = createEquipmentActions({ request: async () => { throw Object.assign(new Error('private-device-and-token'), { code }); } });
   actions.update(current());
   assert.equal(await actions.floor(3, true), false);
-  assert.match(actions.snapshot().message, /no confirming GPIO report/);
+  assert.match(actions.snapshot().message, message);
   assert.doesNotMatch(actions.snapshot().message, /private-device-and-token/);
   assert.equal(actions.snapshot().status.preheatValves.configured, true);
 });
