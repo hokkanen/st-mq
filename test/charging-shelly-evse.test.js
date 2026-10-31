@@ -17,6 +17,7 @@ import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { createWriteHealth } from '../src/storage/write-health.js';
+import { chargingDiagnosticSessionId } from '../src/charging/session-diagnostics.js';
 const NOW = 1800000000000;
 const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
   limiterEnabled:false,marginA:[0,0,0],...extra}}}).chargers.charger2);
@@ -101,7 +102,7 @@ function fixture(t, extra={}, backingStore=null) {
   const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,monotonicClock:()=>now-NOW,canControl:()=>authority});
   let adapter=createAdapter();
   t.after(()=>adapter.close());
-  return {get adapter(){return adapter;},health:store.writeHealth,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {get adapter(){return adapter;},store,engine,health:store.writeHealth,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     holdReplies:value=>holdReply=value, setBootAt:value=>bootAt=value, setFailWhen:value=>failSaveWhen=value,
     componentReply(frame, overrides = {}) { return shellyComponentReply(frame.params.keys, { service, serviceStatus, components: components(),
       status: role => Object.hasOwn(overrides, role) ? overrides[role] : status(role) }); },
@@ -676,6 +677,74 @@ test('a failed worker source-time save preserves an independently started native
   // If rollback loses the newer owner, this still rejects at the native deadline.
   assert.deepEqual(await newer, f.schedules);
   await original;
+});
+
+for (const kind of ['success', 'error', 'query', 'reconnect', 'report', 'recording-failure'])
+test(`late RPC recording is passive and keeps the five-second deadline: ${kind}`, async t => {
+  const f = fixture(t); await f.ready();
+  const captured = [];
+  if (kind === 'report') f.engine.charging = { sessionDiagnostics: { recordRpcDiagnostic(code, payload) {
+    captured.push({ type: code, payload }); return true;
+  } } };
+  if (kind === 'recording-failure') f.store.event = (type, payload) => {
+    captured.push({ type, payload }); throw Error('fixture-recording-failure');
+  };
+  const rows = kind === 'report' || kind === 'recording-failure' ? captured : f.events;
+  let reply, expire, handle, frame;
+  const timeout = globalThis.setTimeout;
+  const timerMock = t.mock.method(globalThis, 'setTimeout', (callback, ms, ...args) => {
+    const timer = timeout(callback, ms, ...args);
+    if (ms === 5000) { expire = callback; handle = timer; }
+    return timer;
+  });
+  const query = kind === 'query', method = query ? 'Number.GetStatus' : 'Boolean.Set';
+  f.holdReplies((request, respond) => {
+    if (request.method !== method) return false;
+    frame = request; reply = respond; return true;
+  });
+  const original = structuredClone(f.adapter.snapshot().fields);
+  if (query) f.fields.current_limit = 7;
+  const rejected = assert.rejects(f.adapter.rpc(method,
+    query ? { owner: 'service:0', role: 'current_limit' } : { owner: 'service:0', role: 'start_charging', value: false },
+    query ? { statusReadback: true } : { mutation: true, guard: () => true }),
+  { code: query ? 'evse-read-timeout' : 'evse-command-unconfirmed' });
+  await new Promise(resolve => setImmediate(resolve)); timerMock.mock.restore();
+  assert.equal(typeof expire, 'function'); clearTimeout(handle);
+  f.setNow(NOW + 5000); expire(); await rejected;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rows.filter(row => row.type === 'shelly-rpc-timeout').length, 1);
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.requestedAt, NOW);
+  assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 1);
+  if (kind === 'reconnect') {
+    f.client.emit('offline'); await f.ready();
+    assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 1);
+  }
+  const before = structuredClone(f.adapter.snapshot().fields);
+  f.setNow(NOW + 6500);
+  const body = { id: frame.id, src: 'synthetic-evse', dst: frame.src, result: null };
+  for (const [change, packet] of [[{ src: 'fixture-other-device' }, {}], [{ dst: 'fixture-other-client' }, {}], [{}, { retain: true }]])
+    f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ ...body, ...change })), packet);
+  assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 1, 'Unmatched/retained replies do not consume the reference');
+  if (kind === 'error') {
+    delete body.result; body.error = { code: -104, message: 'fixture-private-error' };
+    f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify(body)), {});
+  } else reply();
+  await new Promise(resolve => setImmediate(resolve));
+  const late = rows.filter(row => row.type === 'shelly-rpc-late-reply'); assert.equal(late.length, 1);
+  assert.equal(late[0].payload.elapsedMs, 6500); assert.equal(late[0].payload.afterTimeoutMs, 1500);
+  assert.equal(late[0].payload.outcome, kind === 'error' ? 'error' : 'success');
+  assert.equal(late[0].payload.requestedValue, query ? undefined : false);
+  assert.equal(late[0].payload.sameConnection, kind !== 'reconnect');
+  assert.equal(late[0].payload.reportId, chargingDiagnosticSessionId({ association: f.adapter.association,
+    request: { sessionId: f.adapter.snapshot().session.sessionId }, control: { session: f.adapter.snapshot().session } }));
+  assert.deepEqual(f.adapter.snapshot().fields, before, 'Late replies admit no readings');
+  if (query) assert.equal(f.adapter.snapshot().fields.current_limit.value, original.current_limit.value);
+  reply(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rows.filter(row => row.type === 'shelly-rpc-late-reply').length, 1, 'Duplicate reply is ignored');
+  assert.equal(f.writes.filter(row => row.method === method).length, 1, 'No command/query replay');
+  assert.equal(f.adapter.snapshot().rpcDiagnostics.recording.failed, kind === 'recording-failure' ? 2 : 0);
+  if (kind === 'report') assert.equal(f.events.filter(row => row.type.startsWith('shelly-rpc-')).length, 0, 'Report-owned evidence creates no duplicate operational row');
+  assert.doesNotMatch(JSON.stringify(late), /fixture-private-error|stmq-evse-|"params"/);
 });
 
 test('worker source-time rollback cannot revive a timed-out native read', { timeout: 10_000 }, async t => {

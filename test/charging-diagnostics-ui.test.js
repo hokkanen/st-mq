@@ -22,6 +22,25 @@ test('shared identification observation wording does not identify the vehicle as
   }
 });
 
+test('RPC report entries show late timing and original scope without claiming control or physical success', async () => {
+  const f = setup();
+  const rpc = { method: 'Boolean.Set', role: 'start_charging', requestedAt: now - 7000,
+    timedOutAt: now - 2000, receivedAt: now, elapsedMs: 7000, afterTimeoutMs: 2000, replyBudgetMs: 5000,
+    outcome: 'error', errorCode: -104, requestedValue: false, sameConnection: false, sameBoot: false, sameSession: false,
+    firmware: 'fixture-fw', normalReplies: { replies: 4, minMs: 22, maxMs: 85 },
+    message: 'fixture-private-native-text', id: 'fixture-private-request-id' };
+  f.records.set('current', [{ id: 1, at: now - 2000, kind: 'evidence', code: 'shelly-rpc-timeout', rpc },
+    { id: 2, at: now, kind: 'evidence', code: 'shelly-rpc-late-reply', rpc }]);
+  await f.open(); const text = textOf(f.document.body);
+  assert.match(text, /Reply deadline exceeded/); assert.match(text, /Late reply received/);
+  assert.match(text, /Reply after timeout: 2000 ms/); assert.match(text, /Reply budget: 5000 ms/);
+  assert.match(text, /Operation: Boolean.Set/); assert.match(text, /Native error code: -104/);
+  assert.match(text, /Requested permission: Stop charging/);
+  assert.match(text, /Same recorded session: No/); assert.match(text, /Firmware at request: fixture-fw/);
+  assert.match(text, /did not confirm control, admit readings or replay a command/);
+  assert.match(text, /Fastest reply: 22 ms/); assert.doesNotMatch(text, /fixture-private/);
+});
+
 test('reboot report evidence distinguishes inferred boot, saved choice, native readback and waiting recovery', async () => {
   const f = setup();
   f.records.set('current', [{ id: 1, at: now, kind: 'evidence', code: 'shelly-reboot-observed', policy: 'reboot-state',

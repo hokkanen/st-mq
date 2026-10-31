@@ -1,4 +1,4 @@
-import { chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel } from '../charging/report-presentation.js';
+import { chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel, chargingRpcDiagnostic } from '../charging/report-presentation.js';
 import { GARAGE_NATIVE_SETTINGS } from '../garage/native-settings.js';
 import { heatingErrorCode, heatingErrorMessage } from '../domain/heating-errors.js';
 
@@ -77,6 +77,10 @@ for (const [type, area, subject] of [
   ['caravan-shutdown-restoration-pending', 'caravan', 'Caravan'], ['floor-shutdown-restoration-pending', 'home', 'Floor-heating'],
   ['h66-shutdown-restoration-pending', 'home', 'Heat-pump'],
 ]) DEFINITIONS[type] = [area, `${subject} restoration was unconfirmed at shutdown`, 'Restoration remained unconfirmed when the application stopped. Check current equipment status for its present state.', { severity: 'warning', evidence: 'Recorded restoration obligation' }];
+for (const code of ['shelly-rpc-timeout', 'shelly-rpc-late-reply']) {
+  const rpc = chargingRpcDiagnostic(code);
+  DEFINITIONS[code] = ['charging', `Charger 2 · ${rpc.label}`, rpc.description, { severity: rpc.severity, evidence: 'RPC transport evidence' }];
+}
 for (const type of ['mqtt-error', 'mqtt-ha-error', 'mqtt-offline', 'mqtt-ha-offline', 'mqtt-observation-rejected', 'mqtt-subscribe-error', 'mqtt-shelly-subscribe-error', 'mqtt-garage-subscribe-error', 'mqtt-garage-sender-subscribe-error', 'mqtt-teslamate-subscribe-error', 'mqtt-snapshot-request-failed', 'mqtt-temperature-recovery-failed', 'mqtt-floor-unavailable']) {
   DEFINITIONS[type] = ['system', type.includes('offline') ? 'MQTT connection lost' : type.includes('subscribe') ? 'MQTT subscription unavailable' : 'MQTT acquisition needs attention',
     'The application recorded an acquisition problem. Current source health is shown on the dashboard.', { severity: 'warning', evidence: 'Recorded acquisition diagnostic' }];
@@ -87,6 +91,13 @@ export const GENERAL_EVENT_TYPES = Object.freeze([...Object.keys(DEFINITIONS), '
 export function presentGeneral(type, payload = {}) {
   const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
   let out = Object.hasOwn(DEFINITIONS, type) ? fixed(...DEFINITIONS[type]) : fixed('system', 'Other recorded event', 'An event without a supported public explanation was recorded. Private payload details are omitted.', { important: false });
+  const rpc = chargingRpcDiagnostic(type, p);
+  if (rpc) {
+    out = fixed('charging', `Charger 2 · ${rpc.label}`, rpc.description, { severity: rpc.severity, evidence: 'RPC transport evidence' });
+    out.details = rpc.details;
+    if (typeof p.reportId === 'string' && /^[a-f0-9]{64}$/.test(p.reportId))
+      out.related = { kind: 'charging-report', chargerId: 'charger2', reportId: p.reportId };
+  }
   if (type === 'decision') out = fixed('home', `${phase(p.phase)} assessed`, 'A routine controller decision was recorded. It is not independent device readback.', { important: false, evidence: 'Controller decision' });
   if (type === 'heating-phase-changed') {
     out = fixed('home', p.previousPhase === null ? `${phase(p.phase)} first recorded` : `${phase(p.phase)} requested`,
@@ -193,7 +204,7 @@ const CHARGING_CODES = {
 const IMPORTANT_CHARGING_CODES = {
   session: ['connected', 'observation-started', 'unplugged', 'interrupted'],
   physical: ['charging-started', 'charging-stopped'],
-  evidence: ['physical-evidence-lost', 'physical-evidence-restored', 'observation-gap'],
+  evidence: ['physical-evidence-lost', 'physical-evidence-restored', 'observation-gap', 'shelly-rpc-timeout', 'shelly-rpc-late-reply'],
   vehicle: ['identified'], identification: ['failed', 'inconclusive'],
 };
 function importantCharging(p) {
@@ -201,6 +212,16 @@ function importantCharging(p) {
     || Object.hasOwn(IMPORTANT_CHARGING_CODES, p.kind) && IMPORTANT_CHARGING_CODES[p.kind].includes(p.code);
 }
 export function presentCharging(row, p) {
+  const rpc = p.kind === 'evidence' && chargingRpcDiagnostic(p.code, p.rpc);
+  if (rpc) {
+    const out = presentGeneral(p.code, p.rpc);
+    if (row.namespace === 'charging:simulated:session-diagnostics') {
+      out.summary = 'This transport diagnostic was produced by the simulation. It is not physical device evidence.';
+      out.evidence = 'Simulation';
+    }
+    if (/^[a-f0-9]{64}$/.test(row.report_id)) out.related = { kind: 'charging-report', chargerId: row.charger_id, reportId: row.report_id };
+    return out;
+  }
   const charger = row.charger_id === 'charger1' ? 'Charger 1' : 'Charger 2';
   const label = chargingFindingLabel(p) ?? chargingPhysicalLabel(p) ?? lookup(CHARGING_CODES, p.code) ?? (p.kind === 'finding' || p.kind === 'finding-update' ? 'Finding recorded' : p.kind === 'recovery' ? 'Finding no longer active in this assessment' : 'Session event recorded');
   const finding = ['finding', 'finding-update'].includes(p.kind), physical = p.kind === 'physical';

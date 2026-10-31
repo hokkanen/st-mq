@@ -53,6 +53,24 @@ try {
     vehicle: { state: 'unidentified' }, progress: { remainingGridKwh: 0, deliveredGridKwh: 0, connectionAt: initial,
       basis: { energyCoverageIncomplete: true, lastMeasuredAt: initial } },
   }], initial));
+  await app.store.runWrite(() => {
+    const reports = new ChargingSessionDiagnostics({ store: app.store,
+      key: 'charging:simulated:session-diagnostics', clock: () => initial });
+    reports.observe([{
+      id: 'charger2', association: 'fixture-rpc-equipment', request: { sessionId: 'fixture-rpc-session' },
+      settings: { enabled: false }, control: { phase: 'off', session: { connectedAt: initial - 10000, connected: true },
+        snapshot: { online: true, readAt: initial } }, telemetry: { providerConnected: true },
+      values: { connected: field(true), charging: field(false), powerKw: field(0) },
+      vehicle: { state: 'unidentified' }, progress: { connectionAt: initial - 10000 },
+    }], initial);
+    const rpc = { reportId: reports.state.chargers.charger2.current.id, at: initial - 2000,
+      requestedAt: initial - 9000, timedOutAt: initial - 4000, receivedAt: initial - 2000,
+      elapsedMs: 7000, afterTimeoutMs: 2000, replyBudgetMs: 5000, method: 'Boolean.Set', role: 'start_charging', requestedValue: false,
+      firmware: 'fixture-firmware', outcome: 'success', sameConnection: true, sameBoot: true, sameSession: true,
+      normalReplies: { replies: 10, minMs: 30, maxMs: 120 } };
+    reports.recordRpcDiagnostic('shelly-rpc-timeout', { ...rpc, at: initial - 4000 });
+    reports.recordRpcDiagnostic('shelly-rpc-late-reply', rpc);
+  });
   const upstream = `http://127.0.0.1:${app.server.address().port}`;
   proxy = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://fixture');
@@ -322,11 +340,15 @@ try {
       await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
       await until('document.querySelectorAll("#events li").length>0');
     }
+    await filter('event-log-area', 'charging');
+    await until("[...document.querySelectorAll('#events li')].some(n=>n.textContent.includes('Late reply received'))");
     for (const theme of ['light', 'dark']) for (const width of [320, 390, 768, 1440]) {
       await send(firefox ? 'browsingContext.setViewport' : 'Emulation.setDeviceMetricsOverride', firefox
         ? { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 }
         : { width, height: 1000, deviceScaleFactor: 1, mobile: false });
-      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.querySelector('#events details').open=true;document.getElementById('event-log-panel').scrollIntoView({block:'start'});true`);
+      await evaluate(`document.documentElement.dataset.theme=${JSON.stringify(theme)};[...document.querySelectorAll('#events li')].find(n=>n.textContent.includes('Late reply received')).querySelector('details').open=true;document.getElementById('event-log-panel').scrollIntoView({block:'start'});true`);
+      assert.match(await evaluate("document.getElementById('events').textContent"), /Reply after timeout.*2000 ms/);
+      assert.match(await evaluate("document.getElementById('events').textContent"), /Requested permission.*Stop charging/);
       await pause(60);
       const geometry = await evaluate("(()=>{const p=document.getElementById('event-log-panel'),l=document.getElementById('events');return {pageOverflow:document.documentElement.scrollWidth>innerWidth,panelOverflow:p.scrollWidth>p.clientWidth,listOverflow:l.scrollWidth>l.clientWidth,semanticTime:Boolean(l.querySelector('time[datetime]')),rowHeight:l.firstElementChild.querySelector('summary').getBoundingClientRect().height};})()");
       assert.equal(geometry.pageOverflow, false, `${role}/${theme}/${width}: page fits`);

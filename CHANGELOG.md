@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Charger 2 session reports retain reply timeouts and late replies with timing
+  and original-session context. The five-second timeout and charging-control
+  confirmation rules remain unchanged.
+
 - Meross MSG200 garage doors support signed local MQTT contact reports and
   Open/Close controls. Paired installations can expose a shared TLS MQTT endpoint.
   Door recording preserves delayed source-clock admission and the configured

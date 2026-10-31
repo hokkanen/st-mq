@@ -441,6 +441,44 @@ The ready-by time becomes one concrete occurrence when the physical connection s
 
 ## Restart and compatibility
 
+### Shelly RPC reply diagnostics
+
+The native reply timeout remains five seconds, shared with any input-admission
+wait. After that timeout, a passive recorder keeps at most 64 expired request
+references for two minutes, measured on the process's monotonic clock. Matching
+non-retained replies from the configured charger may then be recorded as late
+success or error responses. They never resolve the expired request, admit native
+readback, change ownership or authorize a retry. Reconnects and confirmed reboots
+do not renew this window. Adapter shutdown/replacement, including handover or a
+process restart, ends it; unmatched, duplicate and expired replies are ignored.
+Reference eviction and expiry counts are exposed in
+`snapshot.rpcDiagnostics`, alongside bounded recording-pending/failure/drop counts.
+
+Timeout and late-reply entries go into the original retained session report's
+**Evidence** timeline, including replies received after unplugging or replacement
+by another session. They also appear in the Charging event log. If that report
+does not exist or has been deleted/expired, the operational event log retains the
+diagnostic without recreating the report. Report assessments, physical outcomes
+and session end times are not changed by these entries. Recording failure cannot
+change command readiness or a transport result; its failure count remains visible.
+
+Each entry keeps request, timeout and reply receipt clocks as applicable,
+monotonic elapsed time, the actual remaining reply budget, operation/role and the
+requested Start/Stop/current or schedule-disable value where applicable,
+request-time model/firmware and original session/boot context. Late errors keep
+their numeric code, never arbitrary native text or reply payloads. Request IDs
+remain only in the bounded in-memory references. Timing is request-start to local
+transport receipt, including MQTT publication/delivery delays; it is not device
+execution time or proof of physical charging. Wall-clock steps do not change the
+monotonic elapsed duration.
+
+Normal reply statistics retain at most 64 operation/role/observed-firmware series
+for the current process, with an explicit capacity-overflow indicator. Counts,
+minimum/maximum/total elapsed time and latency buckets
+are available in the snapshot; incident entries retain the corresponding timing
+summary and statistics start time. Normal polls create no per-reply history rows.
+These diagnostics are transport evidence, not another firmware compatibility policy.
+
 ### Shelly charger reboots
 
 The owner approved this lasting, Shelly-specific continuity exception on

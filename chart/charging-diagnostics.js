@@ -1,4 +1,4 @@
-import { chargingFinding, chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel } from '../src/charging/report-presentation.js';
+import { chargingFinding, chargingFindingLabel, chargingFindingRecovery, chargingPhysicalLabel, chargingRpcDiagnostic } from '../src/charging/report-presentation.js';
 import { CHARGING_CONTROL_CAUSES as CONTROL_CAUSES } from './charging-status.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
@@ -323,7 +323,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     : changes.length > 1 ? `${changes.length} plan & input changes` : fallback;
   const eventLabel = row => {
     const changes = chargingPlanChanges(row.changes);
-    const label = chargingPhysicalLabel(row) ?? chargingFindingLabel(row);
+    const label = chargingRpcDiagnostic(row.code, row.rpc)?.label ?? chargingPhysicalLabel(row) ?? chargingFindingLabel(row);
     if (label) return label;
     if (row.kind === 'plan') return row.code === 'initial-plan' ? 'Initial planning state' : changeTitle(changes, 'Planning record');
     if (row.kind === 'control') return `${lookup(controlLabels, row.code) ?? 'Control state recorded'}${row.code !== 'unavailable' && row.availability === 'unavailable' ? ' · control unavailable' : ''}`;
@@ -350,6 +350,8 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       ?? chargingFinding(row.code)?.[1] ?? 'Finding recorded.');
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
     if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
+    const rpc = chargingRpcDiagnostic(row.code, row.rpc, value => evidenceTime(value, timezone));
+    if (rpc) details.push(rpc.description, ...rpc.details.map(item => `${item.label}: ${item.value}`));
     setText(p.label, `${evidenceTime(row.at, timezone)} · ${eventLabel(row)}`);
     if (row.policy) details.push(lookup({ 'startup-retry': 'Startup retry recovery', 'permission-transition': 'Permission-transition reconciliation',
       'reboot-state': 'Reboot-state reconciliation' }, row.policy) ?? 'Policy not recognized');

@@ -54,3 +54,48 @@ export function chargingPhysicalLabel(row) {
   return drawing ? row.code === 'charging-started' ? 'Draw rose above 0.1 kW' : 'Draw above 0.1 kW observed'
     : row.powerKw === 0 ? 'No draw measured' : 'Draw at 0.1 kW or below observed';
 }
+
+// One public explanation for transport diagnostics in reports and the event log.
+export function chargingRpcDiagnostic(code, payload = {}, formatTime = value => new Date(value).toISOString()) {
+  if (!['shelly-rpc-timeout', 'shelly-rpc-late-reply'].includes(code)) return null;
+  const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const details = [];
+  const detail = (label, value) => value === null || value === undefined ? [] : [{ label, value: String(value) }];
+  const reading = (value, unit) => `${Number(value.toFixed(3))} ${unit}`;
+  const lookup = (map, value) => typeof value === 'string' && Object.hasOwn(map, value) ? map[value] : undefined;
+  const validTime = value => Number.isSafeInteger(value) && value >= 0 && value <= 8.64e15;
+  const method = typeof p.method === 'string' && /^(Sys\.GetStatus|Shelly\.Get(DeviceInfo|Components)|Service\.Get(Config|Status)|Schedule\.(List|Update)|(Boolean|Number|Enum|Object)\.Get(Config|Status)|(Boolean|Number)\.Set)$/.test(p.method) ? p.method : null;
+  details.push(...detail('Operation', method), ...detail('Setting', lookup({ start_charging: 'Start permission', current_limit: 'Current setting', work_state: 'Native state', phase_info: 'Electrical readings' }, p.role)));
+  if (method === 'Boolean.Set' && typeof p.requestedValue === 'boolean')
+    details.push(...detail('Requested permission', p.requestedValue ? 'Start charging' : 'Stop charging'));
+  if (method === 'Number.Set' && Number.isFinite(p.requestedValue) && p.requestedValue >= 0 && p.requestedValue <= 1000)
+    details.push(...detail('Requested current setting', reading(p.requestedValue, 'A')));
+  if (method === 'Schedule.Update' && p.requestedValue === false) details.push(...detail('Requested schedule change', 'Disable native schedule'));
+  for (const [key, label] of [['replyBudgetMs', 'Reply budget'], ['elapsedMs', 'Elapsed to recorded transport event'], ['afterTimeoutMs', 'Reply after timeout'], ['timerOverrunMs', 'Timer overrun']])
+    if (Number.isFinite(p[key]) && p[key] >= 0) details.push(...detail(label, reading(p[key], 'ms')));
+  for (const [key, label] of [['requestedAt', 'Request started'], ['timedOutAt', 'Timed out'], ['receivedAt', 'Reply received'], ['statisticsStartedAt', 'Timing statistics began']])
+    if (validTime(p[key])) details.push(...detail(label, formatTime(p[key])));
+  details.push(...detail('Reply result', lookup({ success: 'Success response', error: 'Error response' }, p.outcome)));
+  if (Number.isSafeInteger(p.errorCode)) details.push(...detail('Native error code', p.errorCode));
+  for (const [key, label] of [['sameConnection', 'Same MQTT connection'], ['sameBoot', 'Same confirmed boot'], ['sameSession', 'Same recorded session']])
+    if (typeof p[key] === 'boolean' || p[key] === null) details.push(...detail(label, p[key] === null ? 'Unknown' : p[key] ? 'Yes' : 'No'));
+  for (const key of ['model', 'firmware']) if (typeof p[key] === 'string' && /^[A-Za-z0-9][A-Za-z0-9 ._+()/:-]{0,127}$/.test(p[key]))
+    details.push(...detail(key === 'model' ? 'Model at request' : 'Firmware at request', p[key]));
+  const normal = p.normalReplies;
+  if (normal && Number.isSafeInteger(normal.replies) && normal.replies >= 0) {
+    details.push(...detail('Replies received while pending in this process for this operation and firmware', normal.replies));
+    for (const [key, label] of [['minMs', 'Fastest reply'], ['maxMs', 'Slowest reply']])
+      if (Number.isFinite(normal[key]) && normal[key] >= 0) details.push(...detail(label, reading(normal[key], 'ms')));
+  }
+  const tracking = p.tracking;
+  if (tracking && Number.isFinite(tracking.windowMs) && tracking.windowMs >= 0)
+    details.push(...detail('Late reply tracking window after timeout', reading(tracking.windowMs, 'ms')));
+  for (const [key, label] of [['expiredReferences', 'Expired request references in this process'], ['evictedReferences', 'Capacity-evicted request references in this process']])
+    if (Number.isSafeInteger(tracking?.[key]) && tracking[key] >= 0) details.push(...detail(label, tracking[key]));
+  if (tracking?.seriesOverflowed === true) details.push(...detail('Normal reply timings', 'Additional operation/firmware series exceeded the statistics capacity'));
+
+  const timeout = code === 'shelly-rpc-timeout';
+  return { label: timeout ? 'Reply deadline exceeded' : 'Late reply received', severity: timeout ? 'warning' : 'info',
+    description: timeout ? 'No matching reply was received before the request timed out. A later reply may be recorded separately. This does not establish a physical outcome.'
+      : 'A reply arrived after its request timed out. It was recorded for diagnosis and did not confirm control, admit readings or replay a command.', details };
+}

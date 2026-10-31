@@ -35,6 +35,29 @@ function chargingRecord(store, { charger = 'charger2', report = 'a'.repeat(64), 
   return Number(store.db.prepare('SELECT MAX(id) id FROM charging_report_events').get().id);
 }
 
+test('RPC timeout and late reply evidence is readable and private in report and operational event paths', t => {
+  const { store, read } = fixture(t), reportId = 'a'.repeat(64);
+  const rpc = { input: 'mqtt', reportId, method: 'Boolean.Set', role: 'start_charging', replyBudgetMs: 5000,
+    requestedAt: NOW - 9000, timedOutAt: NOW - 4000, receivedAt: NOW - 1000, elapsedMs: 8000,
+    afterTimeoutMs: 3000, outcome: 'success', sameConnection: true, sameBoot: false, sameSession: false,
+    normalReplies: { replies: 8, minMs: 20, maxMs: 100 },
+    requestId: 'fixture-private-request-id', message: 'fixture-private-native-text', src: 'fixture-private-native-id' };
+  store.event('shelly-rpc-timeout', rpc, NOW - 4000);
+  const event = chargingRecord(store, { kind: 'evidence', code: 'shelly-rpc-late-reply', at: NOW - 1000 });
+  store.write(() => store.db.prepare('UPDATE charging_report_events SET payload=? WHERE id=?')
+    .run(JSON.stringify({ kind: 'evidence', code: 'shelly-rpc-late-reply', rpc }), event));
+  const rows = read('area=charging').events;
+  assert.equal(rows.length, 2); assert.match(rows[0].title, /Late reply received/);
+  assert.match(rows[1].title, /Reply deadline exceeded/); assert.equal(rows[1].severity, 'warning');
+  for (const row of rows) {
+    assert.deepEqual(row.related, { kind: 'charging-report', chargerId: 'charger2', reportId });
+    assert(row.details.some(item => item.label === 'Reply after timeout' && item.value === '3000 ms'));
+    assert.doesNotMatch(JSON.stringify(row), /fixture-private/);
+  }
+  assert.match(presentCharging({ charger_id: 'charger2', report_id: reportId, namespace: 'charging:simulated:session-diagnostics' },
+    { kind: 'evidence', code: 'shelly-rpc-late-reply', rpc }).summary, /simulation/);
+});
+
 test('timeline is sanitized, readable and scoped while Important omits routine decisions', t => {
   const { store, read } = fixture(t);
   store.event('controller-error', { input: 'mqtt', message: 'synthetic-sensitive-password broker://private.invalid', path: '/private/fixture' }, NOW - 1000);

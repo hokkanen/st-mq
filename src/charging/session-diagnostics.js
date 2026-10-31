@@ -710,6 +710,27 @@ export class ChargingSessionDiagnostics {
   writable() {
     if (this.store.readOnly) throw new Error('Charging reports are read-only');
   }
+  recordRpcDiagnostic(code, rpc) {
+    this.writable();
+    if (!['shelly-rpc-timeout', 'shelly-rpc-late-reply'].includes(code)
+      || !time(rpc?.at) || typeof rpc.reportId !== 'string' || !/^[a-f0-9]{64}$/.test(rpc.reportId)) return false;
+    const row = this.store.db.prepare('SELECT checkpoint FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?')
+      .get(this.key, 'charger2', rpc.reportId);
+    if (!row) return false; // No report resurrection after deletion/expiry.
+    const previous = this.state, slot = previous.chargers.charger2;
+    const active = slot?.current?.id === rpc.reportId;
+    const record = clone(active ? slot.current : validateRecord(JSON.parse(row.checkpoint), 'charger2'));
+    event(record, rpc.at, 'evidence', code, { rpc: clone(rpc) });
+    return this.store.transaction(() => {
+      this.persist(record, this.clock());
+      if (active) {
+        const next = { ...previous, chargers: { ...previous.chargers, charger2: { ...slot, current: record } } };
+        this.store.afterRollback?.(() => { if (this.state === next) this.state = previous; });
+        this.state = next;
+      }
+      return true;
+    });
+  }
   persist(record, now, saveMetadata = false) {
     const existing = this.store.db.prepare('SELECT saved_at FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?')
       .get(this.key, record.chargerId, record.id);

@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics, chargingDiagnosticSessionId } from '../src/charging/session-diagnostics.js';
 import { chargingReportSummary } from '../chart/charging-diagnostics.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/storage/store.js';
 
 const MINUTE = 60_000, now = Date.parse('2026-09-28T18:00:00Z');
 const reading = (value, source = 'easee', at = now) => ({ value, source, available: true, measuredAt: at, receivedAt: at });
@@ -30,6 +34,79 @@ function fixture() {
   return { store, observer, data,
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
+
+test('RPC diagnostics append to the original active or closed report without changing physical assessments', () => {
+  const { store, observer, observe } = fixture(), view = charger(); view.id = 'charger2';
+  const initial = observe(view);
+  const rpc = { reportId: initial.id, at: now + 6000, requestedAt: now + 1000, timedOutAt: now + 6000,
+    method: 'Boolean.Set', role: 'start_charging', replyBudgetMs: 5000, elapsedMs: 5000, mutation: true };
+  assert.equal(observer.recordRpcDiagnostic('shelly-rpc-timeout', rpc), true);
+  const active = observer.getReport({ chargerId: 'charger2', reportId: initial.id });
+  assert.equal(active.counts.events, initial.counts.events + 1); assert.deepEqual(active.current, initial.current);
+  assert.deepEqual(active.coverage, initial.coverage); assert.deepEqual(active.findings, initial.findings);
+  const disconnected = refresh(structuredClone(view), now + 7000); disconnected.values.connected.value = false;
+  observer.observe([disconnected], now + 7000);
+  const closed = observer.getReport({ chargerId: 'charger2', reportId: initial.id });
+  const next = refresh(structuredClone(view), now + 8000);
+  next.request.sessionId = 'fixture-next-session'; next.control.session.connectedAt = next.progress.connectionAt = now + 8000;
+  const newer = observe(next, now + 8000);
+  assert.notEqual(newer.id, initial.id);
+  const late = { ...rpc, at: now + 9000, receivedAt: now + 9000, elapsedMs: 8000, afterTimeoutMs: 3000,
+    outcome: 'success', sameSession: false };
+  assert.equal(observer.recordRpcDiagnostic('shelly-rpc-late-reply', late), true);
+  const reopened = new ChargingSessionDiagnostics({ store, clock: () => now + 10000 });
+  const original = readCompleteReport(reopened, reopened.getReport({ chargerId: 'charger2', reportId: initial.id }));
+  const events = original.timeline.filter(row => row.rpc);
+  assert.deepEqual(events.map(row => row.code), ['shelly-rpc-timeout', 'shelly-rpc-late-reply']);
+  assert.equal(events[1].at, now + 9000); assert.equal(events[1].rpc.requestedAt, now + 1000);
+  assert.equal(original.endedAt, closed.endedAt); assert.deepEqual(original.outcome, closed.outcome);
+  assert.deepEqual(original.current, closed.current); assert.deepEqual(original.coverage, closed.coverage);
+  assert.equal(reopened.getReport({ chargerId: 'charger2', reportId: newer.id }).counts.events, newer.counts.events);
+});
+
+test('RPC recording rolls back atomically and never resurrects deleted reports', () => {
+  const { store, observer, observe } = fixture(), view = charger(); view.id = 'charger2';
+  const initial = observe(view), rpc = { reportId: initial.id, at: now + 5000, requestedAt: now, elapsedMs: 5000 };
+  assert.throws(() => store.transaction(() => {
+    observer.recordRpcDiagnostic('shelly-rpc-timeout', rpc); throw Error('fixture-rollback');
+  }), /fixture-rollback/);
+  assert.equal(observer.getReport({ chargerId: 'charger2', reportId: initial.id }).counts.events, initial.counts.events);
+  assert.equal(observer.reportEvents({ chargerId: 'charger2', reportId: initial.id }).events.some(row => row.rpc), false);
+  view.values.connected.value = false; refresh(view, now + 6000); observer.observe([view], now + 6000);
+  observer.deleteReport({ chargerId: 'charger2', reportId: initial.id });
+  assert.equal(observer.recordRpcDiagnostic('shelly-rpc-late-reply', rpc), false);
+  assert.equal(observer.getReport({ chargerId: 'charger2', reportId: initial.id }), null);
+});
+
+test('worker RPC report COMMIT failure preserves the previous checkpoint and in-memory report', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-rpc-report-'));
+  const store = new Store(join(directory, 'recording.sqlite'));
+  t.after(async () => { await store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const observer = new ChargingSessionDiagnostics({ store, clock: () => now });
+  const view = charger(); view.id = 'charger2';
+  const initial = observer.observe([view], now).chargers[0].current;
+  await store.startWriter();
+  const request = store.writer.request.bind(store.writer); let fail = true;
+  store.writer.request = (operation, args) => {
+    if (operation === 'commit' && fail) {
+      fail = false;
+      return Promise.reject(Object.assign(Error('fixture-report-commit-failure'), { code: 'ERR_SQLITE_ERROR', errcode: 10 }));
+    }
+    return request(operation, args);
+  };
+  const rpc = { reportId: initial.id, at: now + 6000, requestedAt: now + 1000, timedOutAt: now + 6000,
+    elapsedMs: 5000, method: 'Boolean.Set', replyBudgetMs: 5000 };
+  await assert.rejects(store.runWrite(() => observer.recordRpcDiagnostic('shelly-rpc-timeout', rpc),
+    { priority: 'background' }), /fixture-report-commit-failure/);
+  assert.equal(observer.getReport({ chargerId: 'charger2', reportId: initial.id }).counts.events, initial.counts.events);
+  const restored = new ChargingSessionDiagnostics({ store, clock: () => now });
+  assert.equal(restored.getReport({ chargerId: 'charger2', reportId: initial.id }).counts.events, initial.counts.events);
+  await store.runWrite(() => observer.recordRpcDiagnostic('shelly-rpc-late-reply', {
+    ...rpc, at: now + 8000, receivedAt: now + 8000, elapsedMs: 7000, afterTimeoutMs: 2000, outcome: 'success' }),
+  { priority: 'background' });
+  const rows = observer.reportEvents({ chargerId: 'charger2', reportId: initial.id }).events.filter(row => row.rpc);
+  assert.equal(rows.length, 1); assert.equal(rows[0].rpc.elapsedMs, 7000);
+});
 
 test('SYS cycles between observations retain both edges and resolved findings without replay after restart', () => {
   const { store, observer, observe } = fixture(), view = charger();

@@ -14,6 +14,8 @@ import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
+import { createShellyRpcDiagnostics } from './shelly-rpc-diagnostics.js';
+import { chargingDiagnosticSessionId } from './session-diagnostics.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -116,6 +118,33 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
   let lastRpcTimeout = null;
+  const rpcRecording = { pending: 0, failed: 0, dropped: 0 };
+  const rpcScope = () => ({ generation, bootEpoch: bootCandidate ? null : state.boot?.epoch ?? null,
+    reportId: chargingDiagnosticSessionId({ association, request: { sessionId: state.connection?.sessionId },
+      control: { session: { connectedAt: state.connection?.connectedAt } } }) });
+  const rpcDiagnostics = createShellyRpcDiagnostics({ clock, monotonicClock,
+    record(code, payload) {
+      if (rpcRecording.pending >= 64) { rpcRecording.dropped++; return; }
+      rpcRecording.pending++;
+      // Persist transport evidence independently of acquisition admission. A
+      // reply from an older connection may be diagnostic evidence but can never
+      // resolve a current request. Failed diagnostics do not revoke readiness.
+      queueMicrotask(() => {
+        const action = () => {
+          // The report ID belongs to the request's original physical session,
+          // including when that report has closed before the reply arrives.
+          if (!engine.charging?.sessionDiagnostics?.recordRpcDiagnostic(code, payload))
+            store.event(code, { input: engine.config?.input ?? 'mqtt', chargerId: 'charger2', ...payload }, payload.at);
+        };
+        const current = () => !closed && canControl();
+        try {
+          const recording = store.runWrite ? store.runWrite(action, { signal: cancellation.signal, isCurrent: current,
+            priority: 'background', bytes: Buffer.byteLength(JSON.stringify(payload)) + Buffer.byteLength(code) })
+            : current() ? action() : Promise.reject(fail('evse-offline'));
+          Promise.resolve(recording).catch(() => { rpcRecording.failed++; }).finally(() => { rpcRecording.pending--; });
+        } catch { rpcRecording.failed++; rpcRecording.pending--; }
+      });
+    } });
   let systemSample = null, systemMonotonic = null, verifiedSystem = null, bootCandidate = null, rebootRound = null, firstRebootRound = null;
   let rebootIntent = null;
   const rebootPending = () => Boolean(bootCandidate || state.boot?.incident && state.boot.incident.phase !== 'ready');
@@ -392,6 +421,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           ...(componentReadback ? { keys: [...params.keys], components: [...componentRoles].filter(([key]) => params.keys.includes(key)).map(([key, role]) =>
             ({ key, role, revision: fieldRevisions.get(role) ?? 0 })) }
             : { role: params.role, revision: fieldRevisions.get(params.role) ?? 0 }) } : null };
+      item.trace = rpcDiagnostics.request({ id, method, role: Object.hasOwn(TYPES, params.role) ? params.role : null,
+        mutation, requestedAt, started: item.started, replyBudgetMs: replyTimeoutMs,
+        context: { ...rpcScope(), ...(device?.model ? { model: device.model } : {}),
+          ...(device?.firmware ? { firmware: device.firmware } : {}),
+          ...(mutation && (params.role === 'start_charging' && typeof params.value === 'boolean'
+            || params.role === 'current_limit' && finite(params.value)) ? { requestedValue: params.value }
+            : method === 'Schedule.Update' && params.enable === false ? { requestedValue: false } : {}) } });
       const timer = setTimeout(() => {
         pending.delete(id);
         const timedOutAt = clock(), elapsedMs = performance.now() - started;
@@ -399,6 +435,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         // A missed read is not evidence of an uncertain actuator instruction.
         lastRpcTimeout = { method, role: typeof params.role === 'string' && Object.hasOwn(TYPES, params.role) ? params.role : null,
           requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - replyTimeoutMs) };
+        rpcDiagnostics.timeout(item.trace, timedOutAt, monotonicClock());
         item.reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
       }, replyTimeoutMs);
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
@@ -748,8 +785,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         const frame = JSON.parse(body);
         const item = pending.get(frame.id);
         if (frame.src === config.deviceId && (frame.dst === undefined || frame.dst === source)
-          && item?.generation === epoch && (Object.hasOwn(frame, 'result') || frame.error)) {
-          response = item; responseId = frame.id; clearTimeout(item.timer);
+          && (Object.hasOwn(frame, 'result') || frame.error)) {
+          if (item?.generation === epoch) {
+            response = item; responseId = frame.id; clearTimeout(item.timer);
+            rpcDiagnostics.reply(item.trace, Boolean(frame.error), monotonicClock());
+          } else if (rpcDiagnostics.late(frame.id, frame, receivedAt, monotonicClock(), rpcScope())) return;
         }
       } catch {}
     }
@@ -1265,7 +1305,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power : null,
     powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
-    readAt, lastRpcTimeout: copy(lastRpcTimeout), nativeScheduleActive: chargingSchedules().length > 0,
+    readAt, lastRpcTimeout: copy(lastRpcTimeout), rpcDiagnostics: { ...rpcDiagnostics.snapshot(), recording: { ...rpcRecording } },
+    nativeScheduleActive: chargingSchedules().length > 0,
     nativeScheduleFingerprint: chargingSchedules().length
       ? hash(chargingSchedules().map(job => JSON.stringify(job)).sort()) : null,
     nativeScheduleRevision: nativeSchedules?.rev ?? null,
@@ -1404,7 +1445,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return { healthy: online && Boolean(live('phase_info')), currents: field ? config.phaseMap.map(i => field.value[['phase_a', 'phase_b', 'phase_c'][i]].current) : null,
         times: [field?.measuredAt, field?.measuredAt, field?.measuredAt], confirmedAt: field?.receivedAt ?? null }; },
     createController: options => createShellyController({ ...options, adapter }),
-    close() { closed = true; cancellation.abort(); unsubscribeStorage?.(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
+    close() { closed = true; rpcDiagnostics.close(); cancellation.abort(); unsubscribeStorage?.(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
   };
   return adapter;
 }

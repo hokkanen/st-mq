@@ -74,6 +74,15 @@ recorded before/after changes, full planning inputs and periods inside the entry
 Proposed periods, adopted execution, identification permission, confirmed pauses
 and physical charging remain distinct.
 
+For Charger 2, **Evidence** includes native RPC reply timeouts and late success
+or error replies, with their original request/timeout/receipt times and elapsed
+duration. Entries stay with the request's original report even when a late reply
+arrives after unplugging. A late reply does not reopen that session, confirm a
+physical outcome or complete the expired command. The five-second timeout is
+unchanged; [bounded late-reply recording](execution-and-recovery.md#shelly-rpc-reply-diagnostics)
+ends after two minutes, capacity eviction or process restart. Normal reply timing
+summaries accompany incidents without recording every routine poll.
+
 The shared assessment separates the controller's expected current allowance,
 the charger's confirmed current setting, and readiness to issue an adjustment.
 A short input-persistence or source-time admission hold blocks commands without
