@@ -1657,7 +1657,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
       // in the same native setting second can still be our confirmed command.
       // Require a correlated query after both ACK and this notification; never
       // round the event forward, absorb an opposite event, or use cached readback.
-      const confirmedCommandEcho = command === pending && typeof command?.value === 'boolean' && event.value === command.value
+      // Completion may retire pending before this notification is admitted.
+      // Its retained ACK has the same authority as that accepted pending write;
+      // the late event still requires fresh readback after ACK and receipt.
+      const confirmedCommandEcho = typeof command?.value === 'boolean' && event.value === command.value
         && event.commandSource === 'rpc' && field?.commandSource === 'rpc'
         && event.eventAt < command.dispatchedAt && event.receivedAt >= command.dispatchedAt
         && Math.floor(event.eventAt / 1000) === Math.floor(command.dispatchedAt / 1000)
@@ -1665,7 +1668,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         && field.readback?.measuredAt === field.measuredAt
         && field.readback.requestedAt >= Math.max(command.acceptedAt, event.receivedAt)
         && field.readback.receivedAt >= field.readback.requestedAt
-        && commandReadback(field, command);
+        && commandReadback(field, { ...command, stage: 'accepted' });
       const own = !external && command?.sessionId === event.sessionId && command.value === event.value
         && (event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt || confirmedCommandEcho);
       const systemPermission = event.value !== null && event.commandSource === 'sys';

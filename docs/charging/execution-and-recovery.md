@@ -126,6 +126,14 @@ charging paused until a cheaper period. The action is available only for the cur
 Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
 
+An acknowledged Start or Stop retains its command correlation after the pending
+write completes. A late RPC notification with an earlier coarse timestamp in the
+same native setting second can use that retained acknowledgement only with
+matching value, session and boot, plus fresh correlated readback requested after
+both acknowledgement and notification receipt. Missing acknowledgement, another
+boot, an opposite value or a later instruction retains ordinary restrictions.
+Original native and receipt clocks remain unchanged.
+
 ### Dashboard Pause
 
 The owner approved this lasting Pause policy and the scoped Charge now takeover

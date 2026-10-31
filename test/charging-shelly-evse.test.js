@@ -3337,6 +3337,45 @@ test('a delayed pre-notification read cannot overwrite a changed permission with
   assert.equal(f.adapter.snapshot().controlReady, true);
 });
 
+for (const scenario of ['confirmed Stop', 'confirmed Start', 'missing ACK', 'different boot', 'later Stop', 'opposite value'])
+test(`late coarse RPC provenance after completion: ${scenario}`, async t => {
+  const f = fixture(t, { limiterEnabled: false }), ownValue = scenario === 'confirmed Start';
+  f.fields.start_charging = !ownValue; await f.ready();
+  const session = f.adapter.snapshot().session;
+  let saved;
+  const saveState = value => { saved = structuredClone(value); };
+  let c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: !ownValue, lastStartAt: NOW }, saveState, clock: f.now, canControl: () => true });
+  t.after(() => c.close());
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload); publish(topic, payload, options, done);
+    if (frame.method === 'Boolean.Set') f.setSourceTime('start_charging', NOW + 1000);
+  };
+  f.setNow(NOW + 1321);
+  const input = { enabled: true, plan: { id: 'late-confirmed-stop', deadlineAt: NOW + 7200000,
+    periods: [{ startAt: ownValue ? NOW : NOW + 3600000, endAt: null }] } };
+  await c.update(input);
+  assert.equal(c.status().pending, null); assert.equal(c.status().manual, null);
+  assert.equal(c.status().permissionCommand.value, ownValue);
+  if (scenario === 'missing ACK' || scenario === 'different boot') {
+    await c.close();
+    if (scenario === 'missing ACK') delete saved.permissionCommand;
+    else saved.permissionCommand.bootEpoch = '12345678-1234-1234-1234-123456789abc';
+    c = createShellyController({ adapter: f.adapter, initialState: saved, saveState, clock: f.now, canControl: () => true });
+  }
+  f.setNow(NOW + 2121);
+  const value = scenario === 'opposite value' ? !ownValue : ownValue, eventAt = NOW + (scenario === 'later Stop' ? 2000 : 1000);
+  f.sources.set('start_charging', 'rpc'); f.fields.start_charging = value; f.setSourceTime('start_charging', eventAt);
+  f.delta('start_charging', { value, source: 'rpc' }, { eventAt, apply: false });
+  await f.adapter.refresh({ force: true }); await c.update(input);
+  if (scenario === 'confirmed Stop' || scenario === 'confirmed Start') {
+    assert.equal(c.status().manual, null, 'late provenance uses the retained ACK and fresh post-event readback');
+    assert.equal(c.status().ownedPause, !ownValue);
+  } else assert.equal(c.status().manual?.kind, value ? 'enable' : 'stop', 'unmatched evidence retains independent priority');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+});
 for (const scenario of ['own Start', 'own Stop', 'external Stop', 'rejected recovery'])
 test(`post-ACK confirmation waits for a query after the late notification: ${scenario}`, async t => {
   const f = fixture(t, { limiterEnabled: false });
