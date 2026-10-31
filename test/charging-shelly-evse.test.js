@@ -678,6 +678,43 @@ test('a failed worker source-time save preserves an independently started native
   await original;
 });
 
+for (const completion of ['reply', 'timeout'])
+test(`malformed Shelly RPC outcomes cannot complete a request, cancel its deadline or become native evidence: ${completion}`, async t => {
+  const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let frame, reply, settled = false;
+  f.holdReplies((request, respond) => {
+    if (request.method !== 'Boolean.Set') return false;
+    frame = request; reply = respond; return true;
+  });
+  const request = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true }).finally(() => { settled = true; });
+  void request.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  for (const outcome of [{}, { result: null, error: { code: -1 } }, { result: null, error: null },
+    { error: null }, { error: false }, { error: {} }, { error: { code: '-1' } }, { error: { code: 1.5 } }, null, []]) {
+    const body = outcome === null || Array.isArray(outcome) ? outcome
+      : { id: frame.id, src: 'synthetic-evse', dst: frame.src, ...outcome };
+    f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify(body)), {});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(f.adapter.snapshot().controlReady, true);
+  }
+  if (completion === 'reply') {
+    reply(); await request;
+    assert.equal(f.adapter.snapshot().rpcDiagnostics.series.find(row => row.method === 'Boolean.Set').replies, 1);
+  } else {
+    const timeout = assert.rejects(request, { code: 'evse-command-unconfirmed' });
+    f.setNow(NOW + 11000); t.mock.timers.tick(10000); await timeout;
+    const diagnostics = f.adapter.snapshot().rpcDiagnostics;
+    assert.equal(diagnostics.series.find(row => row.method === 'Boolean.Set').replies, 0);
+    assert.equal(diagnostics.retainedReferences, 1);
+    reply(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.adapter.snapshot().rpcDiagnostics.retainedReferences, 0, 'Only a supported late reply consumes the original reference');
+  }
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true, 'Acknowledgement remains distinct from native readback');
+});
+
 for (const mutation of [false, true]) for (const delay of [7700, 9999])
 test(`Shelly ${mutation ? 'command acknowledgement' : 'native read'} succeeds after ${delay} ms`, async t => {
   const f = fixture(t); await f.ready();

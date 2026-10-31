@@ -114,6 +114,33 @@ test('a missing poll reply neither invalidates fresh evidence nor lets a late re
   await f.adapter.close({ restore: false });
 });
 
+for (const stalled of ['challenge', 'renew'])
+test(`automatic renewal preserves its activation-window cause after safe release: ${stalled}`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let hold = false;
+  const f = fixture({ transport: ({ body, standard }) => {
+    if (!hold || body.op !== stalled) standard(body);
+  } });
+  t.after(() => f.adapter.close({ restore: false })); await f.ready();
+  await f.adapter.lease({ owner: 'renewal-diagnostic', until: f.now + 1800000 });
+  f.advance(300000);
+  f.deliver(f.frame({ kind: 'state', op: 'state', now_ms: f.mono }));
+  hold = true;
+  const renewal = f.adapter.tick();
+  await new Promise(resolve => setImmediate(resolve));
+  f.advance(1800); t.mock.timers.tick(1800);
+  const status = await renewal;
+  assert.equal(status.active, false);
+  assert.equal(status.restorationPending, false);
+  assert.equal(f.native.active, false);
+  assert.equal(status.lastFailure?.code, 'FLOOR_ACTIVATION_TIMEOUT');
+  assert.equal(status.lastFailure.operation, 'renewal');
+  assert.equal(status.lastFailure.at, f.now);
+  hold = false;
+  await f.adapter.lease({ owner: 'new-confirmed-activation', until: f.now + 60000 });
+  assert.equal(f.adapter.status().lastFailure, null, 'A confirmed new activation clears the current-process failure receipt');
+});
+
 for (const op of ['get', 'release']) for (const delay of [7700, 9999, 10000])
 test(`floor ${op} uses a ten-second budget without admitting expired replies: ${delay} ms`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

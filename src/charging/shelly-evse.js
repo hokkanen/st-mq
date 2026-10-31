@@ -14,7 +14,7 @@ import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
-import { createShellyRpcDiagnostics } from './shelly-rpc-diagnostics.js';
+import { createShellyRpcDiagnostics, shellyRpcReplyOutcome } from './shelly-rpc-diagnostics.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -683,16 +683,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       } publishStatus(); return;
     }
     let frame; try { frame = JSON.parse(payload); } catch { return; }
-    if (frame.src !== config.deviceId) return;
+    if (frame?.src !== config.deviceId) return;
     if (topic === `${source}/rpc`) {
       if (packet.retain) return;
       const item = pending.get(frame.id);
       if (!item || item.generation !== generation || frame.dst !== undefined && frame.dst !== source) return;
-      if (!Object.hasOwn(frame, 'result') && !frame.error) return;
+      const outcome = shellyRpcReplyOutcome(frame);
+      if (outcome === null) return;
       if (!admission.admit(topic, payload, packet, receivedAt, { correlated: true })) return;
       lastLiveAt = receivedAt;
       pending.delete(frame.id); clearTimeout(item.timer);
-      if (frame.error) item.reject(fail('evse-rpc-rejected'));
+      if (outcome === 'error') item.reject(fail('evse-rpc-rejected'));
       else {
         try {
           if (item.readback?.components) {
@@ -782,11 +783,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       try {
         const frame = JSON.parse(body);
         const item = pending.get(frame.id);
-        if (frame.src === config.deviceId && (frame.dst === undefined || frame.dst === source)
-          && (Object.hasOwn(frame, 'result') || frame.error)) {
+        const outcome = shellyRpcReplyOutcome(frame);
+        if (frame?.src === config.deviceId && (frame.dst === undefined || frame.dst === source) && outcome !== null) {
           if (item?.generation === epoch) {
             response = item; responseId = frame.id; clearTimeout(item.timer);
-            rpcDiagnostics.reply(item.trace, Boolean(frame.error), monotonicClock());
+            rpcDiagnostics.reply(item.trace, outcome === 'error', monotonicClock());
           } else if (rpcDiagnostics.late(frame.id, frame, receivedAt, monotonicClock(), rpcScope())) return;
         }
       } catch {}

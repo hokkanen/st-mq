@@ -8,6 +8,16 @@ const elapsed = (start, end) => Number.isFinite(start) && Number.isFinite(end) &
 const empty = () => ({ replies: 0, successes: 0, errors: 0, timeouts: 0, lateReplies: 0,
   timedSamples: 0, minMs: null, maxMs: null, totalMs: 0, buckets: Array(LIMITS.length + 1).fill(0) });
 
+// A normal or late transport reply needs one supported outcome. A malformed
+// envelope is neither acknowledgement nor rejection and cannot end a deadline.
+export function shellyRpcReplyOutcome(frame) {
+  if (!frame || typeof frame !== 'object' || Array.isArray(frame)
+    || Object.hasOwn(frame, 'result') === Object.hasOwn(frame, 'error')) return null;
+  if (Object.hasOwn(frame, 'result')) return 'success';
+  return frame.error && typeof frame.error === 'object' && !Array.isArray(frame.error)
+    && Number.isSafeInteger(frame.error.code) ? 'error' : null;
+}
+
 export function createShellyRpcDiagnostics({ clock, monotonicClock, record }) {
   const startedAt = clock(), expired = new Map(), series = new Map();
   let expiredReferences = 0, evictedReferences = 0, seriesOverflowed = false;
@@ -70,12 +80,13 @@ export function createShellyRpcDiagnostics({ clock, monotonicClock, record }) {
     late(id, frame, at, now, scope) {
       prune(now);
       const trace = expired.get(id);
-      if (!trace || Object.hasOwn(frame, 'result') === Object.hasOwn(frame, 'error')) return false;
+      const outcome = shellyRpcReplyOutcome(frame);
+      if (!trace || outcome === null) return false;
       expired.delete(id);
       const row = stats(trace); if (row) row.lateReplies++;
       publish('shelly-rpc-late-reply', trace, { at, receivedAt: at, timedOutAt: trace.timedOutAt,
         elapsedMs: elapsed(trace.started, now), afterTimeoutMs: elapsed(trace.expiredMonotonic, now),
-        outcome: Object.hasOwn(frame, 'error') ? 'error' : 'success',
+        outcome,
         errorCode: Number.isSafeInteger(frame.error?.code) ? frame.error.code : null,
         sameConnection: scope.generation === trace.context.generation,
         sameBoot: scope.bootEpoch === null || trace.context.bootEpoch === null ? null : scope.bootEpoch === trace.context.bootEpoch,

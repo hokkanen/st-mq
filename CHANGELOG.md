@@ -6,6 +6,12 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Malformed Shelly RPC outcomes cannot acknowledge commands, cancel reply
+  deadlines or consume late-reply diagnostics.
+
+- Floor renewal failures retain their specific cause after safe release and show
+  it in Home independently of current GPIO readiness and restoration duties.
+
 - Sonoff floor status reads and releases allow ten seconds for replies. The
   unchanged 1.8-second activation window has a distinct failure message in floor
   controls and Home heating diagnostics, preserving uncertain release duties.

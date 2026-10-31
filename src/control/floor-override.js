@@ -85,7 +85,7 @@ export function floorOverrideStatus(settings = floorOverrideConfiguration(), { r
       stateEvidence: 'gpio_output_readback', channels: FLOOR_PREHEAT_CIRCUITS.map(circuit => ({ ...circuit, output: null,
         outputEvidence: 'gpio_output_readback', at: null, quality: ['floor-feedback-unavailable'], manualSelected: false })) }],
     lastResult: restorationPending ? { status: 'release-pending', reason: stateUnknown ? 'state-invalid' : 'mqtt-disconnected' } : null,
-    manualResult: null, topics: settings.deviceMac ? [
+    manualResult: null, lastFailure: null, topics: settings.deviceMac ? [
       { role: 'Lease commands and fresh status requests', topic: FLOOR_MQTT_TOPICS.command, direction: 'publish' },
       { role: 'GPIO output feedback and lease replies', topic: FLOOR_MQTT_TOPICS.state, direction: 'subscribe' },
       { role: 'Native availability', topic: FLOOR_MQTT_TOPICS.availability, direction: 'subscribe' },
@@ -136,6 +136,11 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
   let saved = loaded.state, connected = false, closed = false, epoch = 0, snapshot = null, busy = false, freshnessTimer = null;
   let chain = Promise.resolve(), runtime = null, recoveryToken = null, lastPoll = -Infinity, lastResult = null, lastLeaseEnd = null, unavailableRecorded = false;
   let dispatchedAcquire = null;
+  let lastFailure = null;
+  const rememberFailure = (error, operation) => {
+    lastFailure = { code: Object.hasOwn(FLOOR_COMMAND_ERRORS, error?.code) ? error.code : 'FLOOR_UNCONFIRMED',
+      operation, at: clock() };
+  };
   const pending = new Map(), instance = randomBytes(16).toString('hex'), controllerOwner = `stmq_${randomBytes(12).toString('hex')}`;
   const brokerDigest = hash(brokerIdentity);
   const afterCommit = effect => { if (store.afterCommit) store.afterCommit(effect); else effect(); };
@@ -155,8 +160,10 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
   const scope = () => healthy() ? hash([instance, epoch, settings.deviceMac, snapshot.frame.generation, saved?.sequence, saved?.outstanding?.phase,
       saved?.outstanding?.mask, saved?.lastRequest?.id]) : null;
   const obligation = () => Boolean(stateUnknown || saved?.outstanding && (!runtime || saved.outstanding.phase !== 'active' && !runtime.renewing || !healthy() || !owns(snapshot.frame)));
-  const serialize = operation => {
-    const result = chain.then(async () => { busy = true; try { return await operation(); } finally { busy = false; } });
+  const serialize = (operation, failureOperation = null) => {
+    const result = chain.then(async () => { busy = true; try { return await operation(); }
+      catch (error) { if (failureOperation) rememberFailure(error, failureOperation); throw error; }
+      finally { busy = false; } });
     chain = result.catch(() => {}); return result;
   };
   const persist = async next => {
@@ -228,7 +235,8 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       owner: out?.key ?? null, leaseUntil: out?.until ?? null, manualUntil: mode === 'manual' ? out.until : null,
       manualResult: saved?.lastRequest ? { channel: saved.lastRequest.channel, enabled: saved.lastRequest.enabled,
         at: saved.lastRequest.at, status: saved.lastRequest.status, confirmed: saved.lastRequest.confirmed } : null,
-      busy, reason: reason ?? 'ready', manualReason: manualReason ?? 'ready', lastResult: lastResult ?? result.lastResult, lastLeaseEnd });
+      busy, reason: reason ?? 'ready', manualReason: manualReason ?? 'ready', lastResult: lastResult ?? result.lastResult,
+      lastFailure: lastFailure ? { ...lastFailure } : null, lastLeaseEnd });
     Object.assign(result.devices[0], { available: Boolean(healthy()), at: snapshot?.at ?? null,
       firmwareBuild: snapshot?.frame.build ?? null, sketchMd5: snapshot?.frame.sketch_md5 ?? null,
       channels: FLOOR_PREHEAT_CIRCUITS.map(channel => ({ ...channel,
@@ -402,6 +410,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         fail('FLOOR_UNCONFIRMED', 'Floor evidence changed while activation confirmation was being saved.');
       runtime = { endMono, renewAt: reply.mono + settings.renewSeconds * 1000, releaseRequired: false, allowRenew: renew };
       lastResult = { status: 'active', at: clock() };
+      lastFailure = null;
       return { status: 'active', active: true, confirmed: true, leaseUntil: until };
     } catch (error) {
       await releaseInternal({ reason: 'activation-unconfirmed' });
@@ -463,7 +472,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       return true;
     },
     lease({ owner, until, now = clock(), renew = true } = {}) {
-      return serialize(() => activate({ kind: 'automatic', key: owner, mask: 15, until, now, renew }));
+      return serialize(() => activate({ kind: 'automatic', key: owner, mask: 15, until, now, renew }), 'activation');
     },
     manual({ channel, enabled, durationSeconds = 900, requestId, scope: expectedScope } = {}) {
       return serialize(async () => {
@@ -489,12 +498,13 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
             until: existing?.until ?? Math.floor(clock() + durationSeconds * 1000), requestRecord: record });
           await persist(withRequest(saved, { ...record, status: 'confirmed', confirmed: true }));
         }
+        lastFailure = null;
         return status();
         } catch (error) {
           if (saved?.lastRequest?.id === requestId) await persist(withRequest(saved, { ...record, status: 'failed', confirmed: false })).catch(() => {});
           throw error;
         }
-      });
+      }, 'manual');
     },
     release(options = {}) { return serialize(() => releaseInternal(options)); },
     finishLease({ owner, ...options } = {}) {
@@ -519,7 +529,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         else if (runtime?.allowRenew && monotonicClock() >= runtime.renewAt) {
           const out = saved.outstanding;
           try { await activate({ kind: out.kind, key: out.key, mask: out.mask, until: out.until }); }
-          catch { await releaseInternal({ reason: 'renewal-failed' }); }
+          catch (error) { await releaseInternal({ reason: 'renewal-failed' }); rememberFailure(error, 'renewal'); }
         }
         return status();
       });

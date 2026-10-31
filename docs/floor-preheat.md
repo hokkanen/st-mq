@@ -76,6 +76,11 @@ This failure does not prove that activation was unsent or that outputs are OFF.
 Any uncertain activation retains its release duty until fresh GPIO OFF feedback
 confirms release. Other transport failures keep their own authored public cause
 where available; native payloads and private lease capabilities are not shown.
+The current process keeps one authored `lastFailure` receipt, including automatic
+renewal failures after safe release. Home displays its receipt clock for at most 24 hours; a
+confirmed new activation or manual action clears it. This receipt does not change
+current GPIO readiness or release duties. It resets on process restart; recorded
+Home heating failures retain their separate historical lifetime.
 
 ## Individual timed controls
 

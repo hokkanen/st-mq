@@ -100,6 +100,13 @@ export function floorCommandError(code) {
     : 'Could not confirm the floor request. Check the reported outputs and release status before trying again.';
 }
 
+export function floorFailureText(status) {
+  const receipt = status?.preheatValves?.lastFailure;
+  if (!actionReceiptRecent(receipt?.at, status?.now ?? Date.now()) || !Object.hasOwn(FLOOR_COMMAND_ERRORS, receipt?.code)) return '';
+  const operation = receipt.operation === 'activation' ? 'activation' : receipt.operation === 'renewal' ? 'renewal' : 'request';
+  return `${isReadOnlyReplica(status) ? 'Recorded floor' : 'Floor'} ${operation} failed · ${reportedClock.format(receipt.at)} · ${floorCommandError(receipt.code)}`;
+}
+
 export function floorRequestId(crypto = globalThis.crypto) {
   if (crypto?.randomUUID) return crypto.randomUUID();
   // LAN HTTP may lack randomUUID. This is an idempotency identifier, never an
@@ -199,8 +206,10 @@ export function createFloorControls({ document, onAction, blocked = () => false 
         if (index === 0) control.dataset.active = String(channel.usable && channel.output === true);
       }
     }
-    result.textContent = actionKind === 'floor' && (busy || error || !floorReceiptText(status?.preheatValves?.manualResult, status?.now ?? Date.now())) ? message : '';
-    result.hidden = !result.textContent; result.classList.toggle('form-error', actionKind === 'floor' && error);
+    const failureText = floorFailureText(status);
+    const actionText = actionKind === 'floor' && (busy || error || !floorReceiptText(status?.preheatValves?.manualResult, status?.now ?? Date.now())) ? message : '';
+    result.textContent = actionText || failureText;
+    result.hidden = !result.textContent; result.classList.toggle('form-error', actionText ? error : Boolean(failureText));
   } };
 }
 

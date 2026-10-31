@@ -118,7 +118,8 @@ try {
         commandScope: 'synthetic-floor-device-scope', active: f.mode === 'automatic', mode: f.mode,
         manualUntil: f.mode === 'manual' ? status.now + 900000 : null,
         leaseUntil: f.mask ? status.now + 900000 : null,
-        restorationPending: f.pending, manualResult: f.manualResult ?? null, reason: f.offline ? 'feedback-stale' : f.pending ? 'restoration-pending' : 'ready',
+        restorationPending: f.pending, manualResult: f.manualResult ?? null, lastFailure: f.lastFailure ?? null,
+        reason: f.offline ? 'feedback-stale' : f.pending ? 'restoration-pending' : 'ready',
         manualReason: f.mode === 'automatic' ? 'automatic-treatment-active' : null, renewSeconds: 300, leaseSeconds: 900,
         topics: [{ role: 'Lease commands and fresh status requests', direction: 'publish', topic: 'cmnd/sonoff4chpro/LEASE' },
           { role: 'GPIO output feedback and lease replies', direction: 'subscribe', topic: 'stat/sonoff4chpro/LEASE' },
@@ -352,6 +353,14 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-floor-device').open`), false,
     'Unrelated navigation does not reopen the floor card');
   assert.equal(await evaluate('floorFixture.calls.length'), 0, 'Navigation and refresh send no floor commands');
+  await evaluate(`document.getElementById('home-equipment-details').open = true; document.querySelector('${root}').open = true;
+    floorFixture.lastFailure = { code: 'FLOOR_ACTIVATION_TIMEOUT', operation: 'renewal', at: ${now} }; floorFixture.poll()`);
+  await until(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent.includes('Floor renewal failed')`);
+  assert.equal(await evaluate(`document.getElementById('floor-preheat-state').textContent`), 'Ready', 'A past renewal failure does not replace current GPIO readiness');
+  await evaluate(`floorFixture.readOnly = true; floorFixture.poll()`);
+  await until(`document.querySelector('${root} .floor-controls .equipment-control-result').textContent.startsWith('Recorded floor renewal failed')`);
+  await evaluate(`floorFixture.readOnly = false; floorFixture.lastFailure = null; floorFixture.poll()`);
+  await until(`document.querySelector('${root} .floor-controls .equipment-control-result').hidden`);
   for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.getElementById('home-equipment-details').open = true;

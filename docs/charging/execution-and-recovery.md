@@ -454,6 +454,9 @@ success or error responses. They never resolve the expired request, admit native
 readback, change ownership or authorize a retry. Reconnects and confirmed reboots
 do not renew this window. Adapter shutdown/replacement, including handover or a
 process restart, ends it; unmatched, duplicate and expired replies are ignored.
+Normal and late replies require exactly one supported success or numeric-code
+error outcome. Malformed outcomes neither complete a request nor cancel its
+reply deadline, enter normal-reply statistics or consume a late reference.
 Reference eviction and expiry counts are exposed in
 `snapshot.rpcDiagnostics`, alongside bounded recording-pending/failure/drop counts.
 
@@ -494,7 +497,9 @@ Reboot alone creates neither a plug boundary nor a new charging request.
 
 The adapter reads `Sys.GetStatus` on the normal five-second poll. Uptime samples
 retain request/receipt times and corroborating device time. Whole-second uptime
-and round-trip intervals bound boot time; a live process compares progression
+and round-trip intervals bound boot time. Reboot proof requires a request-to-receipt
+interval of at most five seconds; a reply can meet the ten-second RPC budget
+while remaining too uncertain to establish a reboot. A live process compares progression
 against a monotonic clock. A second read at least five seconds later must agree
 with the candidate boot. A new process revalidates the saved anchor; without a
 comparable monotonic reference, lower uptime and a later boot interval are

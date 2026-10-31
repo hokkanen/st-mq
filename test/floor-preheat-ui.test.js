@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { floorPreheatView, renderFloorPreheat, floorChannels, floorManualAllowed, floorManualMessage, floorReceiptText, floorRequestId } from '../chart/floor-preheat.js';
+import { floorPreheatView, renderFloorPreheat, floorChannels, floorManualAllowed, floorManualMessage, floorReceiptText, floorRequestId, floorFailureText } from '../chart/floor-preheat.js';
 import { createEquipmentActions } from '../chart/equipment.js';
 
 const now = Date.parse('2026-10-15T12:00:00Z');
@@ -109,6 +109,20 @@ test(`manual failure messages preserve floor evidence without leaking transport 
   assert.match(actions.snapshot().message, message);
   assert.doesNotMatch(actions.snapshot().message, /private-device-and-token/);
   assert.equal(actions.snapshot().status.preheatValves.configured, true);
+});
+
+test('renewal failure receipts remain separate from readiness and expire without exposing native errors', () => {
+  const receipt = { code: 'FLOOR_ACTIVATION_TIMEOUT', operation: 'renewal', at: now };
+  const status = current({ lastFailure: receipt });
+  assert.equal(floorPreheatView(status).label, 'Ready');
+  assert.match(floorFailureText(status), /Floor renewal failed.*activation window expired.*1\.8-second/);
+  assert.match(floorFailureText(status), /15 Oct, 15:00/);
+  assert.match(floorFailureText({ ...status, readOnly: true }), /^Recorded floor renewal failed/);
+  assert.equal(floorFailureText({ ...status, now: now + 86400000 }), '');
+  assert.equal(floorFailureText({ ...status, now: now - 1 }), '');
+  for (const code of ['constructor', '__proto__', 'private-native-code'])
+    assert.equal(floorFailureText(current({ lastFailure: { ...receipt, code, message: 'fixture-private-error' } })), '');
+  assert.doesNotMatch(floorFailureText(current({ lastFailure: { ...receipt, operation: 'constructor' } })), /function|Object/);
 });
 
 test('a confirmed manual receipt retains its historical meaning when output feedback expires', () => {

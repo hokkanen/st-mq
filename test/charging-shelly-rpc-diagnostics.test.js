@@ -64,7 +64,9 @@ test('expiry and capacity bound references, with an explicit incomplete observat
 });
 test('unknown, malformed and duplicate replies cannot consume a late reference', () => {
   const f = fixture(), trace = f.request(); f.set(5000); f.timeout(trace);
-  for (const [id, frame] of [['unknown', { result: null }], ['fixture-request', {}], ['fixture-request', { result: null, error: {} }]])
+  for (const [id, frame] of [['unknown', { result: null }], ['fixture-request', {}], ['fixture-request', { result: null, error: {} }],
+    ...[null, [], { error: null }, { error: {} }, { error: false }, { error: { code: 'private-native-code' } },
+      { error: { code: 1.1 } }].map(frame => ['fixture-request', frame])])
     assert.equal(f.late(id, frame), false);
   f.set(6000); assert.equal(f.late(), true); assert.equal(f.late(), false);
 });
