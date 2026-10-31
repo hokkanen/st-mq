@@ -50,17 +50,19 @@ it cannot undo a successful action receipt.
 
 Automatic checks fetch events only while the log panel is on screen and the
 browser tab is visible, after dashboard history becomes available. Returning to
-the panel checks again. Explicit Refresh, filter and paging actions can read
-without waiting for the viewport observer to report the panel on screen; hidden
-tabs and unavailable history still prevent reads. Refresh stays available during
-an outstanding read and replaces it, so a stalled browser transport cannot block
-recovery. Leaving the panel, hiding the tab or suspending the window cancels
-unused reads while preserving fetched rows and their original check time. Window
-focus and page restoration recheck available history even before viewport
-notifications catch up; a delayed offscreen notification cannot cancel that read.
-A dropped connection or temporary gateway failure gets one retry within the same
-read deadline before a failure is shown. This does not change recording cadence,
-retention or charging behavior.
+the browser tab obtains current dashboard status first, then rechecks events
+without depending on a viewport or focus notification. There is one active event
+read; overlapping automatic checks join it. Hiding the tab cancels its read
+without reporting cancellation as a history failure.
+
+Explicit Refresh replaces an outstanding read. Filters and paging can also read
+without waiting for the viewport observer. Hidden tabs and unavailable history
+still prevent reads. A late offscreen notification cannot cancel an explicit or
+returning-tab read. Window focus does not gate history access or start another
+request. Failed reads report a safe explanation of the failed stage and HTTP
+status when available; native error text, private URLs and response fragments
+are never displayed. The next check can retry through the same request path.
+Recording cadence, retention and charging behavior are unchanged.
 
 Refreshing retains matching row nodes, open details, focus and reading position.
 New entries wait behind **New events** while the user reads. **Load older events**

@@ -22,7 +22,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const errors = [], requests = [], pending = new Map();
 let app, proxy, browser, socket, context, sequence = 0, failure = false, hold = null;
 let snapshot = false, generation = 1, statusNow = initial;
-let externalProfile;
+let externalProfile, statusHold = null;
 
 try {
   const privatePath = join(directory, 'synthetic.json');
@@ -59,6 +59,9 @@ try {
     const json = (status, value) => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); };
     if (url.pathname === '/favicon.ico') { response.writeHead(204); response.end(); return; }
     try {
+      if (url.pathname === '/api/status' && statusHold) {
+        const current = statusHold; statusHold = null; current.started(); await current.wait;
+      }
       if (url.pathname === '/api/events') {
         requests.push(url.search);
         if (hold) { const current = hold; hold = null; current.started(); await current.wait; }
@@ -191,8 +194,40 @@ try {
   await until('document.body?.dataset.authenticated==="true"');
   await pause(150);
   assert.equal(requests.length, 0, 'The event log does not read while the panel is off screen');
+  failure = true;
   await evaluate("document.getElementById('event-log-panel').scrollIntoView({block:'center'});true");
-  await until('document.querySelectorAll("#events li").length>0');
+  await until('document.getElementById("event-log-message").dataset.state==="error"');
+  assert.match(await evaluate('document.getElementById("event-log-message").textContent'), /HTTP 503/);
+  assert.match(await evaluate('document.getElementById("event-log-status").textContent'), /No successful event check/);
+  failure = false;
+  const originalTab = firefox ? context : (await send('Target.getTargetInfo')).targetInfo.targetId;
+  const otherTab = firefox ? (await send('browsingContext.create', { type: 'tab', background: true })).context
+    : (await send('Target.createTarget', { url: 'about:blank', background: true })).targetId;
+  const activate = tab => send(firefox ? 'browsingContext.activate' : 'Target.activateTarget',
+    firefox ? { context: tab } : { targetId: tab });
+  try {
+    for (const recorded of [false, true]) {
+      snapshot = recorded;
+      await activate(otherTab); await until('document.hidden===true');
+      let started, release;
+      const waiting = new Promise(resolve => { started = resolve; });
+      statusHold = { started, wait: new Promise(resolve => { release = resolve; }) };
+      const beforeReturn = requests.length;
+      try {
+        await activate(originalTab); await waiting;
+        await pause(100);
+        assert.equal(requests.length, beforeReturn, 'Tab return waits for current dashboard access and history availability');
+      } finally { release(); }
+      for (let attempt = 0; requests.length === beforeReturn && attempt < 400; attempt++) await pause(30);
+      assert(requests.length > beforeReturn, 'Tab return automatically reads history');
+      await until('document.querySelectorAll("#events li").length===40 && document.getElementById("events").getAttribute("aria-busy")==="false" && document.getElementById("event-log-message").dataset.state==="neutral"');
+      if (recorded) assert.match(await evaluate('document.getElementById("event-log-status").textContent'), /Snapshot/);
+    }
+  } finally {
+    await activate(originalTab);
+    await send(firefox ? 'browsingContext.close' : 'Target.closeTarget', firefox ? { context: otherTab } : { targetId: otherTab });
+  }
+  snapshot = false; await refresh();
   assert.equal(await evaluate('document.querySelectorAll("#events li").length'), 40);
   assert.equal(await evaluate('document.getElementById("events").textContent.includes("synthetic-private-detail")'), false);
   assert.equal(await evaluate('document.getElementById("events").querySelectorAll("img").length'), 0);
@@ -250,21 +285,19 @@ try {
   assert.equal(app.engine.settings.occupancy.mode, 'away');
   assert.equal(await evaluate('document.getElementById("temporary-message").classList.contains("form-error")'), false);
   failure = false; await refresh();
-  // DeX-style window suspension can leave the tab visible while its transport
-  // is stalled. Focus must recover without a page navigation.
-  let beganSuspended, releaseSuspended;
-  const suspendedRead = new Promise(resolve => { beganSuspended = resolve; });
-  hold = { started: beganSuspended, wait: new Promise(resolve => { releaseSuspended = resolve; }) };
-  await evaluate('document.getElementById("event-log-refresh").click();true'); await suspendedRead;
-  const beforeResume = requests.length;
+  // Explicit Refresh replaces a held read without page navigation.
+  let beganStalled, releaseStalled;
+  const stalledRead = new Promise(resolve => { beganStalled = resolve; });
+  hold = { started: beganStalled, wait: new Promise(resolve => { releaseStalled = resolve; }) };
+  await evaluate('document.getElementById("event-log-refresh").click();true'); await stalledRead;
   try {
-    assert.equal(await evaluate('document.getElementById("event-log-refresh").disabled'), false);
-    await evaluate('window.dispatchEvent(new Event("blur"));window.dispatchEvent(new Event("focus"));true');
-    for (let attempt = 0; requests.length === beforeResume && attempt < 400; attempt++) await pause(30);
-    assert(requests.length > beforeResume, 'Returning to the window starts a fresh event read');
+    const beforeRetry = requests.length;
+    await evaluate('document.getElementById("event-log-refresh").click();true');
+    for (let attempt = 0; requests.length === beforeRetry && attempt < 400; attempt++) await pause(30);
+    assert(requests.length > beforeRetry);
     await until('document.getElementById("events").getAttribute("aria-busy")==="false"');
     assert.equal(await evaluate('document.getElementById("event-log-message").dataset.state'), 'neutral');
-  } finally { releaseSuspended(); }
+  } finally { releaseStalled(); }
   await filter('event-log-view', 'all');
   assert.equal(await evaluate('document.getElementById("event-log-message").dataset.state'), 'neutral');
   await filter('event-log-area', 'caravan');
@@ -329,7 +362,7 @@ try {
   assert.equal(await evaluate('document.querySelectorAll("#events > li").length'), 0, 'Sign-out discards history and fences delayed responses, including after login-page navigation');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: firefox ? 'Firefox' : 'Chromium', layouts: layoutCases,
-    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, stalled read replacement after window resume, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
+    checks: 'Real API, visible-only reads, safe projection, stable reading, new events, older paging beyond 200, local failure/recovery, real tab return without Refresh for master and slave views, stalled read replacement, successful action receipt, filters, replica advancement, family access, enlarged text and sign-out fencing passed.', artifacts }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { const done = new Promise(resolve => browser.once('exit', resolve)); browser.kill(); await done; }

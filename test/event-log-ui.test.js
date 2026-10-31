@@ -84,7 +84,7 @@ test('offscreen and hidden event logs do no automatic reads, abort unused work a
   await f.panel.refresh(); assert.equal(f.requests.length, 2);
   f.document.hidden = true; visibility(true); await f.panel.refresh(); assert.equal(f.requests.length, 2);
   assert.equal(f.$('event-log-status').textContent, checked); assert.equal(f.list.children[0], node);
-  f.document.hidden = false; f.document.dispatch('visibilitychange'); await settle();
+  f.document.hidden = false; f.document.dispatch('visibilitychange'); void f.panel.refresh({ force: true }); await settle();
   assert.equal(f.requests.length, 3); await f.answer([row(3)]);
   assert.equal(node.querySelector('details').open, true);
   f.panel.clear(); visibility(false); visibility(true); await settle(); assert.equal(f.requests.length, 3);
@@ -309,7 +309,7 @@ test('Refresh replaces a stalled transport and fences its late success and failu
   }
 });
 
-test('window suspension cancels unused reads and resume checks again before viewport notifications catch up', async t => {
+test('tab restoration uses current dashboard availability, joins reads and ignores focus changes', async t => {
   let visibility;
   class Observer {
     constructor(callback) { visibility = visible => callback([{ target: f.$('event-log-panel'), isIntersecting: visible }]); }
@@ -318,50 +318,52 @@ test('window suspension cancels unused reads and resume checks again before view
   const f = fixture({ IntersectionObserverClass: Observer }); t.after(() => f.panel.close());
   await f.panel.refresh(); visibility(true); await settle();
   const old = f.requests[0];
-  f.document.defaultView.dispatch('blur');
+  f.document.hidden = true; f.document.dispatch('visibilitychange');
   old.reject(new TypeError('fixture-background-network-failure')); await settle();
   assert.equal(old.options.signal.aborted, true);
   assert.notEqual(f.$('event-log-message').dataset.state, 'error');
-  await f.panel.refresh(); assert.equal(f.requests.length, 1);
   visibility(false);
-  f.document.defaultView.dispatch('focus'); await settle();
-  assert.equal(f.requests.length, 2, 'Focus replaces the transport even with stale offscreen state');
-  visibility(true); visibility(false);
-  assert.equal(f.requests[1].options.signal.aborted, false, 'Delayed observer delivery cannot cancel the resumed read');
-  await f.answer([row(2)]);
-  const checked = f.$('event-log-status').textContent;
-  f.document.hidden = true; f.document.dispatch('visibilitychange');
-  f.document.defaultView.dispatch('focus'); await settle();
-  assert.equal(f.requests.length, 2, 'Hidden documents cannot resume reads');
   f.document.hidden = false; f.document.dispatch('visibilitychange'); await settle();
-  assert.equal(f.requests.length, 3, 'Tab restoration also handles delayed viewport state');
-  await f.answer([row(2)]);
-  f.document.defaultView.dispatch('pagehide');
-  f.document.defaultView.dispatch('pageshow'); await settle();
-  assert.equal(f.requests.length, 4);
-  assert.equal(f.$('event-log-status').textContent, checked);
-  await f.answer([row(3)]);
+  assert.equal(f.requests.length, 1, 'Returning waits for the dashboard to establish history availability');
+  const restored = f.panel.refresh({ force: true }); await settle();
+  void f.panel.refresh({ force: true });
+  f.document.defaultView.dispatch('focus'); f.document.defaultView.dispatch('blur');
+  visibility(true); visibility(false); await settle();
+  assert.equal(f.requests.length, 2, 'One restored read survives repeated notifications');
+  assert.equal(f.requests[1].options.signal.aborted, false);
+  await f.answer([row(2)]); await restored;
   assert.equal(f.$('event-log-message').hidden, true);
-  f.panel.unavailable(); f.document.defaultView.dispatch('focus'); await settle();
-  assert.equal(f.requests.length, 4, 'Window focus cannot bypass unavailable history');
-  f.panel.clear(); f.document.defaultView.dispatch('pageshow'); await settle();
-  assert.equal(f.requests.length, 4, 'Window restoration cannot bypass logout');
-  f.panel.close();
+  f.panel.clear(); f.document.dispatch('visibilitychange'); await settle();
+  assert.equal(f.requests.length, 2, 'Visibility cannot bypass logout');
 });
 
-test('a discarded browser connection gets one bounded fresh read without publishing a failure', async t => {
+test('failed reads explain their stage without exposing private exceptions and retry on the next check', async t => {
   const f = fixture(); t.after(() => f.panel.close());
+  const cases = [
+    [Object.assign(new Error('fixture-private'), { status: 403 }), /Access.*refused.*HTTP 403/],
+    [Object.assign(new Error('fixture-private'), { status: 400, code: 'event_log_query_invalid' }), /filters.*HTTP 400/],
+    [Object.assign(new Error('fixture-private'), { status: 503 }), /server.*HTTP 503/],
+    [Object.assign(new Error('fixture-private'), { name: 'TimeoutError' }), /timed out/],
+    [new SyntaxError('fixture-private'), /could not be decoded/],
+    [new TypeError('fixture-private'), /browser could not download/],
+  ];
+  for (const [error, explanation] of cases) {
+    const pending = f.panel.refresh(); await settle();
+    f.requests.at(-1).reject(error); await pending;
+    assert.match(f.$('event-log-message').textContent, explanation);
+    assert.doesNotMatch(f.$('event-log-message').textContent, /fixture-private/);
+    await f.refresh([row(1)]);
+    assert.equal(f.$('event-log-message').hidden, true);
+  }
   const pending = f.panel.refresh(); await settle();
-  f.requests[0].reject(new TypeError('fixture-discarded-connection')); await settle();
-  assert.equal(f.requests.length, 2);
-  assert.notEqual(f.$('event-log-message').dataset.state, 'error');
-  await f.answer([row(1)]); await pending;
+  f.requests.at(-1).resolve({}); await pending;
+  assert.match(f.$('event-log-message').textContent, /response was incomplete or invalid/);
+  const create = f.document.createElement;
+  f.document.createElement = () => { throw new Error('fixture-private-render-error'); };
+  await f.refresh([row(2)]);
+  assert.match(f.$('event-log-message').textContent, /could not be displayed/);
+  assert.doesNotMatch(f.$('event-log-message').textContent, /fixture-private/);
+  f.document.createElement = create;
+  await f.refresh([row(2)]);
   assert.equal(f.$('event-log-message').hidden, true);
-  const failed = f.panel.refresh(); await settle();
-  f.requests[2].reject(Object.assign(new Error('fixture-gateway'), { status: 502 })); await settle();
-  f.requests[3].reject(new TypeError('fixture-network-still-unavailable')); await failed;
-  assert.equal(f.requests.length, 4, 'Recovery never becomes an unbounded retry loop');
-  assert.match(f.$('event-log-message').textContent, /last successfully fetched/);
-  assert.equal(f.list.children[0].dataset.eventId, id(1));
-  f.panel.close();
 });

@@ -32,6 +32,23 @@ function checkedPage(value) {
   return { ...value, events: [...value.events].sort(order) };
 }
 
+// Explain the failed stage without exposing native errors, response fragments,
+// request URLs or private payloads. Status codes remain useful on phone browsers.
+function failureReason(error, phase) {
+  if (phase === 'response') return 'The event response was incomplete or invalid.';
+  if (phase === 'display') return 'The received events could not be displayed. Reload this page.';
+  if (error?.name === 'TimeoutError') return 'The event request timed out.';
+  if (error?.name === 'SyntaxError') return 'The event response could not be decoded.';
+  if (Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599) {
+    const cause = error.code === 'event_log_checkpoint_advanced' ? 'The recorded snapshot advanced during the read'
+      : error.code === 'event_log_query_invalid' ? 'The server rejected the event filters'
+        : error.status === 403 ? 'Access to event history was refused'
+          : 'The server could not return event history';
+    return `${cause} (HTTP ${error.status}).`;
+  }
+  return error?.name === 'TypeError' ? 'The browser could not download event history.' : 'The event request could not be completed.';
+}
+
 /** A bounded, read-only presentation of the current selected history. Refreshes
  * reconcile visible IDs at the server's read boundary, including entries that
  * have moved beyond the newest page. They never establish device authority. */
@@ -43,12 +60,11 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   const refreshButton = $('event-log-refresh'), olderButton = $('event-log-older'), newerButton = $('event-log-new');
   const coverage = $('event-log-coverage'), range = $('event-log-range');
   const nodes = new Map();
-  let epoch = 0, pending = null, cancellation = null, closed = false, pendingManual = false;
+  let epoch = 0, pending = null, closed = false;
   let context = null, rows = [], nextBefore = null, hasNewEvents = false, hasSuccessfulCheck = false;
   let browsingHistory = false, failed = false, historyNotice = false;
-  const window = document.defaultView;
-  let enabled = false, inView = !IntersectionObserverClass, focused = document.hasFocus?.() ?? true;
-  const readable = (manual = false) => enabled && (manual || inView && focused) && !document.hidden && !closed;
+  let enabled = false, inView = !IntersectionObserverClass;
+  const readable = (manual = false) => enabled && (manual || inView) && !document.hidden && !closed;
 
   const make = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -59,7 +75,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   function setText(node, value) { if (node.textContent !== value) node.textContent = value; }
   function invalidate() {
     epoch++;
-    cancellation?.abort(); cancellation = null; pending = null; pendingManual = false;
+    pending?.controller.abort(); pending = null;
   }
   function controls() {
     // Refresh can replace a stalled read after browser suspension.
@@ -196,45 +212,41 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     historyNotice = false;
     controls();
   }
-  async function load(kind = 'refresh', { manual = false } = {}) {
+  async function load(kind = 'refresh', { manual = false, replace = false } = {}) {
     if (!readable(manual)) return;
     if (pending) {
-      if (!manual || kind !== 'refresh') return pending;
+      if (!replace) return pending.promise;
       invalidate();
     }
     if (kind === 'older' && !nextBefore) return;
-    const captured = epoch, controller = cancellation = new AbortController();
+    const captured = epoch, operation = { controller: new AbortController(), manual, promise: null };
+    pending = operation;
+    let phase = 'request';
     const path = url(kind);
     if (!hasSuccessfulCheck) showMessage('Loading recorded events…');
     failed = false;
-    const operation = withReadDeadline(async signal => {
-      try { return await request(path, { signal }); }
-      catch (error) {
-        // A suspended browser may discard its connection. Retry that read once
-        // inside the same deadline; malformed responses and access failures
-        // still follow their ordinary failure path.
-        if (signal.aborted || captured !== epoch || !readable(manual)
-          || !(error instanceof TypeError || [502, 503, 504].includes(error?.status))) throw error;
-        return request(path, { signal });
-      }
-    }, { signal: controller.signal }).then(value => {
-      if (closed || captured !== epoch || !readable(manual)) return;
-      accept(checkedPage(value), kind);
+    operation.promise = withReadDeadline(signal => request(path, { signal }), { signal: operation.controller.signal }).then(value => {
+      if (closed || captured !== epoch) return;
+      phase = 'response';
+      const page = checkedPage(value);
+      phase = 'display';
+      accept(page, kind);
     }).catch(error => {
-      if (closed || captured !== epoch || !readable(manual)) return;
+      if (closed || captured !== epoch || operation.controller.signal.aborted) return;
       if (kind === 'older' && error?.code === 'event_log_context_changed') {
         invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; historyNotice = true;
         showMessage('The selected history changed. Loading its current events…');
         return load('latest', { manual });
       }
       failed = true;
-      showMessage(rows.length ? 'Event history could not be refreshed. Showing the last successfully fetched events. Try Refresh again.'
-        : 'Event history is unavailable. Try Refresh again.', true);
+      const reason = failureReason(error, phase);
+      showMessage(`${rows.length ? 'Event history could not be refreshed. Showing the last successfully fetched events.'
+        : 'Event history is unavailable.'} ${reason} Try Refresh again.`, true);
       if (!hasSuccessfulCheck) status.textContent = 'No successful event check yet';
     }).finally(() => {
-      if (pending === operation) { pending = null; cancellation = null; pendingManual = false; controls(); }
+      if (pending === operation) { pending = null; controls(); }
     });
-    pending = operation; pendingManual = manual; controls(); return operation;
+    controls(); return operation.promise;
   }
   function changeFilter() {
     invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
@@ -242,42 +254,25 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     void load('refresh', { manual: true });
   }
   function visibilityChanged() {
-    if (!readable()) { invalidate(); controls(); return; }
-    void load();
+    // The dashboard's existing visibility handler obtains current access and
+    // snapshot availability before refreshing history on return.
+    if (document.hidden) { enabled = false; invalidate(); controls(); }
   }
-  function suspended() {
-    focused = false; invalidate(); controls();
-  }
-  function resumed() {
-    focused = true;
-    if (!readable(true)) return;
-    // Focus/pageshow can arrive before viewport notifications in suspended
-    // mobile windows. Replace the old transport rather than joining it.
-    invalidate();
-    void load('refresh', { manual: true });
-  }
-  function documentVisibilityChanged() {
-    if (document.hidden) { invalidate(); controls(); }
-    else resumed();
-  }
-  window?.addEventListener('blur', suspended);
-  window?.addEventListener('focus', resumed);
-  window?.addEventListener('pagehide', suspended);
-  window?.addEventListener('pageshow', resumed);
   const observer = IntersectionObserverClass ? new IntersectionObserverClass(entries => {
     const entry = entries.find(value => value.target === $('event-log-panel'));
     if (!entry || inView === entry.isIntersecting) return;
     inView = entry.isIntersecting;
     // A delayed offscreen notification must not cancel an explicit read.
-    if (!inView && pendingManual) return;
-    visibilityChanged();
+    if (!inView) {
+      if (!pending?.manual) { invalidate(); controls(); }
+    } else void load();
   }) : null;
   observer?.observe($('event-log-panel'));
-  document.addEventListener?.('visibilitychange', documentVisibilityChanged);
+  document.addEventListener?.('visibilitychange', visibilityChanged);
   view.addEventListener('change', changeFilter); area.addEventListener('change', changeFilter);
   // Explicit actions need not wait for a viewport observer to catch up after
   // backgrounding. Hidden documents and unavailable history remain fenced.
-  refreshButton.addEventListener('click', () => { void load('refresh', { manual: true }); });
+  refreshButton.addEventListener('click', () => { void load('refresh', { manual: true, replace: true }); });
   olderButton.addEventListener('click', () => { void load('older', { manual: true }); });
   newerButton.addEventListener('click', () => {
     // Recheck the head when it is opened: a report may have expired or been
@@ -291,7 +286,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
   });
   controls();
   return {
-    refresh() { enabled = true; return load(); },
+    refresh({ force = false } = {}) { enabled = !document.hidden; return load('refresh', { manual: force }); },
     clear() {
       enabled = false; invalidate(); clearRows(); context = null; hasSuccessfulCheck = false; failed = false; historyNotice = false;
       status.textContent = 'No event history loaded'; status.title = ''; coverage.textContent = '';
@@ -303,11 +298,7 @@ export function createEventLog({ document, request, onOpenReport = () => {},
     },
     close() {
       closed = true; invalidate(); observer?.disconnect();
-      document.removeEventListener?.('visibilitychange', documentVisibilityChanged);
-      window?.removeEventListener('blur', suspended);
-      window?.removeEventListener('focus', resumed);
-      window?.removeEventListener('pagehide', suspended);
-      window?.removeEventListener('pageshow', resumed);
+      document.removeEventListener?.('visibilitychange', visibilityChanged);
     },
   };
 }

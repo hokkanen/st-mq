@@ -1035,7 +1035,7 @@ function checkCommunication() {
   $('connection').title = `Last successful status response: ${state.available ? `${Math.floor(state.ageMs/1000)} seconds ago` : 'not yet received'}.${view.detail ? ` ${view.detail}` : ''}`;
   if (state.stale) $('connection').textContent = 'Monitoring is stale. Waiting for an installation status response.';
 }
-async function refresh({ forceChart = false, background = false } = {}) {
+async function refresh({ forceChart = false, background = false, forceEvents = false } = {}) {
   if (session.locked) return;
   const controlsBusy = () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy || equipmentBusy;
   const observationOnly = controlsBusy();
@@ -1083,7 +1083,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
     void refreshAudits({ force: replaced });
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) { eventLog.unavailable(); return; }
-    await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), eventLog.refresh()]);
+    await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), eventLog.refresh({ force: forceEvents })]);
   } catch (error) {
     // Chart, event and rendering failures do not invalidate a received local
     // pairing report or its confirmed MQTT address ownership.
@@ -1404,7 +1404,7 @@ setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => {
   checkCommunication();
-  if (!document.hidden) { void refresh(); void refreshRecordingOverview(); void refreshAudits(); databaseExport.tick(); }
+  if (!document.hidden) { void refresh({ forceEvents: true }); void refreshRecordingOverview(); void refreshAudits(); databaseExport.tick(); }
 });
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();
