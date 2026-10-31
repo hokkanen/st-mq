@@ -7,6 +7,21 @@ const object = (value, keys) => value && typeof value === 'object' && !Array.isA
   && Object.keys(value).every(key => keys.includes(key));
 const id = value => typeof value === 'string' && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value);
 export const validShellyBootEpoch = id;
+// A native zero is an uninitialized update clock, never Unix epoch evidence.
+// Only the observed off/default shape is supported; true or another source
+// still needs ordinary source-timed instruction/command evidence.
+export const isShellyUntimedPermission = field => field?.value === false && field.measuredAt === null
+  && field.nativeUpdatedAt === 0 && field.commandSource === '' && field.admittedAt === undefined;
+export const validShellyUntimedPermission = field => isShellyUntimedPermission(field)
+  && id(field.bootEpoch) && field.rebootBaseline === field.bootEpoch
+  && time(field.receivedAt) && object(field.readback, ['requestedAt', 'measuredAt', 'receivedAt', 'admittedAt']) && field.readback.measuredAt === null
+  && time(field.readback.requestedAt) && field.readback.receivedAt === field.receivedAt
+  && field.readback.requestedAt <= field.receivedAt && (field.readback.admittedAt === undefined
+    || time(field.readback.admittedAt) && field.readback.admittedAt >= field.receivedAt);
+export const isShellyUntimedRebootBaseline = (field, snapshot) => validShellyUntimedPermission(field)
+  && field.bootEpoch === snapshot.reboot?.epoch && field.rebootBaseline === snapshot.reboot?.incident?.id
+  && snapshot.reboot.incident.phase === 'ready' && field.instructionAt === undefined
+  && field.readback.requestedAt >= snapshot.reboot.incident.samples[1].receivedAt;
 export const SHELLY_REBOOT_ROLES = Object.freeze(['start_charging', 'current_limit', 'work_state']);
 export const SHELLY_REBOOT_CODES = Object.freeze(['shelly-reboot-observed', 'shelly-reboot-reconciliation',
   'shelly-reboot-baseline', 'shelly-reboot-restored', 'shelly-reboot-blocked', 'shelly-reboot-superseded']);
@@ -74,8 +89,11 @@ function validRebootDetail(value) {
 function validSettings(value) {
   return object(value, SHELLY_REBOOT_ROLES) && SHELLY_REBOOT_ROLES.every(role => {
     const field = value[role];
-    return field === null || object(field, ['value', 'measuredAt', 'receivedAt', 'commandSource'])
-      && time(field.measuredAt) && time(field.receivedAt) && field.measuredAt <= field.receivedAt + 1000
+    const untimed = role === 'start_charging' && field?.value === false && field.measuredAt === null
+      && field.nativeUpdatedAt === 0 && field.commandSource === null;
+    return field === null || object(field, ['value', 'measuredAt', 'receivedAt', 'commandSource', 'nativeUpdatedAt'])
+      && (untimed || field.nativeUpdatedAt === undefined && time(field.measuredAt))
+      && time(field.receivedAt) && (untimed || field.measuredAt <= field.receivedAt + 1000)
       && (field.commandSource === null || typeof field.commandSource === 'string' && /^(sys|rpc|init)$/.test(field.commandSource))
       && (role === 'start_charging' ? typeof field.value === 'boolean'
         : role === 'current_limit' ? Number.isFinite(field.value) && field.value >= 0 && field.value <= 1000
@@ -86,6 +104,7 @@ export function shellyRebootSettings(fields) {
   const result = Object.fromEntries(SHELLY_REBOOT_ROLES.map(role => {
     const field = fields[role];
     return [role, field ? { value: field.value, measuredAt: field.measuredAt, receivedAt: field.receivedAt,
+      ...(field.nativeUpdatedAt === undefined ? {} : { nativeUpdatedAt: field.nativeUpdatedAt }),
       commandSource: ['sys', 'rpc', 'init'].includes(field.commandSource) ? field.commandSource : null } : null];
   }));
   // Unknown native enum text is not a supported diagnostic value. Never copy
@@ -132,8 +151,13 @@ export function shellyRebootBaseline({ boot, before, after, session, connectedSt
   let workaround = false;
   for (const role of SHELLY_REBOOT_ROLES) {
     const field = after[role], previous = before[role];
-    if (!field || field.retained || !validateAdmittedSourceTime({ sourceTime: field.measuredAt,
-      receivedAt: field.receivedAt, admittedAt: field.admittedAt, now })) return { allowed: false, reason: 'readback-required' };
+    const untimed = role === 'start_charging' && isShellyUntimedPermission(field);
+    if (!field || field.retained || !time(field.receivedAt) || field.receivedAt > now
+      || untimed && field.readback?.admittedAt !== undefined
+        && (!time(field.readback.admittedAt) || field.readback.admittedAt < field.receivedAt || field.readback.admittedAt > now)
+      || !untimed && !validateAdmittedSourceTime({ sourceTime: field.measuredAt,
+        receivedAt: field.receivedAt, admittedAt: field.admittedAt, now })) return { allowed: false, reason: 'readback-required' };
+    if (untimed) { workaround = true; continue; }
     if (role === 'start_charging' && typeof field.value !== 'boolean'
       || role === 'current_limit' && (!Number.isFinite(field.value) || field.value < 0 || field.value > 1000)
       || role === 'work_state' && typeof field.value !== 'string') return { allowed: false, reason: 'native-restriction' };
@@ -151,7 +175,8 @@ export function shellyRebootBaseline({ boot, before, after, session, connectedSt
   return { allowed: true, reason: 'reconciled', workaround, connected: connectedStates.includes(state) };
 }
 
-export const isShellyRebootBaseline = (field, snapshot) => field?.rebootBaseline === snapshot.reboot?.incident?.id
+export const isShellyRebootBaseline = (field, snapshot) => isShellyUntimedRebootBaseline(field, snapshot)
+  || field?.rebootBaseline === snapshot.reboot?.incident?.id
   && field?.bootEpoch === snapshot.reboot?.epoch && snapshot.reboot?.incident?.phase === 'ready'
   && field.commandSource === 'sys' && (field.instructionAt === undefined
     || field.instructionAt <= shellyBootInterval(snapshot.reboot.incident.samples[1]).lower);

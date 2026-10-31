@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyShellyBoot, shellyBootInterval, shellyRebootBaseline,
-  validShellyBootSample, validShellyBootState, validShellyRebootEvent } from '../src/charging/shelly-compatibility.js';
+  validShellyBootSample, validShellyBootState, validShellyRebootEvent, shellyRebootSettings } from '../src/charging/shelly-compatibility.js';
 
 const T = 1_800_000_000_000;
 const sample = (at, uptime, delay = 100) => ({ uptime, unixtime: Math.floor(at / 1000), requestedAt: at, receivedAt: at + delay });
@@ -70,4 +70,26 @@ test('boot state and report evidence reject unknown fields and private/unbounded
   assert.equal(validShellyRebootEvent({ ...event, deviceId: 'private' }), false);
   assert.equal(validShellyRebootEvent({ ...event, firmware: 'https://fixture.invalid/?token=fixture-not-a-secret' }), false);
   assert.equal(validShellyRebootEvent({ ...event, reboot: { samples: Array(4).fill(sample(T, 2)) } }), false);
+});
+
+test('zero native update clock represents unknown time only for an off default in confirmed recovery', () => {
+  const after = fields(T - 20000);
+  after.start_charging = { value: false, measuredAt: null, nativeUpdatedAt: 0, receivedAt: T + 10000, commandSource: '' };
+  assert.equal(policy(after).allowed, true); assert.equal(policy(after).workaround, true);
+  for (const change of [row => { row.value = true; }, row => { row.commandSource = 'rpc'; },
+    row => { row.commandSource = null; }, row => { delete row.nativeUpdatedAt; },
+    row => { row.nativeUpdatedAt = -1; }, row => { row.measuredAt = 0; },
+    row => { row.admittedAt = T + 10000; }]) {
+    const invalid = structuredClone(after); change(invalid.start_charging);
+    assert.equal(policy(invalid).allowed, false);
+  }
+  after.start_charging.readback = { admittedAt: T + 11000 };
+  assert.equal(policy(after).allowed, false);
+  after.start_charging.readback.admittedAt = T + 10000;
+  assert.equal(policy(after).allowed, true);
+  const detail = shellyRebootSettings(after);
+  assert.equal(detail.start_charging.measuredAt, null); assert.equal(detail.start_charging.nativeUpdatedAt, 0);
+  const event = { sequence: 1, at: T + 10000, code: 'shelly-reboot-reconciliation', incidentId: epoch,
+    connectedAt: T - 100000, policy: 'reboot-state', reboot: { after: detail } };
+  assert.equal(validShellyRebootEvent(event), true);
 });

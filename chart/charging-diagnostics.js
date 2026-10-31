@@ -358,7 +358,10 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       if (proof.bootInterval) details.push(`Inferred boot between ${evidenceTime(proof.bootInterval.lower, timezone)} and ${evidenceTime(proof.bootInterval.upper, timezone)}`);
       for (const sample of proof.samples ?? []) details.push(`Uptime ${sample.uptime} s · Requested ${evidenceTime(sample.requestedAt, timezone)} · Received ${evidenceTime(sample.receivedAt, timezone)}`);
       for (const side of ['before', 'after']) for (const [role, field] of Object.entries(proof[side] ?? {})) {
-        if (field) details.push(`${side === 'before' ? 'Before' : 'After'} · ${lookup({ start_charging: 'Start permission', current_limit: 'Current setting', work_state: 'Native state' }, role)}: ${field.value}${role === 'current_limit' ? ' A' : ''} · Updated ${evidenceTime(field.measuredAt, timezone)} · Received ${evidenceTime(field.receivedAt, timezone)}`);
+        if (field) {
+          const updated = field.nativeUpdatedAt === 0 ? 'Update time not reported (native timestamp 0)' : `Updated ${evidenceTime(field.measuredAt, timezone)}`;
+          details.push(`${side === 'before' ? 'Before' : 'After'} · ${lookup({ start_charging: 'Start permission', current_limit: 'Current setting', work_state: 'Native state' }, role)}: ${field.value}${role === 'current_limit' ? ' A' : ''} · ${updated} · Received ${evidenceTime(field.receivedAt, timezone)}`);
+        }
       }
       if (proof.intent) details.push(`Recorded choice: ${proof.intent.pause ? 'Pause' : proof.intent.chargeNow ? 'Charge now' : proof.intent.automatic ? 'Automatic' : 'Automatic off'}`);
       if (proof.continuityRetained) details.push('Saved session retained across the reboot gap under the approved continuity policy.');

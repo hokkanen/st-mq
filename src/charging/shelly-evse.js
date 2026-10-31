@@ -8,7 +8,8 @@ import { validShellyDeviceHold, shellyDevicePermission, validShellyCompatibility
   compatibilityPermission, compatibilityStart, compatibilityRecovery, compatibilityEvent, compatibilityDebit,
   compatibilityAcknowledgedStart, validShellyBootState, validShellyBootSample, validShellyBootEpoch, shellyBootInterval,
   classifyShellyBoot, shellyRebootBaseline, shellyRebootSettings, SHELLY_REBOOT_ROLES,
-  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline } from './shelly-compatibility.js';
+  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline,
+  isShellyUntimedPermission, validShellyUntimedPermission, isShellyUntimedRebootBaseline } from './shelly-compatibility.js';
 import { chargingDeviceInfo } from './device-info.js';
 import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
@@ -61,6 +62,9 @@ export function validateShellyAcquisitionState(state, association = state?.assoc
     || !validShellyBootState(state.boot)
     || Object.values(state.fields ?? {}).some(field => field.bootEpoch !== undefined && (!state.boot || !validShellyBootEpoch(field.bootEpoch))
       || field.rebootBaseline !== undefined && field.rebootBaseline !== field.bootEpoch)
+    || Object.entries(state.fields ?? {}).some(([role, field]) => (field.measuredAt === null || field.nativeUpdatedAt !== undefined)
+      && (role !== 'start_charging' || !state.boot || !validShellyUntimedPermission(field)
+        || field.bootEpoch === state.boot.epoch && !isShellyUntimedRebootBaseline(field, { reboot: state.boot })))
     || state.counter?.bootEpoch !== undefined && (!state.boot || !validShellyBootEpoch(state.counter.bootEpoch))
     || ['checkSession', 'sessionCheck'].some(key => Object.hasOwn(state, key))
     || state.counter && Object.hasOwn(state.counter, 'powerW')
@@ -431,14 +435,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return false;
     }
     const measuredAt = finite(result.last_update_ts) && result.last_update_ts > 0 ? Math.round(result.last_update_ts * 1000) : null;
+    const untimed = role === 'start_charging' && result.value === false && result.source === '' && result.last_update_ts === 0;
     const previous = state.fields[role], delta = notificationPending.get(role);
     if (readback && readback.bootEpoch !== state.boot?.epoch
       && !(readback.bootEpoch === undefined && state.boot?.incident === null)) return false;
     if (readback && rebootRound && SHELLY_REBOOT_ROLES.includes(role)) {
       if (readback.generation === generation && readback.revision === (fieldRevisions.get(role) ?? 0))
         rebootRound.fields[role] = { value: copy(result.value), measuredAt, receivedAt, retained,
+          ...(untimed ? { nativeUpdatedAt: 0 } : {}),
           source: 'shelly-evse', commandSource: typeof result.source === 'string' ? result.source : null,
-          ...(admittedAt === undefined ? {} : { admittedAt }), readback: copy(readback) };
+          ...(admittedAt === undefined || untimed ? {} : { admittedAt }),
+          readback: { ...copy(readback), ...(untimed && admittedAt !== undefined ? { admittedAt } : {}) } };
       return false;
     }
     if (readback && delta && readback.requestedAt >= delta.receivedAt
@@ -459,6 +466,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (readback && (readback.generation !== generation
       || readback.revision !== (fieldRevisions.get(role) ?? 0) && !matchingPhysicalReadback)) return false;
     const setting = ['start_charging', 'current_limit', 'work_state'].includes(role);
+    if (untimed && readback && !delta && previous?.invalidatedAt === undefined
+      && isShellyUntimedRebootBaseline(previous, { reboot: state.boot })) {
+      // Refresh only a previously reconciled current-boot off baseline. No
+      // source clock or command acknowledgement is created by this receipt.
+      const before = copy(state);
+      previous.receivedAt = receivedAt; previous.retained = false;
+      previous.readback = { requestedAt: readback.requestedAt, measuredAt: null, receivedAt,
+        ...(admittedAt === undefined ? {} : { admittedAt }) };
+      try { persist(); } catch (cause) { state = before; throw cause; }
+      fieldGenerations.set(role, generation); readAt = receivedAt; return false;
+    }
     if (measuredAt === null || !validateAdmittedSourceTime({ sourceTime: measuredAt, receivedAt, admittedAt, now: clock() })) {
       if (readback) throw fail('evse-read-unavailable');
       return false;
@@ -1003,8 +1021,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!physicalReady()) decision = { ...decision, allowed: false, reason: 'readback-required' };
       if (Object.values(round.fields).some(field => field.receivedAt > clock()
         || clock() - field.receivedAt > config.maxAgeMs
-        || !validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt,
-          admittedAt: field.admittedAt, now: clock() }))) decision = { allowed: false, reason: 'readback-required' };
+        || (isShellyUntimedPermission(field)
+          ? field.readback.admittedAt !== undefined && field.readback.admittedAt > clock()
+          : !validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt,
+            admittedAt: field.admittedAt, now: clock() })))) decision = { allowed: false, reason: 'readback-required' };
       const confirmed = decision.allowed && firstRebootRound?.identity === identity
         && round.requestedAt - firstRebootRound.requestedAt >= 5000;
       if (decision.workaround && !incident.issueObserved) {
@@ -1032,9 +1052,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       for (const role of SHELLY_REBOOT_ROLES) {
         const field = round.fields[role];
         state.fields[role] = { ...field, bootEpoch: epoch,
-          ...(field.commandSource === 'sys' && field.measuredAt <= bootAt ? { rebootBaseline: epoch } : {}),
+          ...(isShellyUntimedPermission(field) || field.commandSource === 'sys' && field.measuredAt <= bootAt ? { rebootBaseline: epoch } : {}),
           readback: { requestedAt: field.readback.requestedAt, measuredAt: field.measuredAt,
-            receivedAt: field.receivedAt, ...(field.admittedAt === undefined ? {} : { admittedAt: field.admittedAt }) } };
+            receivedAt: field.receivedAt, ...((field.admittedAt ?? field.readback.admittedAt) === undefined ? {}
+              : { admittedAt: field.admittedAt ?? field.readback.admittedAt }) } };
         fieldGenerations.set(role, generation);
         notificationBaselines.set(role, { value: copy(field.value), commandSource: field.commandSource, measuredAt: field.measuredAt });
       }
@@ -1206,8 +1227,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }, 5000); timer.unref?.();
   const settingFresh = (role, now = clock()) => {
     const field = state.fields[role];
-    return field && fieldGenerations.get(role) === generation && !field.retained && field.invalidatedAt === undefined && field.measuredAt > 0
-      && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt, now })
+    return field && fieldGenerations.get(role) === generation && !field.retained && field.invalidatedAt === undefined
+      && (isShellyUntimedRebootBaseline(field, { reboot: state.boot }) && field.receivedAt <= now
+          && (field.readback.admittedAt === undefined || field.readback.admittedAt <= now)
+        || field.measuredAt > 0 && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt, now }))
       && now - field.receivedAt <= config.maxAgeMs;
   };
   const knownWorkState = (now = clock()) => discovered && profileSupported && settingFresh('work_state', now)
@@ -1491,7 +1514,9 @@ export function validateShellyOwnershipState(initialState, association = initial
     || initialState.automaticPermission != null && (typeof initialState.automaticPermission !== 'object'
       || Array.isArray(initialState.automaticPermission) || Object.keys(initialState.automaticPermission).length !== 2
       || Object.keys(initialState.automaticPermission).some(key => !['value', 'measuredAt'].includes(key))
-      || typeof initialState.automaticPermission.value !== 'boolean' || !time(initialState.automaticPermission.measuredAt))
+      || typeof initialState.automaticPermission.value !== 'boolean' || !time(initialState.automaticPermission.measuredAt)
+        && !(initialState.automaticPermission.value === false && initialState.automaticPermission.measuredAt === null
+          && validShellyBootEpoch(initialState.bootEpoch)))
     || initialState.chargeNowFailure != null && (typeof initialState.chargeNowFailure !== 'object'
       || Object.keys(initialState.chargeNowFailure).sort().join(',') !== 'reason,requestedAt'
       || initialState.chargeNowFailure.requestedAt !== null && !time(initialState.chargeNowFailure.requestedAt)
@@ -1689,7 +1714,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
     return external;
   }
   const sameSetting = (left, right) => left?.value === right?.value && left?.measuredAt === right?.measuredAt;
-  const fresh = field => field?.invalidatedAt === undefined && field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
+  const fresh = field => field?.invalidatedAt === undefined
+    && (field?.measuredAt > 0 && field.measuredAt <= clock() || isShellyUntimedRebootBaseline(field, adapter.snapshot())
+      && (field.readback.admittedAt === undefined || field.readback.admittedAt <= clock())) && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
   // The accepted owner may finish a finite period while a replacement proposal
@@ -2400,7 +2427,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         }
         if (state.lastStart === undefined && start.value === false) {
           if (sameSetting(state.automaticPermission, start)) state.ownedPause = true;
-          else if (start.commandSource !== 'sys') state.manual ??= { kind: 'stop', detectedAt: start.measuredAt };
+          else if (start.commandSource !== 'sys' && !isShellyRebootBaseline(start, snapshot)) state.manual ??= { kind: 'stop', detectedAt: start.measuredAt };
         }
         // A system refresh of the same permission is not an external command.
         // Unknown provenance remains conservative; it never identifies an actor.

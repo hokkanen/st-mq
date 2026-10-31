@@ -62,7 +62,7 @@ test('reboot incidents retain separate boot, reconciliation and control outcomes
     connectedAt: now, code, incidentId, policy: 'reboot-state', firmware: 'synthetic-fw', model: 'synthetic-model', reboot: detail });
   const events = [make(1, 'shelly-reboot-observed', { samples: [{ uptime: 2, unixtime: (now + 1000) / 1000,
     requestedAt: now + 1000, receivedAt: now + 1100 }], intent: { automatic: true, chargeNow: false, pause: false } }),
-  make(2, 'shelly-reboot-reconciliation', { continuityRetained: true }), make(3, 'shelly-reboot-baseline')];
+  make(2, 'shelly-reboot-reconciliation', { continuityRetained: true, after: { start_charging: { value: false, measuredAt: null, nativeUpdatedAt: 0, receivedAt: now + 2000, commandSource: null }, current_limit: null, work_state: null } }), make(3, 'shelly-reboot-baseline')];
   view.control.snapshot.reboot = { events };
   let report = observe(refresh(view, now + 4000), now + 4000);
   assert.equal(report.findings.find(row => row.code === 'reboot-state-reconciliation').resolvedAt, null,
@@ -76,6 +76,8 @@ test('reboot incidents retain separate boot, reconciliation and control outcomes
   let rows = restarted.reportEvents({ chargerId: 'charger2', reportId: clean.id, limit: 100 }).events;
   assert.equal(rows.filter(row => row.code === 'shelly-reboot-observed').length, 1);
   assert.equal(rows.filter(row => row.code === 'shelly-reboot-reconciliation').length, 1);
+  assert.equal(rows.find(row => row.code === 'shelly-reboot-reconciliation').reboot.after.start_charging.measuredAt, null);
+  assert.equal(rows.find(row => row.code === 'shelly-reboot-reconciliation').reboot.after.start_charging.nativeUpdatedAt, 0);
   assert.equal(rows.find(row => row.code === 'shelly-reboot-restored').reboot.outcome, 'waiting');
   assert.equal(rows.find(row => row.code === 'shelly-reboot-observed').incidentId, incident);
   assert.equal(Object.hasOwn(restarted.getReport({ chargerId: 'charger2', reportId: clean.id }), 'rebootCursor'), false);

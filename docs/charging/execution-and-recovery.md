@@ -472,6 +472,18 @@ current command. Unknown origins, unresolved ordering, faults, permissions and
 native schedules keep their ordinary authority. Publication is atomic; failed
 persistence retains the previous committed evidence.
 
+The same confirmed-boot, two-round policy also accepts the observed uninitialized
+Boolean off default: `value=false`, empty source and `last_update_ts=0`. It records
+`measuredAt=null` and the original `nativeUpdatedAt=0`, plus the correlated
+request/receipt times and boot epoch. This confirms current off permission only;
+it supplies no native update time, actor, command acknowledgement or physical
+outcome. Ordinary polling may refresh that exact verified baseline, including
+after process restart. A true value, another source, missing/malformed clock,
+new independent event or another boot cannot borrow this exception. Pending
+commands and restoration duties retain their existing confirmation requirements.
+Reports count this under reboot-state reconciliation and display the unreported
+update time explicitly, rather than a 1970 or fabricated current timestamp.
+
 The normal serialized controller then re-evaluates current intent and allocation:
 Automatic may charge or wait, Pause remains a hold, Charge now retains its request,
 and Automatic OFF grants no new Start. Native current choices remain bounded by

@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chargingConfiguration } from '../src/charging/config.js';
-import { createShellyEvseAdapter, createShellyController, shellyAssociation, validateShellyAcquisitionState } from '../src/charging/shelly-evse.js';
+import { createShellyEvseAdapter, createShellyController, shellyAssociation, validateShellyAcquisitionState, validateShellyOwnershipState } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { matchTeslaSession } from '../src/charging/vehicle.js';
@@ -134,6 +134,145 @@ async function rebootFixture(t, { autoCharge = false, limiterEnabled = false } =
   for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
   return { f, session };
 }
+for (const mode of ['waiting', 'Pause', 'Automatic', 'Charge now', 'OFF'])
+test(`zero-timestamp reboot permission recovers ${mode} without fabricating a native clock`, async t => {
+  const { f, session } = await rebootFixture(t);
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  let saved;
+  let c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW }, saveState: value => { saved = structuredClone(value); }, clock: f.now, canControl: () => true });
+  t.after(() => c.close());
+  const charging = mode === 'Automatic' || mode === 'Charge now';
+  const input = { enabled: !['OFF', 'Charge now'].includes(mode), plan: { id: 'zero-clock-recovery', deadlineAt: NOW + 120000,
+    periods: [{ startAt: charging ? NOW : NOW + 60000, endAt: null }] },
+    ...(mode === 'Pause' ? { sessionPause: { connectedAt: session.connectedAt, requestedAt: NOW + 1 } } : {}),
+    ...(mode === 'Charge now' ? { chargeNow: { connectedAt: session.connectedAt, requestedAt: NOW + 1 } } : {}) };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(f.adapter.snapshot().reboot.incident.phase, 'ready');
+  assert.equal(f.adapter.snapshot().controlReady, true); assert.equal(result.manual, null); assert.equal(result.pending, null);
+  assert.deepEqual(f.adapter.snapshot().session, session);
+  assert.equal(f.fields.start_charging, charging);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, charging ? 1 : 0);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === false).length, 0);
+  if (mode === 'Pause') assert.equal(result.sessionPause.confirmed, true);
+  const issue = f.adapter.snapshot().reboot.events.find(row => row.code === 'shelly-reboot-reconciliation');
+  assert.equal(issue.reboot.after.start_charging.measuredAt, null);
+  assert.equal(issue.reboot.after.start_charging.nativeUpdatedAt, 0);
+  if (!charging) {
+    assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, null);
+    f.setNow(NOW + 25000); await c.update(input);
+    assert.equal(f.adapter.snapshot().controlReady, true, 'ordinary readback keeps the same verified unknown clock');
+    validateShellyAcquisitionState(f.values.get(`charging:shelly:${f.adapter.association}`), f.adapter.association);
+    validateShellyOwnershipState(saved, f.adapter.association);
+    await c.close(); f.restartAdapter(); f.setNow(NOW + 26000); await f.ready();
+    c = createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now, canControl: () => true });
+    await c.update(input); assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, null);
+    if (mode === 'waiting') {
+      f.setNow(NOW + 60000); await c.update(input);
+      assert.equal(f.fields.start_charging, true, 'the retained price plan can start at its original period boundary');
+      assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
+    }
+  }
+});
+for (const invalid of ['true', 'RPC source', 'missing source', 'negative clock'])
+test(`zero-timestamp recovery rejects unsupported initialization: ${invalid}`, async t => {
+  const { f } = await rebootFixture(t);
+  f.sources.set('start_charging', invalid === 'RPC source' ? 'rpc' : '');
+  if (invalid === 'missing source') f.sources.delete('start_charging');
+  f.fields.start_charging = invalid === 'true';
+  f.setSourceTime('start_charging', invalid === 'negative clock' ? -1000 : 0);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.notEqual(f.adapter.snapshot().reboot.incident.phase, 'ready');
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+test('a zero timestamp outside confirmed reboot recovery does not acquire readiness', async t => {
+  const f = fixture(t); f.fields.start_charging = false; f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  await f.ready(); assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+test('zero-timestamp recovery preserves a positively observed later native Stop', async t => {
+  const { f, session } = await rebootFixture(t);
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'released', manual: null, ownedPause: false, pending: null,
+    lastStart: true, lastStartAt: NOW }, clock: f.now, canControl: () => true });
+  t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 17000); f.delta('start_charging', { value: false, source: 'rpc' });
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  for (const at of [20000, 25000, 30000]) { f.setNow(NOW + at); await c.update(input); }
+  assert.equal(f.adapter.snapshot().controlReady, false, 'contradictory untimed readback cannot clear the independent event');
+  assert.ok(f.adapter.snapshot().permissionEvents.some(row => row.commandSource === 'rpc' && row.value === false));
+  f.sources.set('start_charging', 'rpc'); f.setSourceTime('start_charging', NOW + 17000);
+  f.setNow(NOW + 35000); await c.update(input);
+  assert.equal(c.status().manual?.kind, 'stop');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 0);
+});
+test('untimed reboot baseline rolls back failed publication and survives another real reboot', async t => {
+  const { f, session } = await rebootFixture(t);
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  const before = structuredClone(f.adapter.snapshot().fields.start_charging);
+  f.setFailWhen(state => state.fields.start_charging?.nativeUpdatedAt === 0);
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  assert.deepEqual(f.adapter.snapshot().fields.start_charging, before);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.setFailWhen(null); f.setNow(NOW + 25000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  const epoch = f.adapter.snapshot().reboot.epoch;
+  f.setBootAt(NOW + 30000); f.setNow(NOW + 35000); await f.adapter.refresh();
+  f.setNow(NOW + 40000); await f.adapter.refresh(); f.setNow(NOW + 45000); await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.notEqual(f.adapter.snapshot().reboot.epoch, epoch);
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, null);
+  assert.deepEqual(f.adapter.snapshot().session, session);
+  const state = f.values.get(`charging:shelly:${f.adapter.association}`);
+  validateShellyAcquisitionState(state, f.adapter.association);
+  for (const change of [row => { row.fields.start_charging.nativeUpdatedAt = 1; },
+    row => { delete row.fields.start_charging.bootEpoch; }, row => { row.fields.start_charging.value = true; },
+    row => { row.fields.start_charging.readback.extra = true; },
+    row => { row.boot.incident = null; },
+    row => { row.fields.start_charging.readback.requestedAt = NOW; },
+    row => { row.fields.current_limit = structuredClone(row.fields.start_charging); }]) {
+    const invalid = structuredClone(state); change(invalid);
+    assert.throws(() => validateShellyAcquisitionState(invalid, f.adapter.association), /unsupported-shelly-state/);
+  }
+});
+test('untimed reboot baseline cannot confirm an acknowledged earlier-boot command', async t => {
+  const { f, session } = await rebootFixture(t);
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  const pending = { association: f.adapter.association, sessionId: session.sessionId, role: 'start_charging', value: false,
+    stage: 'accepted', dispatchedAt: NOW, acceptedAt: NOW + 1, expiresAt: NOW + 10000, revision: 1, reason: 'economic-window' };
+  const c = createShellyController({ adapter: f.adapter, initialState: { version: 1, association: f.adapter.association,
+    sessionId: session.sessionId, phase: 'uncertain', manual: null, ownedPause: false, pending },
+    clock: f.now, canControl: () => true }); t.after(() => c.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } };
+  await c.update(input); f.setNow(NOW + 15000); await c.update(input);
+  f.setNow(NOW + 20000); const result = await c.update(input);
+  assert.equal(result.phase, 'uncertain'); assert.deepEqual(result.pending, pending);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+test('untimed permission retains packet admission time separately from its unknown native clock', async t => {
+  const { f } = await rebootFixture(t);
+  f.sources.set('start_charging', ''); f.setSourceTime('start_charging', 0);
+  await f.adapter.refresh(); f.setNow(NOW + 15000); await f.adapter.refresh();
+  f.setNow(NOW + 20000); await f.adapter.refresh();
+  f.setNow(NOW + 25000); f.fields.current_limit = 10; f.setSourceTime('current_limit', NOW + 25400);
+  const reading = f.adapter.refresh(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.setNow(NOW + 25401); await new Promise(resolve => setTimeout(resolve, 450)); await reading;
+  const field = f.adapter.snapshot().fields.start_charging;
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(field.measuredAt, null); assert.equal(field.admittedAt, undefined);
+  assert.equal(field.readback.receivedAt, NOW + 25000); assert.equal(field.readback.admittedAt, NOW + 25401);
+  validateShellyAcquisitionState(f.values.get(`charging:shelly:${f.adapter.association}`), f.adapter.association);
+});
 test('durable uptime anchor follows meaningful acquisition writes without heartbeat writes', async t => {
   const f = fixture(t); f.setBootAt(NOW - 100000);
   for (const role of ['work_state', 'phase_info']) f.setSourceTime(role, NOW);

@@ -2,7 +2,8 @@ const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 export { validShellyBootState, validShellyRebootEvent, validShellyBootSample, validShellyBootEpoch, shellyBootInterval,
   classifyShellyBoot, shellyRebootBaseline, shellyRebootSettings, SHELLY_REBOOT_ROLES,
-  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline } from './shelly-reboot.js';
+  SHELLY_REBOOT_OUTCOMES, validShellyRebootIntent, isShellyRebootBaseline,
+  isShellyUntimedPermission, validShellyUntimedPermission, isShellyUntimedRebootBaseline } from './shelly-reboot.js';
 import { isShellyRebootBaseline } from './shelly-reboot.js';
 
 export function validShellyDeviceHold(value) {

@@ -17,7 +17,8 @@ owner approved the bounded [system-permission policy and native-Stop ambiguity](
   requests have independent budgets. See the [execution contract](execution-and-recovery.md#startup-retry-recovery).
 - **Reboot-state reconciliation:** the pure helpers in `src/charging/shelly-reboot.js`
   classify bounded uptime evidence and decide whether correlated SYS startup
-  readings may establish a baseline despite backward native update clocks. The
+  readings may establish a baseline despite backward native update clocks, or
+  confirm the observed untimed Boolean off default after a proved reboot. The
   adapter owns acquisition, boot epochs and atomic publication; the existing
   controller retains desired intent and all physical duties. See
   [charger reboots](execution-and-recovery.md#shelly-charger-reboots).
