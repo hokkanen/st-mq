@@ -6,6 +6,9 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Session-owned RPC diagnostics show their retained report's data context,
+  including an explicit Simulation label for simulated transport evidence.
+
 - Malformed Shelly RPC outcomes cannot acknowledge commands, cancel reply
   deadlines or consume late-reply diagnostics.
 

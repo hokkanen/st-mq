@@ -20,7 +20,9 @@ selection does not change filters or clear fetched history.
 
 The Charging area includes Charger 2 RPC reply timeouts and late replies, with
 operation, timing and original session context. An existing original session
-report owns these entries; otherwise they are operational events. A late reply
+report owns these entries; otherwise they are operational events. Report-owned
+entries inherit their data context from the retained report namespace. Simulation
+is explicitly labelled in both the summary and details. A late reply
 records transport evidence only and does not clear an uncertain command or prove
 physical charging. See [Shelly reply diagnostics](charging/execution-and-recovery.md#shelly-rpc-reply-diagnostics).
 

@@ -214,7 +214,10 @@ function importantCharging(p) {
 export function presentCharging(row, p) {
   const rpc = p.kind === 'evidence' && chargingRpcDiagnostic(p.code, p.rpc);
   if (rpc) {
-    const out = presentGeneral(p.code, p.rpc);
+    const input = row.namespace === 'charging:mqtt:session-diagnostics' ? 'mqtt'
+      : row.namespace === 'charging:providers:session-diagnostics' ? 'providers'
+        : row.namespace === 'charging:simulated:session-diagnostics' ? 'simulated' : null;
+    const out = presentGeneral(p.code, { ...p.rpc, input });
     if (row.namespace === 'charging:simulated:session-diagnostics') {
       out.summary = 'This transport diagnostic was produced by the simulation. It is not physical device evidence.';
       out.evidence = 'Simulation';

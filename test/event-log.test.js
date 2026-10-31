@@ -48,6 +48,18 @@ test('Home failure history distinguishes floor activation expiry from changed fe
   assert.doesNotMatch(JSON.stringify(rows), /fixture-private/);
 });
 
+test('report-owned RPC diagnostics take their data context from the retained report namespace', () => {
+  const rpc = { input: 'mqtt', method: 'Sys.GetStatus', role: null, requestedAt: NOW - 1000, at: NOW,
+    timedOutAt: NOW, replyBudgetMs: 1000, elapsedMs: 1000 };
+  for (const [namespace, expected] of [['charging:mqtt:session-diagnostics', 'Physical-source input'],
+    ['charging:providers:session-diagnostics', 'Physical-source input'], ['charging:simulated:session-diagnostics', 'Simulation'],
+    ['charging:unrecognized:session-diagnostics', 'Not recorded for this event']]) {
+    const shown = presentCharging({ charger_id: 'charger2', report_id: 'a'.repeat(64), namespace },
+      { kind: 'evidence', code: 'shelly-rpc-timeout', rpc });
+    assert.equal(shown.details.find(row => row.label === 'Data context')?.value, expected);
+  }
+});
+
 test('RPC timeout and late reply evidence is readable and private in report and operational event paths', t => {
   const { store, read } = fixture(t), reportId = 'a'.repeat(64);
   const rpc = { input: 'mqtt', reportId, method: 'Boolean.Set', role: 'start_charging', replyBudgetMs: 5000,
