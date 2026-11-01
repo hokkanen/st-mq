@@ -6,6 +6,9 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Automatic heating updates wait for an executor-owned expiry or restoration
+  without recording a command failure or cancelling the current learning cycle.
+
 - Charger 2 limiting reasons distinguish electrical headroom from a tighter
   shared allocation after current-step rounding, with the same treatment for
   native and vehicle limits.

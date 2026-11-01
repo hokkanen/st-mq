@@ -57,6 +57,12 @@ restoration triggers the controller fallback and remains unresolved until fresh
 readback confirms it. A report distinguishes device-local expiry, controller fallback
 and missing evidence; software cannot prove restoration through a broken link.
 
+An automatic controller update waits while an expiry or restoration operation
+already owns the heating executor. This does not record a command failure or
+cancel a running learning cycle. The next update evaluates current conditions
+and owner choices; it does not replay a deferred command. Explicit manual
+requests still require the current heating operation to finish first.
+
 Action receipts, including Garage and equipment controls, remain visible for
 24 hours unless replaced by a newer action on the same control. Device feedback
 updates pending messages; completed receipts describe past actions, not active

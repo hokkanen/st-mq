@@ -1844,7 +1844,11 @@ export class Engine {
       return execution;
     };
     const alreadyPending = this.dispatchPending;
-    const dispatch = () => alreadyPending || this.automationChangePending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
+    // Expiry/restoration can own the executor independently of dispatchPending.
+    // Check its current lane at dispatch time, including after commit admission.
+    const dispatch = () => alreadyPending || this.automationChangePending || this.executor.status().busy
+      ? { status:'pending', sent:false, actual:null }
+      : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
       ? { status:'manual-test-in-progress', sent:false, actual:null }
       : (ownsTemporarySettings || ownsPausedSettings) && !holdManualSettings
         ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })

@@ -69,6 +69,41 @@ test('controller execution errors retain safe dispatch codes without exposing ra
   }
 });
 
+test('controller waits for an executor-owned restoration without cancelling the active cycle', async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const cycleId = r.engine.cycles.active().id;
+  const publish = r.transport.publish;
+  let acknowledgeRestoration;
+  r.transport.publish = commands => {
+    r.commands.push([...commands]);
+    return new Promise(resolve => { acknowledgeRestoration = () => resolve({ status: 'mqtt', sent: true, actual: null }); });
+  };
+  const restoring = r.engine.executor.restore({ now: r.now, reason: 'expiry' });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(r.engine.executor.status().busy, true);
+    assert.equal(r.engine.dispatchPending, null, 'The executor expiry lane is independent of controller dispatch');
+    assert.deepEqual(r.commands, [['reduction'], ['normal']]);
+    r.advance(1000);
+    await r.store.runWrite(() => r.engine.tick()); await r.settle();
+    assert.equal(r.engine.status().execution.status, 'pending');
+    assert.equal(r.engine.cycles.active()?.id, cycleId);
+    assert.equal(r.store.events().some(row => row.type === 'control-execution-failed'), false);
+    assert.deepEqual(r.commands, [['reduction'], ['normal']], 'No duplicate or competing command is dispatched');
+  } finally {
+    r.transport.publish = publish;
+    acknowledgeRestoration?.(); await restoring;
+  }
+  // A later tick must evaluate the current owner choice, rather than replaying
+  // the reduction that could not enter the executor while restoration ran.
+  r.engine.setTemporary({ pauseUntil: new Date(r.now + 15 * 60_000).toISOString() });
+  await r.settle();
+  r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'normal');
+  assert.equal(r.engine.executor.status().legacyOutstanding, false);
+  assert.equal(r.commands.filter(commands => commands.includes('reduction')).length, 1);
+});
+
 test('a background heating search is adopted only by a later current controller update', async t => {
   const r = setup(t), plan = r.plan();
   r.engine.pendingPlan = null;
