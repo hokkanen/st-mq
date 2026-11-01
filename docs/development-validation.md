@@ -1149,6 +1149,14 @@ the selected committed source on the target architecture, excluding ignored and
 untracked installation files from the build context, then run without household
 mounts:
 
+On a shared household host, keep active control on another authorized node
+throughout the storage-intensive suites. For a pair, use the normal verified
+backup and explicitly confirmed handover before starting, then restore the
+intended roles afterward. CPU and memory limits and disabled container networking
+do not isolate SD-card I/O. Monitor production recording and control latency;
+stop the disposable fixture if it causes contention, retain its incomplete
+receipts and run a fresh complete suite after isolating the load.
+
 ```sh
 git archive HEAD | docker build -f test/Dockerfile.qualification -t stmq:qualification -
 docker run --detach --name stmq-qualification --network none --cpus 2 --memory 2g stmq:qualification
