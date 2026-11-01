@@ -133,8 +133,9 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   function setupRecovery() {
     const current = pairConfiguration();
     const blocked = ['https_directory_unsafe', 'helper_storage_outside_checkout_required', 'https_lock_unavailable',
-      'https_manager_already_running', 'helper_socket_unsafe', 'helper_socket_directory_unsafe', 'helper_directory_unsafe',
-      'https_setup_replacement_unsafe'].includes(lastError);
+      'https_manager_already_running', 'helper_socket_unsafe', 'helper_socket_directory_unsafe', 'helper_directory_unsafe'].includes(lastError);
+    // A failed replacement inventory must remain reviewable from the UI.
+    // Replacement repeats the full storage preflight before moving any file.
     const saved = invalid || state.enabled || state.runtime || state.certificate || state.ownerId || state.hostname || replacementPending;
     const kind = invalid ? 'saved-state-unusable' : lastError === 'https_pair_identity_changed' ? 'pair-changed'
       : state.ownerId ? 'paired-setup' : saved ? 'saved-setup' : 'fresh';

@@ -43,9 +43,10 @@ async function fingerprint(path, uid, dev) {
   const first = await exists(path);
   if (!first) return null;
   const hash = createHash('sha256'); let count = 0;
+  const owners = new Set((Array.isArray(uid) ? uid : [uid]).map(String));
   async function visit(current, name, info) {
     if (++count > 4096) throw httpsError('https_setup_replacement_too_large');
-    if (info.isSymbolicLink() || !info.isDirectory() && !info.isFile() || info.uid !== BigInt(uid) || String(info.dev) !== dev) throw httpsError('https_setup_replacement_unsafe');
+    if (info.isSymbolicLink() || !info.isDirectory() && !info.isFile() || !owners.has(String(info.uid)) || String(info.dev) !== dev) throw httpsError('https_setup_replacement_unsafe');
     hash.update(JSON.stringify([name, String(info.dev), String(info.ino), String(info.uid), String(info.gid), String(info.mode), String(info.size), String(info.mtimeNs)]));
     if (info.isDirectory()) for (const child of (await readdir(current)).sort()) {
       const childPath = resolve(current, child), childInfo = await exists(childPath);
@@ -57,10 +58,16 @@ async function fingerprint(path, uid, dev) {
   return hash.digest('hex');
 }
 function source(ctx, name) { return name === 'helper-identity' ? ctx.identityDirectory : resolve(ctx.directory, name); }
+// Stopped helper snapshots can contain both manager-created directories and
+// helper-owned native files. They are inactive evidence, not runnable identities.
+function entryUid(ctx, name) {
+  return name === 'helper-identity' ? ctx.identityUid : name === 'snapshots'
+    ? [process.getuid(), ctx.identityUid] : process.getuid();
+}
 async function inventory(ctx) {
   const entries = [];
   for (const name of [...MANAGED, 'helper-identity']) {
-    const uid = name === 'helper-identity' ? ctx.identityUid : process.getuid();
+    const uid = entryUid(ctx, name);
     const signature = await fingerprint(source(ctx, name), uid, ctx.dev);
     if (signature) entries.push({ name, signature });
   }
@@ -156,7 +163,7 @@ async function continueReplacement(ctx, journal, checkpoint) {
     const pending = [];
     for (const entry of journal.entries) {
       const path = source(ctx, entry.name), destination = resolve(archive, entry.name);
-      const uid = entry.name === 'helper-identity' ? ctx.identityUid : process.getuid();
+      const uid = entryUid(ctx, entry.name);
       const current = await fingerprint(path, uid, ctx.dev), saved = await fingerprint(destination, uid, ctx.dev);
       if (current === entry.signature && saved === null) pending.push({ entry, path, destination, uid });
       else if (current !== null || saved !== entry.signature) throw changed();
@@ -177,7 +184,7 @@ async function continueReplacement(ctx, journal, checkpoint) {
   }
   if (journal.stage === 'publishing') {
     for (const entry of journal.entries) {
-      const uid = entry.name === 'helper-identity' ? ctx.identityUid : process.getuid();
+      const uid = entryUid(ctx, entry.name);
       if (await fingerprint(resolve(archive, entry.name), uid, ctx.dev) !== entry.signature) throw changed();
     }
     for (const name of [...MANAGED.filter(name => name !== 'state.json'), 'helper-identity']) if (await exists(source(ctx, name))) throw changed();

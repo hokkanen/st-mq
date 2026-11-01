@@ -239,6 +239,22 @@ test('fresh replacement preserves the saved installation then uses the ordinary 
   assert.equal(await readFile(resolve(directory, 'https/setup-archives', result.id, 'state.json'), 'utf8'), oldState);
 });
 
+test('a refused replacement remains reviewable in the UI after unsafe storage is corrected', async t => {
+  const context = await setup(t), { manager, directory } = context;
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  const link = resolve(directory, 'https/snapshots/unsafe-link');
+  await symlink(resolve(directory, 'unrelated-private-file'), link);
+  await assert.rejects(manager.action(freshRequest(manager)), { code: 'https_setup_replacement_unsafe' });
+  assert.ok(manager.status().recovery.fresh, 'The normal review action remains available');
+  assert.ok(secureWebAccessView(manager.status(), { admin: true }).fresh);
+  await assert.rejects(lstat(resolve(directory, 'https/setup-replacement.json')), { code: 'ENOENT' });
+  await rm(link);
+  const result = await manager.action(freshRequest(manager));
+  assert.equal(result.state, 'completed');
+  await manager.action({ action: 'enable' }); await settled(t, manager);
+  assert.equal(manager.status().phase, 'ready');
+});
+
 for (const damage of ['invalid-json', 'unsupported-state', 'missing-certificate']) test(`explicit replacement preserves ${damage} without decoding or converting it`, async t => {
   const context = await setup(t); await context.manager.action({ action: 'enable' }); await settled(t, context.manager);
   await context.manager.close();

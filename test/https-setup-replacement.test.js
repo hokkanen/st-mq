@@ -14,6 +14,31 @@ import { reviewSetupReplacement, startSetupReplacement, resumeSetupReplacement, 
 const freshState = { version: 1, enabled: false, machineName: 'fixture-fresh-machine' };
 const approvalToken = createHash('sha256').update('fixture-reviewed-semantic-state').digest('hex');
 const managed = ['state.json', 'runtime', 'certificates', 'snapshots', 'helper-process.json', 'manager.lock', 'manager.claim'];
+
+test('replacement preserves legitimate mixed helper ownership in inactive snapshots', async t => {
+  if (process.getuid() !== 0) return t.skip('Requires root to create the real helper ownership boundary');
+  const options = await fixture(t); options.identityUid = 65534;
+  await chown(options.identityDirectory, 65534, 65534);
+  await chown(resolve(options.identityDirectory, 'tailscaled.state'), 65534, 65534);
+  const native = resolve(options.directory, 'snapshots', 'native-state');
+  await writeFile(native, 'fixture-native-snapshot', { mode: 0o600 });
+  await chown(native, 65534, 65534);
+  const receipt = await accepted(options);
+  assert.equal(await readFile(resolve(options.directory, receipt.archive, 'snapshots/native-state'), 'utf8'), 'fixture-native-snapshot');
+  assert.equal((await lstat(resolve(options.directory, receipt.archive, 'snapshots/native-state'))).uid, 65534);
+});
+
+test('snapshot ownership allowance does not admit foreign users or helper-owned manager state', async t => {
+  if (process.getuid() !== 0) return t.skip('Requires root to create real foreign ownership');
+  const options = await fixture(t); options.identityUid = 65534;
+  const native = resolve(options.directory, 'snapshots', 'foreign-state');
+  await writeFile(native, 'fixture-foreign-snapshot', { mode: 0o600 });
+  await chown(native, 65533, 65533);
+  await assert.rejects(reviewSetupReplacement(options), { code: 'https_setup_replacement_unsafe' });
+  await chown(native, 0, 0);
+  await chown(resolve(options.directory, 'state.json'), 65534, 65534);
+  await assert.rejects(reviewSetupReplacement(options), { code: 'https_setup_replacement_unsafe' });
+});
 async function fixture(t, { sibling = false } = {}) {
   const parent = await mkdtemp(resolve(tmpdir(), 'stmq-https-setup-replacement-'));
   t.after(() => rm(parent, { recursive: true, force: true }));
