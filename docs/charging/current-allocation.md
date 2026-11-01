@@ -193,6 +193,14 @@ do not wait for the increase dwell; increases ramp by the configured step budget
 after dwell, and resumption also requires dwell and permission. Native lower
 current choices made during the connection retain their session precedence;
 start/stop, energy/time caps, faults and schedules retain their authority.
+
+The reported limiting reason changes only when a tighter ceiling lowers the
+supported current. For example, 9.8 A of fuse headroom and a shared allocation
+of 9 A retain the fuse reason; an allocation of 8 A adds a priority restriction.
+The same rule applies to native and vehicle ceilings, including zero below the
+minimum pilot. All ceilings still constrain the calculation before rounding;
+this reason selection does not relax a limit or revise recorded history.
+
 Enabled native charging schedules conservatively own start/stop until
 disabled/removed; the controller does not guess their cron window. Shelly
 maintenance and unrecognized jobs do not establish charging priority and remain

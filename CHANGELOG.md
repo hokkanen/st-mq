@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Charger 2 limiting reasons distinguish electrical headroom from a tighter
+  shared allocation after current-step rounding, with the same treatment for
+  native and vehicle limits.
+
 - Session-owned RPC diagnostics show their retained report's data context,
   including an explicit Simulation label for simulated transport evidence.
 

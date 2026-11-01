@@ -39,6 +39,50 @@ test('other shared priorities retain the forecast ceiling and peer reservation',
   assert.equal(shellyCurrentLimit(input()).priority, null, 'Missing control priority is never inferred from a current value');
 });
 
+test('rounding the same electrical ceiling does not invent a priority restriction', () => {
+  const args = { ...input(), property: { ...phases(34), currents: [40.2, 34, 34] }, priority: 'balanced' };
+  for (const shared of [{ allocationA: 9 }, { reservationA: .4 },
+    { allocateCurrent: () => ({ allocationA: 9, reservationA: 0 }) }]) {
+    const result = shellyCurrentLimit({ ...args, ...shared });
+    assert.equal(result.currentA, 9);
+    assert.equal(result.loadCurrentA, 9);
+    assert.equal(result.loadReason, 'fuse-limit');
+    assert.equal(result.reason, 'fuse-limit');
+  }
+  for (const shared of [{ allocationA: 8 }, { reservationA: 1.2 }]) {
+    const result = shellyCurrentLimit({ ...args, ...shared });
+    assert.equal(result.currentA, 8);
+    assert.equal(result.loadReason, 'priority-allocation');
+    assert.equal(result.reason, 'priority-allocation');
+  }
+});
+
+test('native and vehicle reasons change only when they lower the supported current', () => {
+  const args = { ...input(), property: { ...phases(34), currents: [40.2, 34, 34] } };
+  for (const restriction of [{ nativeCurrentA: 9.2 }, { vehicleCurrentA: 9.2 }]) {
+    const result = shellyCurrentLimit({ ...args, ...restriction });
+    assert.equal(result.currentA, 9);
+    assert.equal(result.reason, 'fuse-limit');
+  }
+  for (const [restriction, reason] of [[{ nativeCurrentA: 8.7 }, 'native-current-limit'],
+    [{ vehicleCurrentA: 8.7 }, 'vehicle-current-limit']]) {
+    const result = shellyCurrentLimit({ ...args, ...restriction });
+    assert.equal(result.currentA, 8);
+    assert.equal(result.reason, reason);
+    assert.equal(result.loadCurrentA, 9);
+    assert.equal(result.loadReason, 'fuse-limit');
+  }
+});
+
+test('minimum-pilot reasons preserve the binding electrical or shared ceiling', () => {
+  for (const [propertyA, allocationA, reason] of [[44.1, 0, 'fuse-limit'], [43.8, 5.9, 'priority-allocation']]) {
+    const result = shellyCurrentLimit({ ...input(), property: { ...phases(34), currents: [propertyA, 34, 34] }, allocationA });
+    assert.equal(result.currentA, 0);
+    assert.equal(result.pause, true);
+    assert.equal(result.reason, reason);
+  }
+});
+
 test('Shelly priority preserves native, vehicle, per-phase fuse and minimum-pilot restrictions', () => {
   const args = { ...input(), priority: 'charger2', allocationA: 0, reservationA: 16 };
   assert.equal(shellyCurrentLimit({ ...args, nativeCurrentA: 8 }).currentA, 8);

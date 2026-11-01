@@ -43,9 +43,18 @@ export function shellyCurrentLimit({ config, property, easee, shelly, now, prior
   if (headroom && priority !== 'charger2' && typeof allocateCurrent === 'function')
     ({ allocationA = null, reservationA = 0 } = allocateCurrent(headroom.map(value => Math.max(0, value))));
   const fallback = fallbackReason !== null;
+  const round = value => {
+    const stepped = Math.max(0, Math.floor((value + 1e-9) / config.currentStepA) * config.currentStepA);
+    return stepped < config.minimumCurrentA ? 0 : stepped;
+  };
   let loadCeiling = config.maximumCurrentA, loadReason = 'hardware-restriction';
   const restrictLoad = (value, reason) => {
-    if (value < loadCeiling) { loadCeiling = value; loadReason = reason; }
+    if (value < loadCeiling) {
+      // Shared allocation already uses supported current steps. Merely
+      // rounding the same fuse ceiling does not add a priority restriction.
+      if (round(value) < round(loadCeiling)) loadReason = reason;
+      loadCeiling = value;
+    }
   };
   if (headroom) {
     restrictLoad(Math.min(...headroom), 'fuse-limit');
@@ -58,12 +67,11 @@ export function shellyCurrentLimit({ config, property, easee, shelly, now, prior
   let ceiling = loadCeiling, reason = loadReason;
   for (const [value, restriction] of [[nativeCurrentA, 'native-current-limit'],
     [vehiclePilotLimit(vehicleCurrentA, config.minimumCurrentA), 'vehicle-current-limit']]) {
-    if (valid(value) && value < ceiling) { ceiling = value; reason = restriction; }
+    if (valid(value) && value < ceiling) {
+      if (round(value) < round(ceiling)) reason = restriction;
+      ceiling = value;
+    }
   }
-  const round = value => {
-    const stepped = Math.max(0, Math.floor((value + 1e-9) / config.currentStepA) * config.currentStepA);
-    return stepped < config.minimumCurrentA ? 0 : stepped;
-  };
   const currentA = round(ceiling);
   return { currentA, pause: currentA === 0,
     priority: ['balanced', 'charger1', 'charger2'].includes(priority) ? priority : null,
