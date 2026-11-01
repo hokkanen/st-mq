@@ -46,6 +46,61 @@ test('configured data overview has four consistent categories with both vehicle 
   assert.doesNotMatch(JSON.stringify(entries[0]), /BMW|CarData|TeslaMate/);
 });
 
+test('configured MQTT temperatures remain listed before reports and include missing members in their badge', () => {
+  const status = completeDashboard();
+  status.equipment = { devices: ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature'].map((signal, i) =>
+    ({ id: `fixture-room-${i}`, source: 'Invented sensor brand', protocol: 'mqtt', configuredSignals: [signal], readings: {} })) };
+  status.observations.indoor = { value: null, stale: true, source: 'indoor-average',
+    missingMembers: [{ signal: 'downstairs_temperature', reasons: ['missing-reading'] }] };
+  status.observations.upstairs = { value: null, stale: true };
+  const group = () => dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+  const before = structuredClone(status), initial = group();
+  assert.deepEqual(status, before, 'Projection cannot invent observations');
+  assert.equal(initial.source, 'MQTT, Shelly, FMI');
+  assert.equal(initial.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(initial.display.state, 'Needs attention');
+  status.observations.bedroom = temperature('mqtt-temperature');
+  const partial = group();
+  assert.equal(partial.source, initial.source);
+  assert.equal(partial.sourceStates.find(row => row.label === 'MQTT').tone, 'pending', 'One working sensor cannot hide a missing sensor');
+  assert.equal(partial.datasets.find(row => row.signals.includes('downstairs_temperature')).source, 'MQTT');
+  for (const key of ['upstairs', 'downstairs']) status.observations[key] = temperature('mqtt-temperature');
+  status.observations.indoor = temperature('indoor-average');
+  assert.equal(group().source, initial.source);
+  assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'available');
+  assert.equal(group().display.state, 'Available');
+});
+
+test('imported temperatures do not establish availability of their configured live source', () => {
+  const status = completeDashboard();
+  status.equipment = { devices: [{ id: 'fixture-room', source: 'MQTT', configuredSignals: ['indoor_temperature'] }] };
+  status.observations.upstairs = temperature('csv:stmq');
+  const group = dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+  const upstairs = group.datasets.find(row => row.signals.includes('indoor_temperature'));
+  assert.equal(upstairs.state, 'Waiting for live readings');
+  assert.match(upstairs.value, /^Last recorded /);
+  assert.equal(group.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(group.display.state, 'Needs attention');
+  status.observations.upstairs = temperature('husdata-h66');
+  const previousRoute = dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+  assert.equal(previousRoute.source, group.source, 'A reading from the previous route cannot hide the configured source');
+  assert.equal(previousRoute.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+});
+
+test('configured garage front source stays visible before reports and does not treat imports as live readings', () => {
+  const status = completeDashboard();
+  status.equipment = { devices: [{ id: 'fixture-front', protocol: 'mqtt', configuredSignals: ['garage_temperature_2'] }] };
+  const group = () => dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+  assert.equal(group().datasets.find(row => row.signals.includes('garage_temperature_2')).state, 'Waiting for readings');
+  assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  status.observations.garageFront = temperature('csv:stmq');
+  const imported = group().datasets.find(row => row.signals.includes('garage_temperature_2'));
+  assert.equal(imported.state, 'Waiting for live readings');
+  assert.match(imported.value, /^Last recorded /);
+  status.observations.garageFront = temperature('mqtt-temperature');
+  assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'available');
+});
+
 test('electricity sections keep property, local Charger 1 and MQTT Charger 2 readings complete and distinct', () => {
   const [group] = dashboardProviders(completeDashboard(), options);
   assert.deepEqual(group.sections.map(row => row.title), ['Easee cloud', 'Easee OCPP', 'Shelly EVSE']);

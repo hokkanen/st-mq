@@ -134,6 +134,7 @@ function equipmentSnapshot(config, read, snapshot) {
     }
     return { id: device.id, role: device.id, label: device.label, area: device.area, kind: device.kind,
       source: device.source, protocol: device.protocol, enabled: device.enabled, readings, available: false, connected: null,
+      configuredSignals: [...new Set([...mappings.map(row => row.signal), ...(device.ownedSignals ?? [])])],
       readOnly: true, recorded: true, snapshotAt, configurationSource: 'local-configuration',
       controls: { switch: false, tariff: false, dehumidifier: false, cover: { open: false, close: false, stop: false } },
       check: { checking: false, status: 'read-only-snapshot' },

@@ -77,8 +77,18 @@ try {
     const transport = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (...args) => {
       const response = await transport(...args);
-      if (!String(args[0]).includes('/api/status') || !globalThis.standbySmokeMode) return response;
+      if (!String(args[0]).includes('/api/status') || !globalThis.standbySmokeMode && !globalThis.temperatureSourceSmoke) return response;
       const status = await response.json();
+      if (globalThis.temperatureSourceSmoke) {
+        status.equipment.devices = ['indoor_temperature','downstairs_temperature','bedroom_temperature'].map((signal,i) =>
+          ({id:'fixture-room-'+i,source:'MQTT',connection:'mqtt:fixture/room-'+i,configuredSignals:[signal],readings:{}}));
+        const missing = {value:null,stale:true,source:null};
+        status.observations.upstairs = {...missing}; status.observations.downstairs = {...missing};
+        status.observations.bedroom = globalThis.temperatureSourceSmoke === 'partial'
+          ? {value:21,stale:false,source:'mqtt-temperature',observedAt:status.now} : {...missing};
+        status.observations.indoor = {...missing,source:'indoor-average',missingMembers:[{signal:'downstairs_temperature',reasons:['missing-reading']}]};
+        return new Response(JSON.stringify(status), {status:response.status,headers:response.headers});
+      }
       for (const [key, source, outcome] of [['outdoor','openmeteo','error'],['weather','openmeteo','partial'],['market','elering','error']]) {
         if (globalThis.standbySmokeMode === 'missing') delete status.providers[key].standby;
         else { status.providers[key].source = source; status.providers[key].standby.status = outcome; }
@@ -88,6 +98,17 @@ try {
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}` });
   for (let i = 0; i < 200 && !await evaluate("document.querySelectorAll('.provider-standby-list > li').length === 3"); i++) await pause(25);
   assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li').length"), 3);
+  await evaluate("globalThis.temperatureSourceSmoke='missing';globalThis.refreshStandbySmoke()");
+  for (let i=0;i<200&&!await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-name[aria-label=\"MQTT: Waiting for readings\"]') !== null");i++) await pause(25);
+  const temperatureSources = await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].map(x=>({label:x.textContent,state:x.dataset.state}))");
+  assert.equal(temperatureSources.find(x=>x.label==='MQTT')?.state,'pending');
+  for (const open of [false,true,false,true]) {
+    await evaluate(`document.getElementById('provider-main-temperatures-details').open=${open}`);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].map(x=>({label:x.textContent,state:x.dataset.state}))"),temperatureSources,'Opening a fold cannot change frozen source metadata');
+  }
+  await evaluate("globalThis.temperatureSourceSmoke='partial';globalThis.refreshStandbySmoke()"); await pause(100);
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].find(x=>x.textContent==='MQTT').dataset.state"),'pending');
+  await evaluate("globalThis.temperatureSourceSmoke=null;globalThis.refreshStandbySmoke()"); await pause(100);
   // Seeded backup diagnostics may render before the initial market acquisition.
   for (let i = 0; i < 200 && !await evaluate("document.querySelector('[data-provider=market] .provider-category-state')?.textContent === 'Available'"); i++) {
     await evaluate('globalThis.refreshStandbySmoke()'); await pause(25);

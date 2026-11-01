@@ -142,6 +142,10 @@ test('replica garage temperatures keep rear/front names and primary-first order 
     area: 'garage', kind: 'temperature', protocol: 'shelly', source: 'Shelly', enabled: true,
     temperatureSignal: 'garage_temperature', readings: [{ signal: 'garage_temperature_2', label: 'Garage front' }] }] } } };
   const device = replicaReadModel(snapshot, settings).equipment.devices[0];
+  assert.deepEqual(device.configuredSignals, ['garage_temperature', 'garage_temperature_2']);
+  const empty = replicaReadModel(fixture(t), settings).equipment.devices[0];
+  assert.deepEqual(empty.configuredSignals, device.configuredSignals);
+  assert.deepEqual(empty.readings, {});
   assert.deepEqual(Object.entries(device.readings).map(([signal, row]) => [signal, row.label, row.value]),
     [['garage_temperature', 'Garage rear', 12.1], ['garage_temperature_2', 'Garage front', 12.6]]);
   assert(Object.values(device.readings).every(row => row.recorded && !row.usableForControl));

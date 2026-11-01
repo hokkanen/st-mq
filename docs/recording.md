@@ -105,6 +105,12 @@ These read-only projections do not select providers, ingest standby results or
 renew cached evidence; slaves show recorded history rather than live recording
 health.
 
+**Main temperatures & Weather** lists configured temperature sources before
+their first measurement arrives. A source summary includes its waiting sensors,
+so one working sensor cannot hide another missing reading. Imported temperature
+values are labelled **Last recorded** while the configured live source is still
+waiting. Opening a source fold does not change its source membership.
+
 The shared provider HTTP transport keeps its original finite request deadline
 through response-body consumption. Caller cancellation, provider shutdown and
 that deadline also cancel an admitted body reader after headers arrive. A

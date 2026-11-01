@@ -174,32 +174,56 @@ function weatherForecastClocks(intervals, solar, options) {
   }).join('; ') || null;
 }
 
+function configuredTemperatureSource(status, signal) {
+  // Configured outdoor sensors are historical inputs; live outdoor supply is
+  // selected independently by the weather providers.
+  if (signal === 'outdoor_temperature') return null;
+  const device = status.equipment?.devices?.find(device => device.enabled !== false
+    && device.configuredSignals?.includes(signal));
+  if (device?.protocol === 'mqtt') return 'MQTT';
+  if (device?.protocol === 'shelly') return 'Shelly';
+  return device && Object.values(names).includes(device.source) ? device.source : null;
+}
+
+function configuredTemperatureRow(row, reading, configuredSource, actualSource) {
+  if (!configuredSource || !reading?.source || actualSource === configuredSource) return row;
+  const previous = reading.source === 'csv:stmq' ? 'imported history'
+    : actualSource ? `a previous ${actualSource} reading` : 'a previous reading';
+  return { ...row, state: 'Waiting for live readings', tone: 'pending',
+    statusDetail: `Only ${previous} is available; waiting for the configured ${configuredSource} sensor to report.`,
+    value: row.value === 'Unavailable' || row.value === 'Not configured' ? row.value : `Last recorded ${row.value}` };
+}
+
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
-  const indoorKeys = [Object.hasOwn(observations, 'upstairs') ? 'upstairs' : 'indoor',
-    ...['downstairs', 'bedroom'].filter(key => Object.hasOwn(observations, key))];
+  const indoorKeys = [Object.hasOwn(observations, 'upstairs') || configuredTemperatureSource(status, 'indoor_temperature') ? 'upstairs' : 'indoor',
+    ...['downstairs', 'bedroom'].filter(key => Object.hasOwn(observations, key)
+      || configuredTemperatureSource(status, `${key}_temperature`))];
   const rows = [...indoorKeys, 'garage', 'outdoor'].map(key => {
     const reading = observations[key], allowed = key === 'outdoor' ? outdoorSources : indoorSources;
     // The selected observation identifies the current weather source.
     const source = reading?.source ?? (key === 'outdoor' ? outdoorHealth?.source ?? outdoorHealth?.acquisition?.selected : null);
-    const label = allowed.includes(source) ? temperatureSourceLabel(source) : null;
+    const signal = key === 'upstairs' || key === 'indoor' ? 'indoor_temperature' : `${key}_temperature`;
+    const configuredSource = configuredTemperatureSource(status, signal);
+    const actualSource = allowed.includes(source) ? temperatureSourceLabel(source) : null;
+    const label = configuredSource ?? actualSource;
     const readingStatus = temperatureReadingStatus(reading, { ...options, outdoor: key === 'outdoor' });
     const detail = indoorKeys.includes(key) ? 'Individual indoor temperature, recorded separately and included in the home model average when configured and usable.'
       : key === 'garage' ? 'Rear pipe-location air measurement. Separate sender estimates determine pipe protection; a temperature alone does not establish protection readiness.'
         : 'Uses an FMI nearby station, with an Open-Meteo model estimate as backup.';
-    const signal = key === 'upstairs' ? 'indoor_temperature' : `${key}_temperature`;
     const row = withStatus(seriesRow([signal], SIGNAL_INFO[signal].label, '°C', `${detail} ${readingStatus.detail}`, label), {
       state: readingStatus.attention ? 'Needs attention' : readingStatus.usable
         ? key === 'outdoor' && source === 'openmeteo' ? 'Using backup' : 'Available'
         : reading?.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
     });
-    return { ...row, value: readingStatus.usable ? `${reading.value.toFixed(1)} °C`
-      : reading?.configured === false ? 'Not configured' : 'Unavailable' };
+    return configuredTemperatureRow({ ...row, value: readingStatus.usable ? `${reading.value.toFixed(1)} °C`
+      : reading?.configured === false ? 'Not configured' : 'Unavailable' }, reading, configuredSource, actualSource);
   });
   const sources = [...new Set(rows.map(row => row.source).filter(Boolean))].join(', ');
   const required = [observations.indoor, observations.outdoor];
   const available = temperatureReadingStatus(observations.indoor, options).usable
-    && temperatureReadingStatus(observations.outdoor, { ...options, outdoor: true }).usable;
+    && temperatureReadingStatus(observations.outdoor, { ...options, outdoor: true }).usable
+    && !rows.some(row => row.state === 'Waiting for live readings');
   const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
     && (key === 'outdoor' || !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
   const readingAttention = ['indoor', ...indoorKeys, 'garage', 'outdoor'].some(key =>
@@ -353,17 +377,20 @@ function detailedDatasets(group, status, options) {
     const sensor = status.sensorChanges?.sensors?.find(sensor => sensor.signal === 'garage_temperature_2');
     const observed = status.observations?.garageFront;
     const fallback = status.garage?.observations?.front;
-    if (!observed && !sensor?.configured && !Number.isFinite(fallback?.value) && !Number.isFinite(fallback?.observedAt)) return group.series;
+    const configuredSource = configuredTemperatureSource(status, 'garage_temperature_2');
+    if (!observed && !sensor?.configured && !configuredSource && !Number.isFinite(fallback?.value) && !Number.isFinite(fallback?.observedAt)) return group.series;
     const reading = observed ?? (Number.isFinite(fallback?.value) || Number.isFinite(fallback?.observedAt) ? fallback : { configured: sensor?.configured });
     const readingStatus = temperatureReadingStatus(reading, options);
     const row = withStatus(seriesRow(['garage_temperature_2'], SIGNAL_INFO.garage_temperature_2.label, '°C',
-      `Front pipe-location air sensor, recorded separately from the sender’s pipe estimate. ${readingStatus.detail}`, providerName(reading.source)), {
+      `Front pipe-location air sensor, recorded separately from the sender’s pipe estimate. ${readingStatus.detail}`,
+      configuredSource ?? providerName(reading.source)), {
       state: readingStatus.attention ? 'Needs attention' : readingStatus.usable ? 'Available'
         : reading.configured === false ? 'Not configured' : 'Waiting for readings', attention: readingStatus.attention,
     });
     row.value = readingStatus.usable ? `${reading.value.toFixed(1)} °C` : reading.configured === false ? 'Not configured' : 'Unavailable';
     const rows = [...group.series];
-    rows.splice(rows.findIndex(row => row.signals.includes('garage_temperature')) + 1, 0, row);
+    rows.splice(rows.findIndex(row => row.signals.includes('garage_temperature')) + 1, 0,
+      configuredTemperatureRow(row, reading, configuredSource, temperatureSourceLabel(reading.source)));
     return rows;
   }
   return group.series;

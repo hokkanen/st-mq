@@ -1733,9 +1733,10 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),
         topicGroups, brokers: api.brokerStatus?.(),
         lastCheckedAt: Math.max(0, ...rows.map(row => row.check?.checkedAt ?? 0)) || null,
-        devices: configured.map(config => rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,
+        devices: configured.map(config => ({ ...(rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,
           area: config.area, kind: config.kind, source: config.source, connection: config.connection, enabled: false, available: false,
-          readings: {}, controls: { switch: false, tariff: false }, check: { checking: false, status: 'disabled' } }) };
+          readings: {}, controls: { switch: false, tariff: false }, check: { checking: false, status: 'disabled' } }),
+          protocol: config.protocol, configuredSignals: [...config.ownedSignals] })) };
     },
     async restoreCaravanProbes({ timeoutMs = readbackTimeoutMs, resume = true } = {}) {
       const appliances = devices.filter(row => row.temperatureControl);

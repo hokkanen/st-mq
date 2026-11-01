@@ -20,6 +20,16 @@ const plug = { id: 'caravan', kind: 'metered_switch', connection: 'shelly:invent
 const genericSwitch = { id: 'relay', kind: 'switch', connection: 'mqtt:invented/state', switch_control: true,
   mqtt: { command_topic: 'invented/command', on_payload: 'ON', off_payload: 'OFF' } };
 
+test('equipment status exposes configured signals independently of arriving measurements', t => {
+  const f = fixture(t, [home]);
+  const before = f.capture.status().devices[0];
+  assert.deepEqual(before.configuredSignals, ['indoor_temperature']);
+  assert.deepEqual(before.readings, {});
+  f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  f.capture.receive('invented/upstairs', '21');
+  assert.deepEqual(f.capture.status().devices[0].configuredSignals, before.configuredSignals);
+});
+
 for (const lead of [1, 4, 400, 1000]) test(`MQTT temperature defers a ${lead} ms source lead without erasing valid evidence`, t => {
   const f = fixture(t, [{ ...home, mqtt: { state_path: 'value', timestamp_path: 'timestamp' } }]);
   f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
