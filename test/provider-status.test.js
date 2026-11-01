@@ -57,12 +57,12 @@ test('configured MQTT temperatures remain listed before reports and include miss
   const before = structuredClone(status), initial = group();
   assert.deepEqual(status, before, 'Projection cannot invent observations');
   assert.equal(initial.source, 'MQTT, Shelly, FMI');
-  assert.equal(initial.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(initial.sourceStates.find(row => row.label === 'MQTT').tone, 'attention');
   assert.equal(initial.display.state, 'Needs attention');
   status.observations.bedroom = temperature('mqtt-temperature');
   const partial = group();
   assert.equal(partial.source, initial.source);
-  assert.equal(partial.sourceStates.find(row => row.label === 'MQTT').tone, 'pending', 'One working sensor cannot hide a missing sensor');
+  assert.equal(partial.sourceStates.find(row => row.label === 'MQTT').tone, 'attention', 'One working sensor cannot hide a missing sensor');
   assert.equal(partial.datasets.find(row => row.signals.includes('downstairs_temperature')).source, 'MQTT');
   for (const key of ['upstairs', 'downstairs']) status.observations[key] = temperature('mqtt-temperature');
   status.observations.indoor = temperature('indoor-average');
@@ -77,28 +77,73 @@ test('imported temperatures do not establish availability of their configured li
   status.observations.upstairs = temperature('csv:stmq');
   const group = dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
   const upstairs = group.datasets.find(row => row.signals.includes('indoor_temperature'));
-  assert.equal(upstairs.state, 'Waiting for live readings');
+  assert.equal(upstairs.state, 'Needs attention');
   assert.match(upstairs.value, /^Last recorded /);
-  assert.equal(group.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(group.sourceStates.find(row => row.label === 'MQTT').tone, 'attention');
   assert.equal(group.display.state, 'Needs attention');
   status.observations.upstairs = temperature('husdata-h66');
   const previousRoute = dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
   assert.equal(previousRoute.source, group.source, 'A reading from the previous route cannot hide the configured source');
-  assert.equal(previousRoute.sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(previousRoute.sourceStates.find(row => row.label === 'MQTT').tone, 'attention');
 });
 
 test('configured garage front source stays visible before reports and does not treat imports as live readings', () => {
   const status = completeDashboard();
   status.equipment = { devices: [{ id: 'fixture-front', protocol: 'mqtt', configuredSignals: ['garage_temperature_2'] }] };
   const group = () => dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
-  assert.equal(group().datasets.find(row => row.signals.includes('garage_temperature_2')).state, 'Waiting for readings');
-  assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'pending');
+  assert.equal(group().datasets.find(row => row.signals.includes('garage_temperature_2')).state, 'Needs attention');
+  assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'attention');
   status.observations.garageFront = temperature('csv:stmq');
   const imported = group().datasets.find(row => row.signals.includes('garage_temperature_2'));
-  assert.equal(imported.state, 'Waiting for live readings');
+  assert.equal(imported.state, 'Needs attention');
   assert.match(imported.value, /^Last recorded /);
   status.observations.garageFront = temperature('mqtt-temperature');
   assert.equal(group().sourceStates.find(row => row.label === 'MQTT').tone, 'available');
+});
+
+test('configured temperature attention is consistent across transports, sensors and recovery', () => {
+  const sensors = [['upstairs', 'indoor_temperature'], ['downstairs', 'downstairs_temperature'],
+    ['bedroom', 'bedroom_temperature'], ['garage', 'garage_temperature'], ['garageFront', 'garage_temperature_2']];
+  for (const [protocol, label, source] of [['mqtt', 'MQTT', 'mqtt-temperature'], ['shelly', 'Shelly', 'shelly-mqtt']]) {
+    for (const [key, signal] of sensors) {
+      const status = completeDashboard();
+      status.equipment = { devices: [{ id: 'fixture-sensor', protocol, configuredSignals: [signal] }] };
+      const group = () => dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+      for (const reading of [undefined, { value: null, stale: true }, temperature(source, 0, { stale: true }),
+        temperature(source, 0, { needsAttention: true, attentionReasons: ['invalid-reading'] }),
+        temperature(source, 0, { observedAt: now + 1 }), temperature('csv:stmq', 0)]) {
+        status.observations[key] = reading;
+        const result = group(), dataset = result.datasets.find(row => row.signals.includes(signal));
+        assert.equal(dataset.tone, 'attention', `${protocol} ${signal}: unusable configured reading`);
+        assert.equal(dataset.state, 'Needs attention');
+        assert.equal(result.sourceStates.find(row => row.label === label).tone, 'attention');
+        assert.equal(result.display.attention, true);
+        assert.equal(result.sourceStates.find(row => row.label === 'FMI').tone, 'available', 'Healthy sources retain their own status');
+      }
+      status.observations[key] = temperature(source, 0);
+      assert.equal(group().sourceStates.find(row => row.label === label).tone, 'available', 'A valid zero clears attention');
+      assert.equal(group().display.state, 'Available');
+    }
+  }
+});
+
+test('source attention uses the same tone across electricity, prices, vehicles, temperatures and weather', () => {
+  const cases = [
+    ['electricity', 'Easee', status => { status.providers.easee = { status: 'error', error: 'HTTP-503' }; }],
+    ['electricity', 'Shelly EVSE', status => { status.providers['shelly-evse'].readings.ev2_active_power.available = false;
+      status.providers['shelly-evse'].readings.ev2_active_power.quality = ['stale']; }],
+    ['market', 'ENTSO-E', status => { status.providers.market = { status: 'error', source: 'entsoe', error: 'HTTP-503' }; }],
+    ['vehicle-telemetry', 'BMW CarData', status => { status.charging.vehicleFeeds[0].reception.brokerConnected = false; }],
+    ['main-temperatures', 'MQTT', status => { status.observations.indoor.needsAttention = true; }],
+    ['main-temperatures', 'Shelly', status => { status.observations.garage.needsAttention = true; }],
+    ['main-temperatures', 'FMI', status => { status.providers.weather = { status: 'error', source: 'fmi', error: 'HTTP-503' }; }],
+  ];
+  for (const [key, label, change] of cases) {
+    const status = completeDashboard(); change(status);
+    const result = dashboardProviders(status, options).find(row => row.key === key);
+    assert.equal(result.display.attention, true, `${label}: category attention`);
+    assert.equal(result.sourceStates.find(row => row.label === label).tone, 'attention', `${label}: source attention`);
+  }
 });
 
 test('electricity sections keep property, local Charger 1 and MQTT Charger 2 readings complete and distinct', () => {

@@ -99,15 +99,30 @@ try {
   for (let i = 0; i < 200 && !await evaluate("document.querySelectorAll('.provider-standby-list > li').length === 3"); i++) await pause(25);
   assert.equal(await evaluate("document.querySelectorAll('.provider-standby-list > li').length"), 3);
   await evaluate("globalThis.temperatureSourceSmoke='missing';globalThis.refreshStandbySmoke()");
-  for (let i=0;i<200&&!await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-name[aria-label=\"MQTT: Waiting for readings\"]') !== null");i++) await pause(25);
+  for (let i=0;i<200&&!await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-name[aria-label=\"MQTT: Needs attention\"]') !== null");i++) await pause(25);
   const temperatureSources = await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].map(x=>({label:x.textContent,state:x.dataset.state}))");
-  assert.equal(temperatureSources.find(x=>x.label==='MQTT')?.state,'pending');
+  assert.equal(temperatureSources.find(x=>x.label==='MQTT')?.state,'attention');
   for (const open of [false,true,false,true]) {
     await evaluate(`document.getElementById('provider-main-temperatures-details').open=${open}`);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].map(x=>({label:x.textContent,state:x.dataset.state}))"),temperatureSources,'Opening a fold cannot change frozen source metadata');
   }
   await evaluate("globalThis.temperatureSourceSmoke='partial';globalThis.refreshStandbySmoke()"); await pause(100);
-  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].find(x=>x.textContent==='MQTT').dataset.state"),'pending');
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-provider=main-temperatures] .provider-category-meta .provider-name')].find(x=>x.textContent==='MQTT').dataset.state"),'attention');
+  for (const theme of ['light', 'dark']) {
+    await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    const colours = await evaluate(`(() => {
+      const probe = document.createElement('span'); document.body.append(probe);
+      const expected = token => { probe.style.color = 'var(' + token + ')'; return getComputedStyle(probe).color; };
+      const tokens = {attention:'--stale',backup:'--stale',available:'--chart-indoor',pending:'--muted'};
+      const rows = [...document.querySelectorAll('.provider-category-meta .provider-name')].map(node =>
+        ({label:node.textContent,state:node.dataset.state,actual:getComputedStyle(node).color,expected:expected(tokens[node.dataset.state])}));
+      probe.remove(); return rows;
+    })()`);
+    assert(colours.some(row => row.label === 'MQTT' && row.state === 'attention'));
+    assert(colours.some(row => row.state === 'available'));
+    for (const row of colours) assert.equal(row.actual,row.expected,`${theme}: ${row.label} uses the shared ${row.state} colour`);
+    assert.equal(await evaluate("document.querySelector('[data-provider=main-temperatures] .provider-category-state').dataset.state"),'attention');
+  }
   await evaluate("globalThis.temperatureSourceSmoke=null;globalThis.refreshStandbySmoke()"); await pause(100);
   // Seeded backup diagnostics may render before the initial market acquisition.
   for (let i = 0; i < 200 && !await evaluate("document.querySelector('[data-provider=market] .provider-category-state')?.textContent === 'Available'"); i++) {
@@ -191,7 +206,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'provider-standby-smoke-passed', themes: 2, widths: 6, artifacts,
-    checks: ['three scoped feeds', 'separate active and backup status', 'provider warning navigation', 'selected backup failure', 'keyboard details', 'focus and disclosure preservation', 'disappearing check focus', 'responsive layout'] }));
+    checks: ['configured sources before reports', 'missing temperature attention', 'fold source stability', 'shared source colours in both themes', 'three scoped feeds', 'separate active and backup status', 'provider warning navigation', 'selected backup failure', 'keyboard details', 'focus and disclosure preservation', 'disappearing check focus', 'responsive layout'] }));
   await send('Page.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

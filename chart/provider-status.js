@@ -186,12 +186,15 @@ function configuredTemperatureSource(status, signal) {
 }
 
 function configuredTemperatureRow(row, reading, configuredSource, actualSource) {
-  if (!configuredSource || !reading?.source || actualSource === configuredSource) return row;
+  if (!configuredSource || row.state === 'Not configured') return row;
+  if (!reading?.source || actualSource === configuredSource) {
+    return row.tone === 'pending' ? withStatus(row, { state: 'Needs attention', attention: true, detail: row.detail }) : row;
+  }
   const previous = reading.source === 'csv:stmq' ? 'imported history'
     : actualSource ? `a previous ${actualSource} reading` : 'a previous reading';
-  return { ...row, state: 'Waiting for live readings', tone: 'pending',
-    statusDetail: `Only ${previous} is available; waiting for the configured ${configuredSource} sensor to report.`,
-    value: row.value === 'Unavailable' || row.value === 'Not configured' ? row.value : `Last recorded ${row.value}` };
+  return withStatus({ ...row, value: row.value === 'Unavailable' ? row.value : `Last recorded ${row.value}` },
+    { state: 'Needs attention', attention: true,
+      detail: `Only ${previous} is available; waiting for the configured ${configuredSource} sensor to report.` });
 }
 
 function temperatureDisplay(status, entries, options) {
@@ -223,10 +226,10 @@ function temperatureDisplay(status, entries, options) {
   const required = [observations.indoor, observations.outdoor];
   const available = temperatureReadingStatus(observations.indoor, options).usable
     && temperatureReadingStatus(observations.outdoor, { ...options, outdoor: true }).usable
-    && !rows.some(row => row.state === 'Waiting for live readings');
+    && !rows.some(row => row.tone === 'attention');
   const downloadFailure = entries.some(([key, health]) => (health.error || health.status === 'error')
     && (key === 'outdoor' || !health.source || [...required, ...indoorKeys.map(key => observations[key])].some(reading => reading?.source === health.source)));
-  const readingAttention = ['indoor', ...indoorKeys, 'garage', 'outdoor'].some(key =>
+  const readingAttention = rows.some(row => row.tone === 'attention') || ['indoor', ...indoorKeys, 'garage', 'outdoor'].some(key =>
     temperatureReadingStatus(observations[key], { ...options, outdoor: key === 'outdoor' }).attention);
   const attention = Boolean(downloadFailure || readingAttention || !available && (required.some(reading => Number.isFinite(reading?.value))
     || entries.some(([key, health]) => describeProvider(key, health, options).attention)));

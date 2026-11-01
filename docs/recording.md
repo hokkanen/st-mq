@@ -107,9 +107,12 @@ health.
 
 **Main temperatures & Weather** lists configured temperature sources before
 their first measurement arrives. A source summary includes its waiting sensors,
-so one working sensor cannot hide another missing reading. Imported temperature
-values are labelled **Last recorded** while the configured live source is still
-waiting. Opening a source fold does not change its source membership.
+so one working sensor cannot hide another missing reading. A configured sensor
+without a usable reading marks its dataset and source as **Needs attention**,
+using the shared attention colour. Imported temperature values are labelled
+**Last recorded** while the configured live source is still waiting. Healthy
+sources keep their own status. Opening a source fold does not change its source
+membership. Slaves show recorded evidence rather than live source health.
 
 The shared provider HTTP transport keeps its original finite request deadline
 through response-body consumption. Caller cancellation, provider shutdown and
