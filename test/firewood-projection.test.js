@@ -10,9 +10,11 @@ import { recordLearningContext,replayLearningJournal,applyLearningRecord } from 
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { addFireplace,removeFireplace } from '../src/app/fireplace.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { firewoodMaintenanceComplete,firewoodPublicationComplete } from './helpers/firewood-fixture.js';
 import { getFirewoodBenefit,maintainFirewoodProjection } from '../src/app/firewood-benefit.js';
 import { FirewoodProjectionCache } from '../src/app/firewood-projection-cache.js';
 import { compactJournal,checkpointAt } from '../src/storage/journal.js';
+import { createDerivedCacheAnchorOwner,derivedCacheId } from '../src/storage/derived-cache-anchor.js';
 import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 
 const HOUR=3_600_000,DAY=24*HOUR,WINDOW=HOUR/4,START=Date.UTC(2026,0,1);
@@ -178,11 +180,7 @@ test('archive requests prepare through the sole resident owner even with raw cha
   t.after(()=>service.close());
   const args={input:'mqtt',now:f.args.now,startDate:'2026-01-12',view:'power',summaryOnly:true};
   const cold=await service.query(args);assert.equal(cold.firewoodBenefit.preparing,true);
-  const deadline=Date.now()+15_000;
-  while(!service.cacheStatus().resident?.firewood?.complete) {
-    assert.ok(Date.now()<deadline,'Requested firewood work must advance without recent raw-cache warming');
-    await new Promise(resolve=>setTimeout(resolve,25));
-  }
+  await until(()=>firewoodPublicationComplete(service,f.source),'Requested firewood work must advance without recent raw-cache warming');
   const ready=await service.query(args);
   assert.notEqual(ready.firewoodBenefit.preparing,true);
   const anchor=f.source.db.prepare("SELECT value FROM state WHERE key GLOB 'derived-cache-anchor:firewood:*'").get();
@@ -202,13 +200,22 @@ test('archive requests prepare through the sole resident owner even with raw cha
 
 test('real chart maintenance leaves source proofs and sidecar unchanged for first-history demands',async t=>{
   const f=fixture(t,{days:3,file:true});
-  const service=createChartService({store:f.source,cacheDays:14,cacheBytes:64*1024*1024,warmCache:false,clock:()=>f.args.now});
+  let firstPublicationFailed=false;
+  const service=createChartService({store:f.source,cacheDays:14,cacheBytes:64*1024*1024,warmCache:false,clock:()=>f.args.now,
+    derivedCacheAnchor:(request,{isCurrent})=>{
+      if(request.operation==='publish'&&!firstPublicationFailed) {
+        firstPublicationFailed=true;
+        throw new Error('Synthetic first publication reply unavailable');
+      }
+      return createDerivedCacheAnchorOwner({store:f.source,cacheId:derivedCacheId(f.source.path),purpose:'firewood',isCurrent})(request);
+    }});
   t.after(()=>service.close());
   // Finnish midnight precedes this fixture's first UTC sample. A completed
   // projection must not keep replaying it to seek an impossible earlier point.
   await service.query({input:'mqtt',now:f.args.now,startDate:'2026-01-01',view:'power',summaryOnly:true});
-  await until(()=>service.cacheStatus().resident?.firewood?.complete&&!service.cacheStatus().resident.firewood.failed,
+  await until(()=>firewoodPublicationComplete(service,f.source),
     'The real owner should publish its completed comparison');
+  assert.equal(firstPublicationFailed,true,'The fixture must exercise publication retry before checking idle maintenance');
   const anchor=f.source.db.prepare("SELECT value FROM state WHERE key GLOB 'derived-cache-anchor:firewood:*'").get();
   assert.ok(JSON.parse(anchor.value).active);
   // A queued request left by an interrupted turn is cleared once as well.
@@ -278,7 +285,7 @@ test('standalone read-only sources prepare a cache without trying to publish sou
   try {
     const args={input:'mqtt',now:f.args.now,startDate:'2026-01-03',view:'power',summaryOnly:true};
     assert.equal((await service.query(args)).firewoodBenefit.preparing,true);
-    await until(()=>service.cacheStatus().resident?.firewood?.complete,()=>`Frozen read-only histories should prepare without a writable owner: ${JSON.stringify(service.cacheStatus())}`);
+    await until(()=>firewoodMaintenanceComplete(service),()=>`Frozen read-only histories should prepare without a writable owner: ${JSON.stringify(service.cacheStatus())}`);
     assert.notEqual((await service.query(args)).firewoodBenefit.preparing,true);
     assert.equal(reader.db.prepare("SELECT COUNT(*) n FROM state WHERE key GLOB 'derived-cache-anchor:firewood:*'").get().n,0);
   } finally {await service.close();reader.close();}

@@ -13,6 +13,18 @@ import { appendLearningRecord } from './home-learning-fixture.js';
 
 export const HOUR = 3_600_000, DAY = 24 * HOUR, WINDOW = HOUR / 4, START = Date.UTC(2026, 0, 1);
 
+export function firewoodMaintenanceComplete(service) {
+  const state = service.cacheStatus().resident?.firewood;
+  // A skipped backoff turn is complete/retrying while publication is pending.
+  return Boolean(state?.complete && !state.failed && !state.retrying);
+}
+
+export function firewoodPublicationComplete(service, source) {
+  if (!firewoodMaintenanceComplete(service)) return false;
+  const anchor = source.db.prepare("SELECT value FROM state WHERE key GLOB 'derived-cache-anchor:firewood:*'").get();
+  return Boolean(anchor && JSON.parse(anchor.value).active);
+}
+
 /** Current synthetic source with a separately disposable comparison cache. */
 export function firewoodFixture(t, { days = 10, file = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-firewood-incremental-'));

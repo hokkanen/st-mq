@@ -4,7 +4,7 @@ import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
 import { getFirewoodBenefit, maintainFirewoodProjection } from '../src/app/firewood-benefit.js';
 import { firewoodSimulationIdentity } from '../src/domain/firewood-benefit.js';
 import { createChartService } from '../src/app/chart-service.js';
-import { firewoodFixture, START, DAY, HOUR, WINDOW } from './helpers/firewood-fixture.js';
+import { firewoodFixture, firewoodPublicationComplete, START, DAY, HOUR, WINDOW } from './helpers/firewood-fixture.js';
 
 function catalog(f) {
   return f.projection.db.prepare('SELECT cursor,digest FROM snapshots ORDER BY cursor').all();
@@ -130,7 +130,7 @@ test('real maintenance advances its own clock after an ordinary append without a
     const deadline = Date.now() + 10_000;
     while (!predicate()) { assert.ok(Date.now() < deadline, 'Current-clock maintenance must catch up'); await new Promise(resolve => setTimeout(resolve, 25)); }
   };
-  await wait(() => service.cacheStatus().resident?.firewood?.complete);
+  await wait(() => firewoodPublicationComplete(service, f.source));
   const old = f.projection.latest('mqtt').cursor;
   f.append(3 * 96 + 1); now += WINDOW;
   await wait(() => f.projection.latest('mqtt').at === now);

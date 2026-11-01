@@ -330,6 +330,10 @@ continuations and historical as-of selection. Firewood cache tests verify that
 moving the clock alone does not repeat committed-history pages. These correctness
 checks complement small/year/three-year fixed-window measurements; test completion
 alone does not prove bounded native SQL time or physical control responsiveness.
+Writable real-worker firewood fixtures wait through retry backoff for a completed
+comparison and published source proof, including a controlled first-publication
+failure. Read-only fixtures wait for successful preparation without requiring
+source-owned publication. The original fixture deadlines remain unchanged.
 
 `test/firewood-incremental.test.js` compares cached and full-source results through
 forward loads, model-revision adoption, reporting-only updates, training-boundary
