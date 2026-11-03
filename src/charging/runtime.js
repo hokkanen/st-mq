@@ -229,8 +229,11 @@ const withAllocationTarget = (view, item, now, proposed = false) => {
 };
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
-const deadlineRequest = item => item.request?.flexibility?.lastTransition ? {
-  actionId: item.request.flexibility.lastTransition.id, revision: item.request.revision,
+// Every durable session request owns its deadline, including ordinary edits
+// and vehicle defaults. The independently supplied revision and connection
+// fence controller adoption; an extra-day receipt is not the only authority.
+const deadlineRequest = item => item.request ? {
+  actionId: item.request.flexibility?.lastTransition?.id ?? digest(['session-request', item.request.sessionId]), revision: item.request.revision,
   connectedAt: sessionConnectedAt(item.request), deadlineAt: item.request.deadlineAt } : null;
 function consumeBmwEpisode(feed, readingId) {
   const nextAt = bmwConsumedChargingAt(feed.reading, readingId);
@@ -2763,7 +2766,15 @@ export class ChargingRuntime {
       // next gap. Fulfilling it is not an unsolicited monetary improvement.
       if (!activePeriod(control, now) && item.plan.deadlineAt !== view.deadlineAt && !item.request?.flexibility) return false;
       const priorPrices = item.plan.decisionPriceSnapshot ?? item.plan.priceSnapshot ?? priceSnapshot(item.plan.intervals ?? []);
-      return serviceReplans.has(view.id) || Boolean(item.request?.flexibility) && item.plan.deadlineAt !== view.deadlineAt
+      const previousRequest = this.coordination?.requests?.[view.id];
+      const requestChanged = previousRequest?.sessionId === view.request?.sessionId
+        && previousRequest?.revision !== view.request?.revision;
+      // Durable edits need the same complete candidate comparison as new
+      // prices, even during an open run. Native/vehicle evidence keeps its
+      // existing service-correction and manual-priority rules.
+      return requestChanged
+        || view.deadlineAt !== control.execution.deadlineAt
+        || serviceReplans.has(view.id) || Boolean(item.request?.flexibility) && item.plan.deadlineAt !== view.deadlineAt
         || routineReplan || Number.isFinite(item.priceRecheckAt) && item.priceRecheckAt <= now
         || economicChange !== null && priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
     }).map(view => view.id));
@@ -2996,8 +3007,12 @@ export class ChargingRuntime {
           item.priceRecheckAt = null;
           item.plan = { ...item.plan, ...(item.request?.flexibility ? { deadlineAt: view.deadlineAt } : {}),
             priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices };
+          const deadlineChanged = view.deadlineAt !== execution.deadlineAt;
+          // A current request's deadline also needs adoption when retaining
+          // the same periods wins the economic comparison. No pause is added.
           if (priceRevisionWorthwhile && digest(remainingPeriods(next.periods, now))
-            !== digest(remainingPeriods(execution.periods, now))) {
+            !== digest(remainingPeriods(execution.periods, now))
+            || deadlineChanged && next.feasible === true && !next.provisional) {
             item.plan = { ...next, id: randomUUID(), priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices,
               replanReadyBy: item.plan.replanReadyBy,
               priceRevision: activePeriod(control, now)

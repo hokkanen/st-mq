@@ -893,6 +893,64 @@ test('ready-by editing preserves one explicit connection deadline through price 
   assert.equal(chargerView(runtime).request.deadlineAt,request.deadlineAt);
 });
 
+for (const changes of [{ readyBy: '10:00' }, { minimumSoc: 95 }, { manualSoc: 0 }, { capacityKwh: 40 },
+  { readyBy: '10:00', minimumSoc: 95, manualSoc: 0, capacityKwh: 40 }])
+test(`active session edits reach the accepted joint program: ${JSON.stringify(changes)}`, async t => {
+  const f = await activePriceFixture(t, [5, 50, 10, 50, 1, 1, 1, 1]);
+  syntheticElectricityForecast(f);
+  await editSession(f.runtime, 'charger1', changes);
+  await f.runtime.planningFlight;
+  await f.runtime.reconcile();
+  const view = chargerView(f.runtime), coordination = f.runtime.status().coordination;
+  assert.equal(view.control.execution.deadlineAt, view.deadlineAt, 'the controller must accept the current request deadline');
+  const remaining = rows => rows.filter(row => row.endAt === null || row.endAt > f.clock())
+    .map(row => ({ ...row, startAt: Math.max(f.clock(), row.startAt) }));
+  assert.deepEqual(remaining(coordination.adopted.plans.charger1.periods), remaining(coordination.proposed.plans.charger1.periods),
+    'a request revision must not leave a different accepted program behind');
+  assert.equal(coordination.adopted.plans.charger1.requiredGridKwh, view.requiredGridKwh);
+  assert.equal(view.forecast.requiredGridKwh, view.requiredGridKwh);
+  assert.equal(view.request.flexibility, undefined, 'ordinary edits do not create an extra-day grant');
+  const request = structuredClone(view.request);
+  await f.runtime.close();
+  const restarted = f.create(); t.after(() => restarted.close());
+  await restarted.setAdapter('charger1', f.adapter);
+  await restarted.tick({ prices: priceOutlook([5, 50, 10, 50, 1, 1, 1, 1]) });
+  await restarted.reconcile(); await restarted.planningFlight;
+  assert.deepEqual(chargerView(restarted).request, request);
+  assert.equal(chargerView(restarted).control.execution.deadlineAt, view.deadlineAt);
+});
+
+test('a ready-by edit updates controller authority even when the same periods remain cheapest', async t => {
+  const f = await activePriceFixture(t, Array(8).fill(5));
+  const before = structuredClone(chargerView(f.runtime).control.execution);
+  const writes = f.adapter.calls.filter(call => call.kind !== 'read').length;
+  await editSession(f.runtime, 'charger1', { readyBy: '10:00' });
+  const view = chargerView(f.runtime);
+  assert.equal(view.control.execution.deadlineAt, view.deadlineAt);
+  assert.notEqual(view.control.execution.planId, before.planId);
+  assert.deepEqual(view.control.execution.periods, before.periods, 'a deadline update does not invent a pause');
+  assert.equal(f.adapter.calls.filter(call => call.kind !== 'read').length, writes);
+});
+
+test('an unconfirmed edited request is adopted after restart without repeating the edit', async t => {
+  const f = await activePriceFixture(t, [5, 50, 10, 50, 1, 1, 1, 1]);
+  const install = f.adapter.installDelayed;
+  f.adapter.installDelayed = async () => { throw Error('synthetic unavailable charger'); };
+  await editSession(f.runtime, 'charger1', { readyBy: '10:00', minimumSoc: 90 });
+  const request = structuredClone(chargerView(f.runtime).request);
+  assert.notEqual(chargerView(f.runtime).control.execution.deadlineAt, request.deadlineAt);
+  await f.runtime.close();
+  f.adapter.installDelayed = install;
+  const restarted = f.create(); t.after(() => restarted.close());
+  await restarted.setAdapter('charger1', f.adapter);
+  await restarted.tick({ prices: priceOutlook([5, 50, 10, 50, 1, 1, 1, 1]) });
+  await restarted.reconcile(); await restarted.planningFlight;
+  const view = chargerView(restarted);
+  assert.deepEqual(view.request, request);
+  assert.equal(view.control.execution.deadlineAt, request.deadlineAt);
+  assert.equal(view.control.execution.planId, view.plan.id);
+});
+
 test('target completion, original deadline and manual priority prevent price-driven pauses', async t => {
   for (const reason of ['target', 'deadline', 'manual']) await t.test(reason, async t => {
     const { runtime, adapter, setNow } = await activePriceFixture(t, [5, 5, 50, 50]);
@@ -1234,7 +1292,7 @@ test('forecast failure cannot block confirmed release times or independent charg
   assert.equal(chargerView(runtime).control.owned, null);
 });
 
-test('a released connected session retains its actual plan through new SoC, deadline edits and temporary zero power', async t => {
+test('a released connected session retains its open permission while accepting an edited deadline', async t => {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   runtime.setAdapter('charger1', adapter);
@@ -1249,12 +1307,15 @@ test('a released connected session retains its actual plan through new SoC, dead
     'The owned delayed occurrence cannot roll forward to tomorrow after its release');
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, packet(90, installed.startAt, 'reading-now'));
   await editSession(runtime, 'charger1', { readyBy: '08:00' });
-  const { allocations: oldAllocation, intervals: oldResources, ...installedInstruction } = installed;
-  const { allocations: liveAllocation, intervals: liveResources, ...currentInstruction } = runtime.chargers.charger1.plan;
-  assert.deepEqual(currentInstruction, installedInstruction, 'The released instruction is unchanged while remaining resource forecasts can refresh');
+  const current = chargerView(runtime);
+  assert.deepEqual(current.control.execution.periods, installed.periods, 'A deadline edit does not invent a physical pause');
+  assert.equal(current.plan.deadlineAt, current.deadlineAt);
+  assert.equal(current.control.execution.deadlineAt, current.deadlineAt);
+  assert.notEqual(current.control.execution.planId, installed.id);
   assert.equal(chargerView(runtime).values.soc.value, 20, 'An unidentified feed cannot change this session');
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
-  assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, 0);
+  assert.equal(current.control.released, true);
+  assert.equal(current.control.snapshot.schedule.enabled, 'none', 'The expired owned delay is cleared without adding a pause');
 });
 
 test('configured control reports off or unavailable before an adapter is attached', async t => {
@@ -1649,7 +1710,8 @@ test('native periods pause at their boundary, preserve the active period through
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, packet(45, f.clock(), 'first-period-progress'));
   await editSession(runtime, 'charger1', { readyBy: '07:00' });
   assert.deepEqual(chargerView(runtime).control.execution.periods, original.periods);
-  assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 4 * HOUR);
+  assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 5 * HOUR);
+  assert.equal(chargerView(runtime).control.execution.deadlineAt, initialNow + 5 * HOUR);
   f.setNow(original.periods[0].endAt); adapter.setObservation({ mode: 2 });
   await runtime.reconcile();
   const paused = chargerView(runtime);

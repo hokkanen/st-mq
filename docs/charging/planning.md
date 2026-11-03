@@ -14,6 +14,16 @@ and reconcile the new joint result. Confirmed native execution remains separate
 from a proposed replacement until readback establishes the change. An arriving
 price forecast can establish the first automatic program after connection.
 
+All four session edits (current charge, target, usable capacity and ready-by)
+reassess the complete joint program, including during an open charging period.
+The durable current request supplies revision- and connection-bound deadline
+authority for ordinary edits as well as extra-day actions. A deadline change
+is adopted even when retaining the same charging periods remains cheapest;
+it does not invent a pause. Economic replacements retain the normal cost and
+minimum-run rules. Changes needed to restore requested service retain their
+separate correction rules. While a replacement is unconfirmed, the dashboard
+explains that its displayed periods are the last accepted plan.
+
 Change priority in either charger's details. Both entries edit the same saved
 choice, which survives restart and new vehicle connections for the same physical
 chargers. Automatic charging is also a persistent dashboard choice; the four

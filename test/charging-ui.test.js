@@ -616,6 +616,19 @@ test('confirmed and proposed starts are distinguished without repeating schedule
   assert.equal(revised.deadline, 'Ready by tomorrow 06:00');
 });
 
+test('an active charger explains when its displayed periods differ from the revised plan', () => {
+  const item = active(), accepted = [{ startAt: now - 1800_000, endAt: null }];
+  const revised = view({ ...item,
+    values: { ...item.values, charging: reading(true), powerKw: reading(8.2) },
+    plan: { ...item.plan, id: 'revised', periods: [{ startAt, endAt: null }] },
+    control: { phase: 'active', execution: { planId: 'accepted', periods: accepted } },
+  });
+  assert.match(revised.notes.join(' '), /revised charging plan is awaiting confirmation/);
+  const confirmed = view({ ...item, plan: { ...item.plan, id: 'accepted', periods: accepted },
+    control: { phase: 'active', execution: { planId: 'accepted', periods: accepted } } });
+  assert.doesNotMatch(confirmed.notes.join(' '), /revised charging plan/);
+});
+
 test('charging shows live power and remaining completion estimate without stale planned timestamps', () => {
   const item = active(), earlierFinish = deadlineAt - 3600_000;
   const displayed = view({ ...item, values: { ...item.values, charging: reading(true), powerKw: reading(8.2),

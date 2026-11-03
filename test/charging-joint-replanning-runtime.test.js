@@ -2,6 +2,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, START, MINUTE, HOUR } from './helpers/charging-joint-fixture.js';
 
+for (const id of ['charger1', 'charger2']) for (const changes of [
+  { readyBy: '10:00' }, { minimumSoc: 95 }, { manualSoc: 0 }, { capacityKwh: 20 },
+  { readyBy: '10:00', minimumSoc: 95, manualSoc: 0, capacityKwh: 20 },
+]) test(`${id} applies all edited session inputs to its joint execution: ${JSON.stringify(changes)}`, async t => {
+  const f = await fixture(t);
+  const rates = [5, 50, 10, 50, 1, 1, 1, 1].map((price, index) => ({ start: START + index * HOUR,
+    end: START + (index + 1) * HOUR, price }));
+  await f.automatic(id, true); f.runtime.tick({ prices: rates }); await f.connect(id);
+  f.advance(30 * MINUTE); await f.settle();
+  const before = structuredClone(f.view(id).request);
+  await f.edit(id, changes); await f.settle();
+  const view = f.view(id), coordination = f.runtime.status().coordination;
+  assert.deepEqual(view.request.overrides, changes);
+  assert.ok(view.request.revision > before.revision);
+  assert.equal(view.control.execution.deadlineAt, view.deadlineAt);
+  assert.equal(coordination.adopted.plans[id].requiredGridKwh, view.requiredGridKwh);
+  assert.equal(view.forecast.requiredGridKwh, view.requiredGridKwh);
+  const remaining = rows => rows.filter(row => row.endAt === null || row.endAt > f.now)
+    .map(row => ({ ...row, startAt: Math.max(f.now, row.startAt) }));
+  assert.deepEqual(remaining(coordination.adopted.plans[id].periods), remaining(coordination.proposed.plans[id].periods));
+  const request = structuredClone(view.request);
+  await f.restart();
+  assert.deepEqual(f.view(id).request, request);
+  assert.equal(f.view(id).control.execution.deadlineAt, view.deadlineAt);
+});
+
 for (const priority of ['balanced', 'charger1', 'charger2'])
   test(`economic waiting survives polling and restart with ${priority} priority`, async t => {
     const f = await fixture(t, { limiter: false });

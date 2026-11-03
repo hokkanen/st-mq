@@ -447,6 +447,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     notes.push('The forecast assumes maximum available charging current within shared property capacity. Actual delivery and completion remain estimates.');
   if (showPlan && estimateOnly)
     notes.push('These periods are proposed. Charger control must be confirmed before the schedule can be applied.');
+  if (showPlan && revisionPending && !estimateOnly && !sessionPause)
+    notes.push('The revised charging plan is awaiting confirmation. The periods shown are the last accepted plan.');
   let problem = uncertain || handoverUnconfirmed || !currentAdjustmentOnly
     && (control.pending || control.errorCode || ['uncertain', 'ownership-uncertain', 'pause-unconfirmed'].includes(phase))
     ? chargingUnconfirmedDetail(charger) || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';

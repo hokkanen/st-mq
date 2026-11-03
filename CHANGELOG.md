@@ -6,6 +6,11 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Charging session edits reassess the joint schedule while charging. Ordinary
+  ready-by edits reach the controller, including when the cheapest periods stay
+  unchanged, and unconfirmed replacements keep an explanation beside the last
+  accepted schedule.
+
 - Automatic heating updates wait for an executor-owned expiry or restoration
   without recording a command failure or cancelling the current learning cycle.
 
