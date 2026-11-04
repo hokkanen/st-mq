@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveEpisode, thermalObservationIntervals, evaluateThermalModel, predictThermalStep, predictEquipmentDuty, fitEquipmentResponse, equipmentResponseEstimate, actionEvidenceReady, thermalUncertaintyC } from '../src/control/adaptive-learning.js';
 import { initialHomeState, homeModelConfiguration, DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
 import publicConfiguration from '../config.json' with {type:'json'};
-import { chooseCycle, revalidatePlan, preheatRoomRequest, evaluateCycle, forecastIntervals, economicAdmission } from '../src/control/planner.js';
+import { chooseCycle, revalidatePlan, learningReadiness, validatedReductionHours, preheatRoomRequest, evaluateCycle, forecastIntervals, economicAdmission } from '../src/control/planner.js';
 import { controlConfiguration,validateSettings } from '../src/app/config.js';
 import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 import { Store } from '../src/storage/store.js';
@@ -458,4 +458,19 @@ test('manual treatment transitions roll back identity, evidence and applied stat
   assert.deepEqual(store.getState('manual-learning:offline'),manual);
   assert.deepEqual(engine.applied,applied);
   assert.deepEqual(store.learningJournal({input:'offline'}),journal);
+});
+
+
+test('overall readiness and duration summaries cannot combine checks from different treatments',()=>{
+  const x=heatingExplorerFixture(),model=x.checkpoint.model;
+  model.forecastValidation.records=model.forecastValidation.records.map(record=>({...record,treatmentKey:'room-boost-v1',roomBoostC:2,preheatHours:1}));
+  model.forecastValidation.treatmentKey='room-boost-v1';
+  const readiness=learningReadiness(x.checkpoint,x.config,x.equipment);
+  assert.equal(readiness.responseValidated,true);
+  assert.equal(readiness.advanceValidated,false);
+  assert.equal(readiness.actionValidated,false);
+  assert.equal(validatedReductionHours(model),0);
+  assert.equal(readiness.reasons.includes('awaiting-held-out-tariff-response'),false,
+    'A missing matching forecast does not erase already checked requested-mode response');
+  assert.equal(readiness.reasons.includes('awaiting-frozen-advance-cycle-predictions'),true);
 });

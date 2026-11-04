@@ -32,8 +32,11 @@ export function indoorUncertaintyAt(equipment = {}, hours = 0, at = null) {
 
 export function learningReadiness(checkpoint, config = {}, equipment = {}) {
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model;
-  const thermalValidated = thermalEvidenceReady(model), responseValidated = actionEvidenceReady(model, 'reduction');
-  const advanceValidated = model?.forecastValidation?.accepted === true;
+  const thermalValidated = thermalEvidenceReady(model);
+  const treatmentKey = equipmentResponseEstimate(model, 'reduction')?.treatmentKey
+    ?? model?.forecastValidation?.treatmentKey ?? 'reduction-only-v1';
+  const responseValidated = actionEvidenceReady(model, 'reduction', null, treatmentKey);
+  const advanceValidated = forecastEvidence(model, { treatmentKey }).accepted === true;
   const fireplaceValidated = fireplaceEvidenceReady(model);
   const fireplacePending = (equipment.fireplaceRelevant ?? equipment.fireplaceActive) === true && !fireplaceValidated;
   const actionValidated = responseValidated && advanceValidated && !fireplacePending;
@@ -45,7 +48,7 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
     && (!number(equipment.trialBudgetRemainingCents)||equipment.trialBudgetRemainingCents>=0);
   return { thermalValidated, responseValidated, advanceValidated, fireplaceValidated, actionValidated, initialReady, trialReady,
     reasons: [!thermalValidated && 'awaiting-held-out-thermal-trajectories',
-      !actionValidated && 'awaiting-held-out-tariff-response',
+      !responseValidated && 'awaiting-held-out-tariff-response',
       !advanceValidated && 'awaiting-frozen-advance-cycle-predictions',
       fireplacePending && 'awaiting-fireplace-response-evidence',
       !trialReady && 'trials-require-enabled-budget-and-observed-equipment'].filter(Boolean),
@@ -375,7 +378,8 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
 }
 
 export function validatedReductionHours(model, schedule = null) {
-  const treatmentKey = schedule?.treatmentKey ?? null;
+  const treatmentKey = schedule?.treatmentKey ?? equipmentResponseEstimate(model, 'reduction')?.treatmentKey
+    ?? model?.forecastValidation?.treatmentKey ?? 'reduction-only-v1';
   const phase = equipmentResponseEstimate(model, 'reduction', treatmentKey)?.validation
     ?? model?.equipmentResponse?.validation?.phases?.reduction;
   const advance = forecastEvidence(model, { treatmentKey, roomBoostC: schedule?.roomBoostC ?? 0,

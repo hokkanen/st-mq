@@ -262,7 +262,7 @@ function illustrate(input, changes, current, scenario, args, normal) {
   if (!cycleForecastCovered(args.intervals, schedule, input.now)) return null;
   const prediction = evaluateCycle({ ...args, schedule });
   const economics = economicAdmission({ prediction, referencePrediction: normal, args, schedule, settings: input.settings });
-  const evidenceDuration = validatedReductionHours(args.model);
+  const evidenceDuration = validatedReductionHours(args.model, schedule);
   const reasons = ['illustrative-fixed-duration-not-a-selected-plan'];
   if (duration > evidenceDuration) reasons.push('outside-demonstrated-duration');
   if (prediction.severe || economics.unsafe) reasons.push('comfort-stress-check-failed');
