@@ -547,7 +547,7 @@
     "controller": {
       "input": "list(simulated|offline|providers)",
       "topology": "list(standalone|mirror|pair)",
-      "log_level": "list(info|debug)",
+      "log_level": "list(info|debug)?",
       "web_token": "password",
       "web_family_token": "password",
       "max_drop_c": "float(0,2)",
@@ -577,7 +577,7 @@
       "max_unobserved_reduction_hours": "float(0.25,2)",
       "max_preheat_hours": "float(0.25,6)",
       "learning_trials": "bool",
-      "learning_trial_target_per_day": "int(1,4)",
+      "learning_trial_target_per_day": "int(1,4)?",
       "trial_budget_cents_per_day": "int(0,1000)",
       "max_trial_cost_cents": "int(0,1000)",
       "recovery_timeout_hours": "int(4,168)",
@@ -622,7 +622,7 @@
       "cycle_start_cost_cents": "float(0,1000000000)?",
       "cycle_hour_cost_cents": "float(0,1000000000)?",
       "economic_uncertainty_floor_cents": "float(0,1000000000)?",
-      "learning_priority_price_cents": "float(0,1000000000)"
+      "learning_priority_price_cents": "float(0,1000000000)?"
     },
     "web": {
       "https_host": "str",

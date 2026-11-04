@@ -268,6 +268,21 @@ class SupervisorOptions(unittest.IsolatedAsyncioTestCase):
         expected['mqtt']['pw'] = 'synthetic-secret'
         self.assertEqual(json.loads(response.text)['data'], expected)
 
+    async def test_defaulted_controller_settings_can_remain_unsaved(self):
+        options = deepcopy(MANIFEST['options'])
+        inherited = ('log_level', 'learning_trial_target_per_day',
+                     'learning_priority_price_cents')
+        for key in inherited:
+            del options['controller'][key]
+        options['controller']['home_model'] = {
+            'training_through': '2026-01-01T00:00:00.000Z'}
+        response = await self.api.options(self.request({'options': options}))
+        self.assertEqual(json.loads(response.text)['result'], 'ok')
+        saved = json.loads(self.saved.read_text())['synthetic_st-mq']['options']
+        self.assertEqual(saved, options)
+        for key in inherited:
+            self.assertNotIn(key, saved['controller'])
+
     def test_repository_metadata_and_english_translations(self):
         repository = read_yaml_file(Path('/repository.yaml'))
         self.assertEqual(SCHEMA_REPOSITORY_CONFIG(deepcopy(repository)), repository)
