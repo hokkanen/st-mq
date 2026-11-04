@@ -62,7 +62,7 @@ function setup(t, { delayed = false, automationEnabled = true, startAt = Date.pa
       model.equipmentResponse = { phases: { reduction: { ratio: 0.1, trainingEpisodes: 3, treatmentKey: 'reduction-only-v1' } },
         validation: { phases: { reduction: { accepted: true, episodes: 3, maeDuty: 0.05, maxDurationHours: 0.5, treatmentKey: 'reduction-only-v1' } } } };
       model.uncertainty = { points: [{ hours: 0.25, errorC: 0.1 }, { hours: 24, errorC: 0.1 }], extrapolationCPerHour: 0.05 };
-      model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: 0.5 };
+      model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: 0.5, records: Array.from({length:3},(_,i)=>({id:`synthetic-advance-${i}`, treatmentKey:'reduction-only-v1', roomBoostC:0, preheatHours:0, reductionHours:0.5, temperatureMaeC:.2, minimumTemperatureErrorC:.3, energyRelativeError:.2, costRelativeError:.1})) };
       engine.checkpoint = restoreAdaptiveCheckpoint(null, config.control);
       engine.checkpoint.model = model;
       const schedule = { preheatStart: now, preheatEnd: now, reductionStart: now, reductionEnd: now + 15 * MINUTE, roomBoostC: 0, treatmentKey: 'reduction-only-v1' };

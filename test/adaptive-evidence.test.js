@@ -4,7 +4,7 @@ import { SimulatedPlant } from '../src/app/simulator.js';
 import { updateComfortLearning } from '../src/control/learning.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveLearningBatch, updateAdaptiveEpisode,
   evaluateThermalModel, fitAdaptiveModel, predictThermalStep, predictEquipmentDuty,
-  thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fitEquipmentResponse } from '../src/control/adaptive-learning.js';
+  thermalEvidenceReady, actionEvidenceReady, forecastEvidence, thermalUncertaintyC, fitEquipmentResponse } from '../src/control/adaptive-learning.js';
 
 const HOUR = 3_600_000, MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const row = (i, changes = {}) => ({ timestamp: start + i * HOUR / 4, indoorC: 21, outdoorC: 21,
@@ -344,4 +344,22 @@ test('a failing current holdout revokes readiness while retaining coefficients, 
   assert.equal(thermalEvidenceReady(recovered.model), true);
   const insufficient = fitAdaptiveModel({ ...retained, samples: samples.slice(0, 12), episodeArchive: [] });
   assert.equal(insufficient.incumbent, undefined, 'Insufficient observations do not claim demonstrated failure');
+});
+
+
+test('advance forecast checks stay with their treatment, preheat intensity and duration', () => {
+  let cp=null;
+  const episode=(i,key,boost=0,preheatHours=0)=>({id:`distinct-forecast-${i}`,treatmentKey:key,
+    startedAt:start+i*24*HOUR,endedAt:start+(i*24+8)*HOUR,complete:true,recoveryComplete:true,
+    energyBasis:'estimated',recoveryHours:1,forecastValidation:{eligible:true,adjusted:false,
+      basis:'frozen-advance-forecast',temperatureMaeC:.2,minimumTemperatureErrorC:.3,
+      energyRelativeError:.2,costRelativeError:.1,reductionHours:2,roomBoostC:boost,preheatHours}});
+  for(let i=0;i<3;i++)cp=updateAdaptiveEpisode(cp,episode(i,'reduction-only-v1'));
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'reduction-only-v1'}).accepted,true);
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'room-boost-v1',roomBoostC:5,preheatHours:2}).accepted,false);
+  for(let i=3;i<6;i++)cp=updateAdaptiveEpisode(cp,episode(i,'room-boost-v1',2,1));
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'room-boost-v1',roomBoostC:2,preheatHours:1}).accepted,true);
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'room-boost-v1',roomBoostC:5,preheatHours:1}).accepted,false);
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'room-boost-v1',roomBoostC:2,preheatHours:2}).accepted,false);
+  assert.equal(forecastEvidence(cp.model,{treatmentKey:'reduction-only-v1'}).accepted,true);
 });

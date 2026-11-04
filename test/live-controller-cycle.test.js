@@ -39,7 +39,7 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
       model.equipmentResponse={phases:{reduction:{ratio:.1,trainingEpisodes:3,treatmentKey:'reduction-only-v1'}},
         validation:{phases:{reduction:{accepted:true,episodes:3,maeDuty:.05,maxDurationHours:.5,treatmentKey:'reduction-only-v1'}}}};
       model.uncertainty={points:[{hours:.25,errorC:.1},{hours:24,errorC:.1}],extrapolationCPerHour:.05};
-      model.forecastValidation={accepted:true,episodes:3,maxReductionHours:.5};
+      model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: .5, records: Array.from({length:3},(_,i)=>({id:`synthetic-advance-${i}`, treatmentKey:'reduction-only-v1', roomBoostC:0, preheatHours:0, reductionHours:.5, temperatureMaeC:.2, minimumTemperatureErrorC:.3, energyRelativeError:.2, costRelativeError:.1})) };
       engine.checkpoint=restoreAdaptiveCheckpoint(null);engine.checkpoint.model=model;
       appendLearningRecord(store,'mqtt','context',{timestamp:now},{config:config.control,seed:engine.checkpoint});
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};

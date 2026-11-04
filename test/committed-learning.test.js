@@ -489,7 +489,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v19-independent-equipment-and-measurement-epochs');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v20-observed-response-and-free-experiments');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);
@@ -583,4 +583,30 @@ test('committed change-only cache reads cannot establish comfort, while actual u
       assert.equal(cp.samples.at(-1).indoorC, 21, 'Held readback remains distinct from support for learning');
     }
   }
+});
+
+
+test('old frozen forecasts retain real observations without validating or calibrating the current predictor',t=>{
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const prior=initialAdaptiveModel(config).energy;
+  const value={id:'preserved-frozen-cycle',treatmentKey:'reduction-only-v1',startedAt:start,endedAt:start+8*HOUR,
+    complete:true,recoveryComplete:true,energyBasis:'measured',compressorEnergyMeasured:true,
+    compressorKwh:12,compressorRunHours:2,recoveryHours:2,recoveryEnergyKwh:6,recoveryAuxKwh:2,
+    spaceHeatingAuxKwh:2,auxiliaryObserved:true,auxiliaryRouteKnown:true,
+    predictedRecoveryEnergyKwh:1,predictedRecoveryAuxKwh:0,predictedSpaceHeatingAuxKwh:.1,
+    predictedEnergyKwh:1,actualEnergyKwh:20,
+    forecastValidation:{eligible:true,adjusted:false,basis:'frozen-advance-forecast',temperatureMaeC:.1,
+      minimumTemperatureErrorC:.1,energyRelativeError:.1,costRelativeError:.1,reductionHours:1},
+    provenance:{forecastAlgorithm:'invented-earlier-predictor'}};
+  appendLearningRecord(store,'providers','episode',value,{config});
+  const entry=store.learningJournal({input:'providers'})[0];
+  assert.deepEqual(entry.payload.value,value);
+  assert.equal(entry.payload.forecastAlgorithm,'invented-earlier-predictor');
+  const cp=replayLearningJournal(store,'providers');
+  assert.equal(cp.model.forecastValidation,undefined);
+  assert.equal(cp.model.energy.recoveryMultiplier,prior.recoveryMultiplier);
+  assert.equal(cp.model.energy.auxiliaryRiskScale,prior.auxiliaryRiskScale);
+  assert.ok(cp.model.energy.compressorKw>prior.compressorKw,'Actual metered compressor observations remain useful');
+  assert.equal(cp.model.energy.episodes,1);
+  assert.deepEqual(replayLearningJournal(store,'providers',null,{rebuild:true}),cp);
 });

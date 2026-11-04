@@ -1,8 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands } from '../chart/heating-explorer.js';
+import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
+test('strategy defaults update untouched fields and the request preserves every displayed value including zero and the manual budget',async()=>{
+  const requests=[],controls=[{key:'savingsStrategy',value:'balanced'},
+    {key:'minimumHomeBenefitCents',value:0,usesStrategyDefault:true},
+    {key:'homeDiscomfortCentsPerDegreeSquaredHour',value:0,usesStrategyDefault:true},
+    {key:'maxTrialCostCents',value:150}];
+  const state=createHeatingExplorerState({clock:()=>now,request:async(path,body)=>{requests.push({path,body});return makeResult({controls});}});
+  await state.load();state.edit('savingsStrategy','gentle');
+  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,2);
+  assert.equal(state.snapshot().limits.homeDiscomfortCentsPerDegreeSquaredHour,5);
+  state.edit('minimumHomeBenefitCents',0);await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits,{savingsStrategy:'gentle',minimumHomeBenefitCents:0,
+    homeDiscomfortCentsPerDegreeSquaredHour:5,maxTrialCostCents:150});
+  state.edit('savingsStrategy','balanced');state.edit('savingsStrategy','gentle');
+  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0,'An explicitly edited zero remains authoritative');
+  state.reset();state.edit('savingsStrategy','gentle');
+  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,2,'Reset restores inherited strategy behavior');
+});
+test('validation explanation uses complete sentences and does not turn zero observed duration into an execution ban',()=>{
+  const text=heatingEvidenceText({initialReady:true,actionValidated:false,validatedReductionHours:0,
+    reasons:['awaiting-held-out-thermal-trajectories','awaiting-held-out-tariff-response',
+      'awaiting-frozen-advance-cycle-predictions','awaiting-fireplace-response-evidence',
+      'trials-require-enabled-budget-and-observed-equipment']});
+  assert.match(text,/supports executable plans/);
+  assert.match(text,/No reduction duration has been independently validated yet\./);
+  assert.match(text,/Validation still being collected: thermal response, requested heating response, advance cycle forecasts, fireplace response\.$/);
+  assert.doesNotMatch(text,/awaiting|·|Evidence limits|duration: 0 h|global optimum/);
+  assert.match(heatingEvidenceText({actionValidated:true,validatedReductionHours:4}),/Independently validated reduction duration: 4 h\./);
+});
 const makeResult = (extra = {}) => ({ snapshotId: 'synthetic-snapshot', snapshotAt: now, expiresAt: now + 60_000,
   controls: [{ key: 'maxReductionHours', value: 4 }, { key: 'maxDropC', value: 1.5 }],
   current: { outcomes: { maxIndoorDropC: .7 } }, scenario: { outcomes: { maxIndoorDropC: 1.1 }, schedule: { reductionStart: now, reductionEnd: now + 6 * 3_600_000 } },
@@ -18,7 +46,7 @@ test('exploration pins conditions and changes only local values until explicit c
   assert.deepEqual(state.snapshot().limits, { maxReductionHours: 8, maxDropC: 1.5 });
   await state.compare();
   assert.deepEqual(requests[1], { path: '/api/heating/explorer/simulate', body: {
-    snapshotId: 'synthetic-snapshot', limits: { maxReductionHours: 8 },
+    snapshotId: 'synthetic-snapshot', limits: { maxReductionHours: 8, maxDropC: 1.5 },
   } });
   assert.equal(state.snapshot().dirty, false);
   assert.equal(state.snapshot().limits.maxReductionHours, 8, 'server current controls do not reset a hypothetical draft');
@@ -163,4 +191,13 @@ test('unknown uncertainty breaks the chart allowance without becoming zero certa
   assert.deepEqual(bands.map(band => band.map(point => point.uncertaintyC)), [[0, 0], [.3, .4], [.6, .7]]);
   assert.deepEqual(heatingUncertaintyBands(points.map(point => ({ ...point, uncertaintyC: null }))), []);
   assert.deepEqual(heatingUncertaintyBands([{ ...points[0], indoorC: null }, points[1]]), []);
+});
+
+
+test('cycle approval explains paid trials, modeled exposure and its separate control authority',()=>{
+  const text=heatingApprovalText({controls:[{key:'maxTrialCostCents',value:150}],scenario:{trial:true,
+    estimatedBenefitCents:-25,trialExposureCents:40,outcomes:{maxIndoorDropC:1.25}}});
+  assert.match(text,/extra cost.*€0.25/);assert.match(text,/exposure €0.40.*€1.50/);
+  assert.match(text,/drop below Normal: 1.25 °C/);assert.match(text,/even if Home automation is paused or disabled/);
+  assert.match(text,/saved choices and configured defaults stay unchanged/);
 });

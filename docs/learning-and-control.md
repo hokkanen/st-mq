@@ -342,9 +342,18 @@ one-room estimate adds its uncertainty to control and forecasts, and cannot star
 a new learning trial. Configuration changes use **Apply
 configuration**. No strategy promises an annual savings percentage.
 
+Forecast validation is scoped to the executed treatment and its observed preheat
+setting, preheat duration and reduction duration. Pure reductions do not validate
+coupled preheating. Frozen predictions retain their originating algorithm;
+observations from an earlier predictor remain useful for physical response and
+measured energy, but its forecast errors do not certify or recalibrate a newer
+predictor. Observed response ratios may exceed two when real compressor runtime
+contradicts a small Normal-demand estimate; physical duty remains bounded to
+zero through one.
+
 A new cycle's conservative benefit must exceed the strategy's minimum of 2,
 0 or 0 cents respectively, plus 5, 0 or 0 cents per hot/cold
-°C²-hour of the weighted indoor average, zero additional start and duration allowances by default.
+°C²-hour of the weighted indoor average, zero additional start and duration penalties by default.
 These defaults are explicitly overridable through the monetary policy fields in
 [configuration](configuration.md#heating-strategies-and-limits), including zero;
 configured comfort limits and physical stress checks still apply. Continuation excludes
@@ -374,8 +383,9 @@ and restoration checks independently of the search worker.
 Selection, dispatch and continuation share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor
 duty ±0.08, source electrical input within its operating-point allowance, and AUX
-exposure ±50%. An additional residual cost allowance is configurable and defaults
-to zero. These cases are not
+exposure ±50%. A minimum savings uncertainty deduction is configurable and defaults
+to zero. It is a floor on the stress-case deduction, rather than an amount
+added on top of it. These cases are not
 statistical confidence bounds. Forward temperature bounds begin with conditional
 trajectory error and add engineering allowances for the source estimate, unknown
 action, missing solar, fireplace response and optional slab. The separately

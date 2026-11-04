@@ -478,6 +478,13 @@ remain required.
   the new algorithm. The operational replication journal may be reanchored with
   its original chain retained in verified backups. This grants no runtime
   converter, mixed-version reader or lasting historical-format support.
+  The owner subsequently approved the algorithm 18 → 19 equipment/sensor-epoch
+  correction, then authorized further algorithm revisions needed to complete this
+  same audit and rollout without repeated approval. Algorithm 20 includes
+  unclipped observed response, free trials within a zero spending budget and
+  treatment-scoped forecast checks. The same backup, preservation, replay,
+  rollback and coordinated-activation requirements apply. This remains a closed
+  installation-only exception; ordinary startup rejects earlier algorithms.
 
 ## Version discipline
 
@@ -487,7 +494,7 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v19-independent-equipment-and-measurement-epochs`, with
+The Home learning algorithm is `committed-house-v20-observed-response-and-free-experiments`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 

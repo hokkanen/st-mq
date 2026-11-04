@@ -94,6 +94,11 @@ function createDetails(document) {
     const entry = entries.get(trigger);
     if (!entry) return;
     if (active === trigger) { close(true); return; }
+    // A body-level popover is inert outside an open modal's subtree. Keep the
+    // shared explanation inside the invoking window so its close button and
+    // keyboard interaction remain available.
+    const host = trigger.closest?.('dialog[open]') ?? document.body;
+    if (panel.parentElement !== host) host.append(panel);
     panel.hidden = false;
     pageScroll = pagePosition();
     panel.scrollTop = 0;

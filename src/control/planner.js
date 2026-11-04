@@ -1,9 +1,10 @@
-import { initialAdaptiveModel, THERMAL_PARAMETER_BOUNDS, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady, fireplaceGainUncertainty, equipmentResponseEstimate } from './adaptive-learning.js';
+import { initialAdaptiveModel, THERMAL_PARAMETER_BOUNDS, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady, fireplaceGainUncertainty, equipmentResponseEstimate, forecastEvidence } from './adaptive-learning.js';
 import { estimateHeatPumpPerformance, hydronicGain, planningSupplyC } from '../domain/heat-pump-performance.js';
 import { heatingStrategy, heatingEconomics } from '../domain/heating-strategy.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
 import { fireplaceInfluence, fireplaceRate } from '../domain/fireplace.js';
 import { trialOpportunity, trialInformation } from './heating-trials.js';
+import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { homePlanningState } from '../domain/home-model.js';
 
 const HOUR = 3600000, STEP = 900000;
@@ -41,7 +42,7 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
   const trialReady = c.learningTrials && initialReady
     && number(equipment.compressorOn) && number(equipment.dhwRouting)
     && equipment.indoorEstimated !== true
-    && (!number(equipment.trialBudgetRemainingCents)||equipment.trialBudgetRemainingCents>0);
+    && (!number(equipment.trialBudgetRemainingCents)||equipment.trialBudgetRemainingCents>=0);
   return { thermalValidated, responseValidated, advanceValidated, fireplaceValidated, actionValidated, initialReady, trialReady,
     reasons: [!thermalValidated && 'awaiting-held-out-thermal-trajectories',
       !actionValidated && 'awaiting-held-out-tariff-response',
@@ -373,11 +374,15 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
     basis: 'Paired physical stress scenarios; estimated space-heating costs, not measured whole-house savings.' };
 }
 
-export function validatedReductionHours(model) {
-  const phase = model?.equipmentResponse?.validation?.phases?.reduction;
-  return actionEvidenceReady(model, 'reduction') && model?.forecastValidation?.accepted
-    && number(phase?.maxDurationHours) && number(model.forecastValidation.maxReductionHours)
-    ? Math.min(phase.maxDurationHours,model.forecastValidation.maxReductionHours) : 0;
+export function validatedReductionHours(model, schedule = null) {
+  const treatmentKey = schedule?.treatmentKey ?? null;
+  const phase = equipmentResponseEstimate(model, 'reduction', treatmentKey)?.validation
+    ?? model?.equipmentResponse?.validation?.phases?.reduction;
+  const advance = forecastEvidence(model, { treatmentKey, roomBoostC: schedule?.roomBoostC ?? 0,
+    preheatHours: schedule ? (schedule.preheatEnd-schedule.preheatStart)/HOUR : 0 });
+  return actionEvidenceReady(model, 'reduction', 0, treatmentKey) && advance.accepted
+    && number(phase?.maxDurationHours) && number(advance.maxReductionHours)
+    ? Math.min(phase.maxDurationHours, advance.maxReductionHours) : 0;
 }
 
 function validatedRoomBoost(model) {
@@ -391,13 +396,21 @@ function preheatEvidenceReady(model, schedule) {
     && number(schedule.roomBoostC) && schedule.roomBoostC >= 0;
 }
 
-function selectedReadiness(readiness,model,schedule){
-  const responseValidated=actionEvidenceReady(model,'reduction',
-    (schedule.reductionEnd-schedule.reductionStart)/HOUR,schedule.treatmentKey);
-  const actionValidated=readiness.actionValidated&&responseValidated
-    &&(schedule.preheatEnd===schedule.preheatStart||preheatEvidenceReady(model,schedule));
-  return {...readiness,responseValidated,actionValidated,
-    reasons:readiness.actionValidated&&!actionValidated?[...readiness.reasons,'awaiting-held-out-matching-treatment']:readiness.reasons};
+function selectedReadiness(readiness, model, schedule) {
+  const duration = (schedule.reductionEnd-schedule.reductionStart)/HOUR;
+  const responseValidated = actionEvidenceReady(model, 'reduction', duration, schedule.treatmentKey);
+  const advance = forecastEvidence(model, { treatmentKey: schedule.treatmentKey, roomBoostC: schedule.roomBoostC ?? 0,
+    preheatHours: (schedule.preheatEnd-schedule.preheatStart)/HOUR });
+  const advanceValidated = advance.accepted === true && duration <= advance.maxReductionHours;
+  const actionValidated = responseValidated && advanceValidated
+    && (readiness.fireplaceValidated || !readiness.reasons.includes('awaiting-fireplace-response-evidence'))
+    && (schedule.preheatEnd === schedule.preheatStart || preheatEvidenceReady(model, schedule));
+  const reasons = readiness.reasons.filter(reason => !['awaiting-held-out-tariff-response',
+    'awaiting-frozen-advance-cycle-predictions', 'awaiting-held-out-matching-treatment'].includes(reason));
+  if (!responseValidated) reasons.push('awaiting-held-out-tariff-response');
+  if (!advanceValidated) reasons.push('awaiting-frozen-advance-cycle-predictions');
+  if (!actionValidated) reasons.push('awaiting-held-out-matching-treatment');
+  return { ...readiness, responseValidated, advanceValidated, actionValidated, reasons };
 }
 
 export function trialEnvelope({ schedule, initialState, targetC, intervals, model, config = {}, occupancy = {}, maxDropC = 1.5,
@@ -632,7 +645,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const away = settings.occupancy.mode === 'away';
   const readiness = learningReadiness(checkpoint, c, equipment);
   const targetReached = (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay;
-  const canTrial = readiness.trialReady && trialBudgetRemainingCents > 0;
+  const canTrial = readiness.trialReady && trialBudgetRemainingCents >= 0;
   const configuredMaximum = equipment.h66Available ? (away ? c.maxAwayReductionHours : c.maxReductionHours) : c.maxUnobservedReductionHours;
   const testedMaximum = validatedReductionHours(model);
   const economicMaximum = readiness.initialReady ? configuredMaximum : readiness.actionValidated ? Math.min(configuredMaximum, testedMaximum) : 0;
@@ -812,7 +825,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   return { action: phase === 'reduction' ? 'reduction' : 'normal', phase,
     reasons: [trial ? 'bounded-learning-trial' : chosen.economics.lowerBenefitCents<0?'reviewed-experimental-cycle':'predicted-full-cycle-benefit'],
     comfort: { targetC, maxDropC, maxDropApplies: !away }, diagnostics,
-    plan: { generatedAt: now, horizonEnd: intervals.at(-1).end, schedule: chosen.schedule, reference,
+    plan: { algorithmVersion: LEARNING_ALGORITHM, generatedAt: now, horizonEnd: intervals.at(-1).end, schedule: chosen.schedule, reference,
       referenceLabel: 'continuous normal operation',
       initialState, targetC, model, intervals, equipment, config: c, occupancy: { ...settings.occupancy },
       maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5,

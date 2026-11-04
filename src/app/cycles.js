@@ -327,7 +327,8 @@ export class CycleTracker {
         recoveryAuxKwh: a.recoveryAuxKwh, compressorActivityObserved: a.compressorActivityObserved, auxiliaryObserved: a.auxiliaryObserved, auxiliaryRouteKnown: a.auxiliaryRouteKnown,
         frozenRecoveryMultiplier: cycle.plan.model.energy.recoveryMultiplier,
         frozenAuxiliaryRiskScale: cycle.plan.model.energy.auxiliaryRiskScale ?? 1,
-        forecastValidation:{eligible:Boolean(predicted && comparableSpace && trajectoryHours>0),
+        forecastValidation:{roomBoostC:schedule.roomBoostC??0,preheatHours:(schedule.preheatEnd-schedule.preheatStart)/HOUR,
+          eligible:Boolean(predicted && comparableSpace && trajectoryHours>0),
           temperatureMaeC:trajectoryHours?trajectoryErrors.reduce((s,r)=>s+r.error*r.hours,0)/trajectoryHours:null,
           minimumTemperatureErrorC:predicted?Math.abs(Math.min(...predicted.trajectory.map(r=>r.indoorC))-Math.min(...cycle.observations.map(r=>r.indoorC))):null,
           energyRelativeError:predicted && a.spaceHeatingKwh>=.1?Math.abs(predicted.spaceHeatingKwh-a.spaceHeatingKwh)/a.spaceHeatingKwh:null,
@@ -337,7 +338,7 @@ export class CycleTracker {
           reductionHours:(schedule.reductionEnd-schedule.reductionStart)/HOUR,
           basis:'frozen-advance-forecast',adjusted:Boolean(cycle.adjustments?.length)},
         phases: [...new Set(cycle.observations.map(row => row.phase))],
-        provenance: { basis: 'committed-history', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
+        provenance: { basis: 'committed-history', forecastAlgorithm: cycle.plan.algorithmVersion ?? 'unversioned-frozen-forecast', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
       if (!floorTreatmentComparable
         || cycle.fireplaceCorrectionRevision || firePresent && !fireplaceEvidenceReady(cycle.plan.model)) {
         // Keep the attempt and actual observations, without letting assumed wood

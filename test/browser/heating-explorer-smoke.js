@@ -128,7 +128,7 @@ try {
     application: { allowed: true, latestStartAt: now + hour, expiresAt: now + 12 * hour },
   };
   const allControls=exploreHeatingPlan(heatingExplorerFixture()).controls;
-  fixture.constraints.push({key:'provisionalReference',label:'Normal temperature reference',kind:'evidence',
+  fixture.constraints.push({key:'normalReference',label:'Normal temperature reference',kind:'evidence',
     status:'learning',value:21.25,unit:'°C',detail:'The normal reference is still learning; the allowed drop is shown separately.'});
   fixture.controls=allControls.map(control=>({...control,
     value:fixture.controls.find(existing=>existing.key===control.key)?.value??control.value}));
@@ -271,52 +271,64 @@ try {
     for (const theme of ['light', 'dark']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
       await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
+      await evaluate(`document.getElementById('heating-explorer-advanced').open=false`);
+      assert.equal(await evaluate(`document.querySelector('#heating-explorer-advanced-controls input')?.checkVisibility()`),false,'Advanced settings start folded');
+      await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
+      await screenshot(`${width}-${theme}-common-settings`);
+      await evaluate(`document.getElementById('heating-explorer-advanced').open=true`);
       const layout = await evaluate(`(() => {
-        const d = document.getElementById('heating-explorer-dialog');
-        const grid = document.getElementById('heating-explorer-controls'), bounds = grid.getBoundingClientRect();
-        const controls = [...grid.querySelectorAll('.heating-explorer-control')].map(control => {
-          const input = control.querySelector('input,select'), rect = control.getBoundingClientRect();
-          const renderedInput = control.querySelector('.app-select-trigger') ?? input;
-          return { key: input.id.replace('heating-limit-', ''), visible: renderedInput.checkVisibility(),
-            left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
-            width: rect.width, overflow: control.scrollWidth > control.clientWidth + 1 };
+        const d=document.getElementById('heating-explorer-dialog');
+        const grids=['heating-explorer-controls','heating-explorer-advanced-controls'].map(id=>{
+          const grid=document.getElementById(id),bounds=grid.getBoundingClientRect();
+          return {id,left:bounds.left,right:bounds.right,controls:[...grid.querySelectorAll('.heating-explorer-control')].map(control=>{
+            const input=control.querySelector('input,select'),r=control.getBoundingClientRect();
+            const shown=control.querySelector('.app-select-trigger')??input;
+            return {key:input.id.replace('heating-limit-',''),visible:shown.checkVisibility(),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,overflow:control.scrollWidth>control.clientWidth+1,
+              help:Boolean(control.querySelector('.status-detail-trigger'))};
+          })};
         });
-        return { viewport: innerWidth, width: d.getBoundingClientRect().width, scroll: d.scrollWidth,
-          client: d.clientWidth, page: document.documentElement.scrollWidth,
-          grid: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom }, controls,
-          extraControls: Boolean(document.querySelector('#heating-explorer-more-limits,#heating-explorer-secondary-controls,.heating-explorer-presets')) };
+        return{width:d.getBoundingClientRect().width,scroll:d.scrollWidth,client:d.clientWidth,page:document.documentElement.scrollWidth,grids};
       })()`);
-      const label = `${width}px ${theme}`;
-      assert(layout.width <= width && layout.scroll <= layout.client + 1 && layout.page <= width,
-        `${label} has no horizontal overflow: ${JSON.stringify(layout)}`);
-      assert.equal(layout.extraControls, false, `${label}: all controls live in one grid without duration presets or an extra fold`);
-      assert.equal(layout.controls.length, allControls.length, `${label}: every planning control is present`);
-      assert.deepEqual(layout.controls.map(control=>control.key).sort(),allControls.map(control=>control.key).sort());
-      assert(layout.controls.every(control => control.visible && !control.overflow && control.width > 0
-        && control.left >= layout.grid.left - 1 && control.right <= layout.grid.right + 1
-        && control.top >= layout.grid.top - 1 && control.bottom <= layout.grid.bottom + 1),
-      `${label}: all controls stay visible and fit their grid: ${JSON.stringify(layout.controls)}`);
-      const columns=width<=650?2:3,expectedRows=[];
-      for(let i=0;i<layout.controls.length;i+=columns)expectedRows.push(layout.controls.slice(i,i+columns).map(control=>control.key));
-      const controls = new Map(layout.controls.map(control => [control.key, control]));
-      for (const [rowIndex, keys] of expectedRows.entries()) {
-        for (const [columnIndex, key] of keys.entries()) {
-          const control = controls.get(key), rowStart = controls.get(keys[0]);
-          assert(control, `${label}: ${key} is available`);
-          assert(Math.abs(control.top - rowStart.top) < 1, `${label}: ${keys.join(', ')} share a row`);
-          if (columnIndex > 0) assert(controls.get(keys[columnIndex - 1]).right < control.left,
-            `${label}: ${key} follows ${keys[columnIndex - 1]} without overlap`);
-          if (rowIndex > 0) {
-            const above = controls.get(expectedRows[rowIndex - 1][columnIndex]);
-            assert(above.bottom < control.top && Math.abs(above.left - control.left) < 1
-              && Math.abs(above.right - control.right) < 1,
-            `${label}: ${key} sits below ${above.key} in the same column`);
-          }
+      const label=`${width}px ${theme}`,all=layout.grids.flatMap(grid=>grid.controls);
+      assert(layout.width<=width&&layout.scroll<=layout.client+1&&layout.page<=width,`${label}: no horizontal overflow`);
+      assert.equal(all.length,allControls.length,`${label}: every control remains available`);
+      assert.deepEqual(all.map(row=>row.key).sort(),allControls.map(row=>row.key).sort());
+      assert.equal(layout.grids[0].controls.length,allControls.filter(control=>!control.advanced).length);
+      for(const grid of layout.grids){
+        assert(grid.controls.every(row=>row.visible&&row.help&&!row.overflow&&row.width>0&&row.left>=grid.left-1&&row.right<=grid.right+1),`${label}: controls and help fit ${grid.id}`);
+        const columns=grid.id==='heating-explorer-advanced-controls'?(width<=650?1:2):(width<=650?2:3);
+        for(let i=0;i<grid.controls.length;i++){
+          const row=grid.controls[i],same=grid.controls[Math.floor(i/columns)*columns];
+          assert(Math.abs(row.top-same.top)<1,`${label}: aligned rows in ${grid.id}`);
+          if(i%columns)assert(grid.controls[i-1].right<row.left,`${label}: no column overlap`);
+          if(i>=columns){const above=grid.controls[i-columns];assert(above.bottom<row.top&&Math.abs(above.left-row.left)<1,`${label}: no row overlap`);}
         }
       }
       await screenshot(`${width}-${theme}-plan`);
       await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
       await screenshot(`${width}-${theme}-controls`);
+    }
+  }
+  for(const [width,height,theme]of [[320,740,'light'],[1280,1000,'dark']]){
+    await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-advanced').open=true`);
+    for(const control of allControls){
+      const selector=`#heating-limit-${control.key}`;
+      await evaluate(`(() => {const row=document.querySelector(${JSON.stringify(selector)}).closest('.heating-explorer-control');row.scrollIntoView({block:'center'});row.querySelector('.status-detail-trigger').focus({preventScroll:true});})()`);
+      await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+      await keyPress('Enter');
+      await until(`!document.getElementById('status-detail-popover').hidden`);
+      assert.equal(await evaluate(`document.getElementById('status-detail-heading').textContent`),control.label);
+      assert.equal(await evaluate(`document.querySelector('.status-detail-body').textContent`),control.help);
+      assert.equal(await evaluate(`document.getElementById('status-detail-popover').contains(document.activeElement)`),true,'Help is keyboard-accessible inside the modal');
+      assert.equal(await evaluate(`(() => {const r=document.getElementById('status-detail-popover').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1;})()`),true,'Help fits the viewport');
+      if(control.key==='economicUncertaintyFloorCents'){
+        const shot=await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});
+        writeFileSync(join(artifacts,`${width}-${theme}-uncertainty-help.png`),Buffer.from(shot.data,'base64'));
+      }
+      await keyPress('Escape');
+      assert.equal(await evaluate(`document.getElementById('heating-explorer-dialog').open`),true,`Escape dismisses help before the planner: ${control.key}`);
+      assert.equal(await evaluate(`document.activeElement.closest('.heating-explorer-control')?.querySelector('input,select').id`),`heating-limit-${control.key}`,'Help restores focus to its setting');
     }
   }
   await evaluate(`document.getElementById('heating-explorer-jump').click();document.getElementById('heating-limit-maxReductionHours').value='8';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}))`);
@@ -360,9 +372,23 @@ try {
       await screenshot(`${width}-${theme}-temperature`);
     }
   }
+  await evaluate(`document.getElementById('heating-explorer-apply').click();document.getElementById('heating-explorer-apply').click()`);
+  await until(`document.querySelector('.confirmation-dialog')?.open`);
+  assert.equal(await evaluate(`document.querySelectorAll('.confirmation-dialog').length`),1,'Repeated approval clicks open one confirmation');
+  assert.equal(await evaluate(`document.activeElement.textContent`), 'Cancel', 'Confirmation defaults to Cancel');
+  assert.match(await evaluate(`document.getElementById('confirmation-description').textContent`),/Estimated saving against Normal heating.*paused or disabled/);
+  await keyPress('Escape');
+  await until(`!document.querySelector('.confirmation-dialog')`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-dialog').open`),true,'Cancelling confirmation preserves the planner');
+  assert.equal(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).length`),0);
   await evaluate(`document.getElementById('heating-explorer-apply').click()`);
   await until(`document.querySelector('.confirmation-dialog')?.open`);
-  assert.equal(await evaluate(`document.activeElement.textContent`), 'Cancel', 'Confirmation defaults to Cancel');
+  await evaluate(`explorerFixture.role='family';await explorerFixture.poll()`);
+  await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click()`);
+  await until(`!document.querySelector('.confirmation-dialog')`);
+  assert.equal(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).length`),0,'Losing admin access while reviewing prevents submission');
+  await evaluate(`explorerFixture.role='admin';await explorerFixture.poll();document.getElementById('heating-explorer-apply').click()`);
+  await until(`document.querySelector('.confirmation-dialog')?.open`);
   await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click()`);
   await until(`document.getElementById('heating-explorer-receipt').textContent.includes('approved')`);
   assert.deepEqual(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).map(r=>r.body)`), [{previewId:'synthetic-reviewed-preview'}]);

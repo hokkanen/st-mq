@@ -140,5 +140,5 @@ test('correction retries are idempotent and source-scoped, and unsupported algor
   assert.deepEqual(store.learningJournal({ input: 'mqtt' }), before);
   const view = sensorChangesView(store, 'mqtt', { now: start + 10 * W, config });
   assert.equal(view.events.find(row => row.id === reset.id).revertedAt, first.revertedAt);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v19-independent-equipment-and-measurement-epochs');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v20-observed-response-and-free-experiments');
 });

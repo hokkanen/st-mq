@@ -1689,9 +1689,14 @@ G_warming = G / 2</code>
       </section>
       <section class="heating-explorer-section heating-explorer-workbench" aria-labelledby="heating-simulator-title">
         <div class="heating-explorer-section-heading"><h3 id="heating-simulator-title">Explore different limits</h3><span class="heating-explorer-tag">Preview only</span></div>
-        <p class="muted">Choose what to allow, then compare. The planner still chooses the duration; your settings stay unchanged.</p>
+        <p class="muted">Adjust temperature and timing limits, then compare a preview. The planner chooses the duration. Nothing changes in live control until you approve one cycle.</p>
         <form id="heating-explorer-form">
           <div id="heating-explorer-controls" class="heating-explorer-controls"></div>
+          <details id="heating-explorer-advanced" class="heating-explorer-advanced">
+            <summary>Advanced settings</summary>
+            <p class="muted">Learning experiments, cost penalties and operation without pump telemetry. Each setting has an explanation.</p>
+            <div id="heating-explorer-advanced-controls" class="heating-explorer-controls"></div>
+          </details>
           <div class="heating-explorer-actions"><button id="heating-explorer-calculate" type="submit">Compare scenario</button><button id="heating-explorer-reset" type="button" class="secondary-button">Reset to current limits</button></div>
         </form>
         <p id="heating-explorer-dirty" class="muted" role="status" hidden>Limits changed. Compare again to update the estimates.</p>

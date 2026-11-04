@@ -176,8 +176,8 @@ export function predictEquipmentDuty(model, state, inputs = {}, dtHours = 0.25) 
     uncertaintyDuty: 1, actionEvidence: checked ? 'checked' : 'unvalidated' };
   // Reduction changes the native request, not the compressor's physical capacity.
   // Initial response estimates remain explicitly unvalidated until observed.
-  const ratio = finite(inputs.responseRatio) ? clamp(inputs.responseRatio, 0, 2)
-    : finite(estimate?.ratio) ? clamp(estimate.ratio, 0, 2) : initialActionResponse(model, phase);
+  const ratio = finite(inputs.responseRatio) ? Math.max(0, inputs.responseRatio)
+    : finite(estimate?.ratio) ? Math.max(0, estimate.ratio) : initialActionResponse(model, phase);
   return { compressorDuty: clamp(normalDuty * ratio, 0, 1),
     basis: estimate ? 'episode-calibrated requested-mode response' : 'initial requested-mode estimate; not validated',
     uncertaintyDuty: checked ? Math.max(0.1, estimate?.validation?.intervalMaeDuty
@@ -689,7 +689,10 @@ export function fitEquipmentResponse(model, trainingRows, holdoutRows, trainingE
       const rows = training.filter(row => row.phase === phase && row.treatmentKey === treatmentKey
         && row.nominalDutyHours >= 0.05 && row.hours >= MIN_ACTION_HOURS);
       if (!rows.length) continue;
-      const ratios = rows.map(row => clamp(row.dutyHours / row.nominalDutyHours, 0, 2));
+      // This is a ratio to estimated Normal demand, not a physical duty.
+      // It can exceed two when observed demand contradicts a small prior.
+      // Only the resulting compressor duty is bounded to [0, 1].
+      const ratios = rows.map(row => Math.max(0, row.dutyHours / row.nominalDutyHours));
       // The configured estimate starts an empty model. Once representative
       // covered episodes exist, use their equal-weight response estimates.
       // Fixed seed weight must not invent suppression after unchanged demand,
@@ -1097,36 +1100,52 @@ function finishAdaptiveUpdate(cp, { nowAt, config }) {
   return cp;
 }
 
-/** Optional whole-cycle calibration. An incomplete cycle, missing attribution, or
- * repeated episode cannot strengthen the model. Estimated episodes remain estimates. */
+/** Forecast checks apply only to comparable executed treatments. The bounded
+ * records retain the original errors; simulation never contributes evidence. */
+function summarizeForecastRecords(records) {
+  const temperatureMaeC = records.length ? mean(records.map(record => record.temperatureMaeC)) : null;
+  const energyRelativeError = records.length ? mean(records.map(record => record.energyRelativeError)) : null;
+  const costRelativeError = records.length ? mean(records.map(record => record.costRelativeError)) : null;
+  const minimumTemperatureErrorC = records.length ? Math.max(...records.map(record => record.minimumTemperatureErrorC)) : null;
+  const accepted = records.length >= 3 && temperatureMaeC <= 0.5 && energyRelativeError <= 0.5 && costRelativeError <= 0.5
+    && minimumTemperatureErrorC <= 0.75;
+  const durations = records.map(record => record.reductionHours).sort((a, b) => b - a);
+  return { kind: 'frozen-advance-forecast', episodes: records.length, accepted,
+    temperatureMaeC, energyRelativeError, costRelativeError, minimumTemperatureErrorC,
+    maxReductionHours: accepted ? durations[2] : 0,
+    limitation: 'Recorded component energy may use nominal powers; forecast accuracy is not proof of counterfactual savings' };
+}
+
+export function forecastEvidence(model, { treatmentKey = null, roomBoostC = 0, preheatHours = 0 } = {}) {
+  const evidence = model?.forecastValidation;
+  if (!treatmentKey) return evidence ?? { accepted: false, episodes: 0, maxReductionHours: 0 };
+  const records = (evidence?.records ?? []).filter(record => record.treatmentKey === treatmentKey
+    && record.roomBoostC >= roomBoostC && record.preheatHours >= preheatHours);
+  return { ...summarizeForecastRecords(records), treatmentKey };
+}
+
 function updateForecastValidation(model, episode) {
   const value = episode.forecastValidation;
   if (value?.eligible !== true || value.adjusted === true || value.basis !== 'frozen-advance-forecast'
     || !['temperatureMaeC', 'minimumTemperatureErrorC', 'energyRelativeError', 'costRelativeError', 'reductionHours']
       .every(key => finite(value[key])) || value.temperatureMaeC < 0 || value.energyRelativeError < 0 || value.costRelativeError < 0
     || value.reductionHours <= 0 || value.reductionHours > 72) return false;
+  const treatmentKey = episode.treatmentKey ?? 'native';
   const records = [...(model.forecastValidation?.records ?? []).filter(record => record.id !== episode.id), {
-    id: episode.id, endedAt: episode.endedAt, temperatureMaeC: value.temperatureMaeC,
+    id: episode.id, endedAt: episode.endedAt, treatmentKey,
+    roomBoostC: finite(value.roomBoostC) ? value.roomBoostC : 0,
+    preheatHours: finite(value.preheatHours) ? value.preheatHours : 0,
+    temperatureMaeC: value.temperatureMaeC,
     minimumTemperatureErrorC: Math.abs(value.minimumTemperatureErrorC), energyRelativeError: value.energyRelativeError,
     costRelativeError: value.costRelativeError,
     costAbsoluteErrorCents: finite(value.costAbsoluteErrorCents) ? value.costAbsoluteErrorCents : null,
     reductionHours: value.reductionHours, recoveryCostErrorCents: finite(value.recoveryCostErrorCents) ? value.recoveryCostErrorCents : null,
   }].slice(-30);
-  const temperatureMaeC = mean(records.map(record => record.temperatureMaeC));
-  const energyRelativeError = mean(records.map(record => record.energyRelativeError));
-  const costRelativeError = mean(records.map(record => record.costRelativeError));
-  const minimumTemperatureErrorC = Math.max(...records.map(record => record.minimumTemperatureErrorC));
-  const accepted = records.length >= 3 && temperatureMaeC <= 0.5 && energyRelativeError <= 0.5 && costRelativeError <= 0.5
-    && minimumTemperatureErrorC <= 0.75;
-  const durations = records.map(record => record.reductionHours).sort((a, b) => b - a);
-  model.forecastValidation = { kind: 'frozen-advance-forecast', records, episodes: records.length, accepted,
-    temperatureMaeC, energyRelativeError, costRelativeError, minimumTemperatureErrorC,
-    maxReductionHours: accepted ? durations[2] : 0,
-    limitation: 'Recorded component energy may use nominal powers; forecast accuracy is not proof of counterfactual savings' };
+  model.forecastValidation = { records, ...summarizeForecastRecords(records.filter(record => record.treatmentKey === treatmentKey)), treatmentKey };
   return true;
 }
 
-export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
+export function updateAdaptiveEpisode(input, episode, { config = {}, forecastCurrent = true } = {}) {
   const cp = checkpoint(input, config);
   if (episode?.responseComplete === true && episode.complete === false) {
     if (typeof episode.id !== 'string' || !episode.id || !finite(time(episode.startedAt)) || !finite(time(episode.endedAt))
@@ -1154,7 +1173,7 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
   const energy = { ...cp.model.energy }, priorCount = energy.episodes ?? 0;
   const alpha = 1 / Math.min(20, priorCount + 2);
   const blend = (previous, value) => finite(previous) ? previous + alpha * (value - previous) : value;
-  let useful = updateForecastValidation(cp.model, episode);
+  let useful = forecastCurrent && updateForecastValidation(cp.model, episode);
   if ((episode.compressorEnergyMeasured === true || episode.compressorEnergyBasis === 'measured')
     && finite(episode.compressorKwh) && episode.compressorKwh >= 0 && finite(episode.compressorRunHours)
     && episode.compressorRunHours >= 0.25 && episode.compressorRunHours <= 168) {
@@ -1177,7 +1196,7 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
   // AUX would be attributed twice: to compressor recovery and to auxiliary risk.
   const recoveryFeedback = episode.auxiliaryObserved === true
     && (measured || episode.compressorActivityObserved === true);
-  if (recoveryFeedback && finite(episode.recoveryEnergyKwh) && finite(episode.recoveryAuxKwh)
+  if (forecastCurrent && recoveryFeedback && finite(episode.recoveryEnergyKwh) && finite(episode.recoveryAuxKwh)
     && finite(episode.predictedRecoveryEnergyKwh) && finite(episode.predictedRecoveryAuxKwh)) {
     const actual = episode.recoveryEnergyKwh - episode.recoveryAuxKwh;
     const expected = episode.predictedRecoveryEnergyKwh - episode.predictedRecoveryAuxKwh;
@@ -1191,7 +1210,7 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
       useful = true;
     }
   }
-  if (episode.auxiliaryObserved === true && episode.auxiliaryRouteKnown === true
+  if (forecastCurrent && episode.auxiliaryObserved === true && episode.auxiliaryRouteKnown === true
     && finite(episode.spaceHeatingAuxKwh) && episode.spaceHeatingAuxKwh >= 0
     && finite(episode.predictedSpaceHeatingAuxKwh) && episode.predictedSpaceHeatingAuxKwh >= 0) {
     const expected = episode.predictedSpaceHeatingAuxKwh;
@@ -1237,7 +1256,7 @@ export function updateAdaptiveEpisode(input, episode, { config = {} } = {}) {
   energy.episodes = priorCount + 1;
   energy.measuredEpisodes = (energy.measuredEpisodes ?? 0) + Number(measured);
   energy.basis = energy.measuredEpisodes >= 3 && measured ? 'calibrated-estimate' : 'estimated';
-  if (finite(episode.predictedEnergyKwh) && episode.predictedEnergyKwh > 0.1
+  if (forecastCurrent && finite(episode.predictedEnergyKwh) && episode.predictedEnergyKwh > 0.1
     && finite(episode.actualEnergyKwh) && episode.actualEnergyKwh >= 0 && episode.energyBasis === 'measured') {
     const relativeError = Math.abs(episode.actualEnergyKwh - episode.predictedEnergyKwh) / episode.predictedEnergyKwh;
     energy.relativeUncertainty = clamp(Math.max(relativeError * 1.5,

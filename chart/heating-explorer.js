@@ -2,6 +2,8 @@ import { homePlannedChange } from './heating-plan.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { confirmAction } from './confirmation.js';
 import { actionReceiptRecent } from './action-receipts.js';
+import { setStatusDetail, closeStatusDetails } from './status-details.js';
+import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
 
 const endpoint = '/api/heating/explorer';
 const hour = 3_600_000;
@@ -22,14 +24,43 @@ const reasonLabels = {
   'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
   'heating-planning-in-progress': 'The next heating plan is being calculated. Normal heating is requested; device feedback confirms the actual state.',
   'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating is the fallback request; device feedback confirms the actual state.',
-  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
-  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
+  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast.',
+  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures.',
   'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
   'missing-or-stale-observations': 'Fresh temperature observations are needed.',
   'currently-selected-cycle': 'This is the cycle currently selected by the controller.',
   'normal-operation': 'Normal heating is selected. No change is scheduled.',
+  'continuous-normal-heating': 'Normal heating throughout the evaluated period.',
+  'bounded-learning-trial': 'A learning cycle is scheduled within its experiment budget and temperature limits.',
+  'predicted-full-cycle-benefit': 'The complete cycle is expected to cost less than Normal heating.',
+  'reviewed-experimental-cycle': 'This reviewed cycle permits estimated extra cost under your chosen limits.',
+  'missing-or-stale-indoor': 'Current indoor temperature readings are needed before scheduling a cycle.',
+  'awaiting-normal-temperature-reference': 'The normal temperature reference is unavailable. Occupied Normal heating observations are needed to establish it.',
+  'missing-or-incomplete-price-weather-horizon': 'Price and weather coverage is too short or incomplete to assess a full cycle.',
+  'awaiting-tariff-response-evidence': 'The requested heating response cannot currently be assessed.',
+  'no-useful-space-heating-window': 'No immediate trial offers useful space-heating evidence under these conditions.',
+  'trial-comfort-or-forecast-limited': 'The evaluated trials do not fit the temperature limits or available forecast.',
+  'trial-incremental-cost-exceeds-allowance': 'The evaluated trials exceed the available experiment budget.',
+
 };
 const reasonsText = reasons => (reasons ?? []).map(reason => reasonLabels[reason] ?? humanize(reason)).join(' · ');
+export function heatingEvidenceText(evidence = {}) {
+  const validationNames = {
+    'awaiting-held-out-thermal-trajectories': 'thermal response',
+    'awaiting-held-out-tariff-response': 'requested heating response',
+    'awaiting-frozen-advance-cycle-predictions': 'advance cycle forecasts',
+    'awaiting-fireplace-response-evidence': 'fireplace response',
+    'awaiting-held-out-matching-treatment': 'the selected heating treatment',
+  };
+  const pending = [...new Set((evidence.reasons ?? []).map(reason => Object.hasOwn(validationNames, reason)
+    ? validationNames[reason] : null).filter(Boolean))];
+  return [evidence.actionValidated ? 'Independent action validation is available for this comparison.'
+    : evidence.initialReady ? 'The initialized model supports executable plans within the reviewed limits while independent validation accumulates.'
+      : 'Independent action validation is incomplete.',
+  evidence.validatedReductionHours === 0 ? 'No reduction duration has been independently validated yet.'
+    : Number.isFinite(evidence.validatedReductionHours) ? `Independently validated reduction duration: ${decimal(evidence.validatedReductionHours)} h.` : '',
+  pending.length ? `Validation still being collected: ${pending.join(', ')}.` : ''].filter(Boolean).join(' ');
+}
 const validTrial = trial => ['pending', 'running'].includes(trial?.status);
 const errorMessage = error => error?.status === 401 ? 'Your session ended. Sign in again to continue.'
   : [409, 410].includes(error?.status) ? 'This comparison is no longer current. Refresh conditions and compare again.'
@@ -44,6 +75,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
   let result = null, limits = {}, busy = false, message = '', error = false, dirty = false, stale = false;
   let generation = 0;
   let receipt = null;
+  const edited = new Set();
   const snapshot = () => ({ result, limits: { ...limits }, busy, message, error, dirty,
     receipt: actionReceiptRecent(receipt?.at, clock()) ? receipt : null,
     stale: stale || !!result && Number.isFinite(result.expiresAt) && clock() >= result.expiresAt });
@@ -63,7 +95,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
         dirty = true;
       } else {
         result = next; stale = false; dirty = false;
-        if (reset) limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value]));
+        if (reset) { limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value])); edited.clear(); }
         message = reset ? '' : 'Comparison ready. Live settings are unchanged.';
       }
       return true;
@@ -81,16 +113,23 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     load: () => run(endpoint, undefined, { reset: true }),
     edit(key, value) {
       if (busy || !result?.controls?.some(control => control.key === key)) return;
+      edited.add(key);
       limits[key] = value; dirty = true; notify();
+      if (key === 'savingsStrategy') {
+        const strategy = HEATING_STRATEGIES.find(strategy => strategy.id === value);
+        if (strategy) for (const control of result.controls) if (control.usesStrategyDefault && !edited.has(control.key)
+          && Object.hasOwn(strategy, control.key)) limits[control.key] = strategy[control.key];
+        notify();
+      }
     },
     reset() {
       if (busy || !result) return;
       limits = Object.fromEntries(result.controls.map(control => [control.key, control.value])); dirty = true; notify();
+      edited.clear();
     },
     compare() {
       if (!result || snapshot().stale) return Promise.resolve(false);
-      const changes = Object.fromEntries(result.controls.filter(control => limits[control.key] !== control.value)
-        .map(control => [control.key, limits[control.key]]));
+      const changes = Object.fromEntries(result.controls.map(control => [control.key, limits[control.key]]));
       return run(`${endpoint}/simulate`, { snapshotId: result.snapshotId, limits: changes });
     },
     apply() {
@@ -105,8 +144,22 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       }
     },
     tick: notify,
-    clear() { ++generation; result = null; limits = {}; busy = false; message = ''; error = false; dirty = false; stale = false; receipt = null; notify(); },
+    clear() { ++generation; result = null; limits = {}; edited.clear(); busy = false; message = ''; error = false; dirty = false; stale = false; receipt = null; notify(); },
   };
+}
+
+export function heatingApprovalText(result) {
+  const scenario = result.scenario ?? {}, benefit = scenario.estimatedBenefitCents;
+  const budget = result.limits?.maxTrialCostCents ?? result.controls?.find(control => control.key === 'maxTrialCostCents')?.scenarioValue
+    ?? result.controls?.find(control => control.key === 'maxTrialCostCents')?.value;
+  return [
+    `The reviewed limits apply only to this cycle${result.application?.expiresAt ? ` and expire by ${atTime(result.application.expiresAt)}` : ''}.`,
+    Number.isFinite(benefit) ? `Estimated ${benefit < 0 ? 'extra cost' : 'saving'} against Normal heating: ${money(Math.abs(benefit))}.` : '',
+    Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `Maximum predicted drop below Normal: ${decimal(scenario.outcomes.maxIndoorDropC)} °C.` : '',
+    scenario.trial ? `Learning trial: modeled cost exposure ${money(scenario.trialExposureCents)}, within the reviewed ${money(budget)} experiment budget. This is not a bill guarantee.` : '',
+    'Approval authorizes this one cycle even if Home automation is paused or disabled. Your saved choices and configured defaults stay unchanged.',
+    'The controller rechecks current conditions and temperature limits, and may shorten or cancel the cycle. Independent manual actions and native protection remain active.',
+  ].filter(Boolean).join(' ');
 }
 
 export function heatingComparisonMetrics(result) {
@@ -114,11 +167,11 @@ export function heatingComparisonMetrics(result) {
   return [
     { label: 'Additional estimated saving', value: money(comparison.additionalBenefitCents),
       detail: 'Compared with the current plan, from the captured time onward.' },
-    { label: 'Largest average temperature drop', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
+    { label: 'Maximum drop below Normal', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
       detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
       ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
-      detail: scenario.trial ? 'Learning trial within the reviewed allowance and temperature limits.' : 'A maximum is permission, not a requested duration.' },
+      detail: scenario.trial ? 'Learning trial within the reviewed budget and temperature limits.' : 'A maximum is permission, not a requested duration.' },
   ];
 }
 
@@ -137,7 +190,7 @@ export function heatingUncertaintyBands(points = []) {
 export function createHeatingExplorerPanel({ document, request, afterMutation = () => {}, confirm = confirmAction }) {
   const $ = id => document.getElementById(id);
   const dialog = $('heating-explorer-dialog'), opener = $('home-planned-change');
-  let status, receivedAt = Date.now(), renderedResult, controlsSnapshot, wasStale = false;
+  let status, receivedAt = Date.now(), renderedResult, controlsSnapshot, wasStale = false, approving = false;
   const controls = new Map();
   const now = () => Number.isFinite(status?.now) ? status.now + Math.max(0, Date.now() - receivedAt) : Date.now();
   const actions = createHeatingExplorerState({ request, clock: now, onChange: render });
@@ -166,11 +219,18 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderControls(result) {
     controls.clear(); $('heating-explorer-controls').replaceChildren();
+    $('heating-explorer-advanced-controls').replaceChildren();
     const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours', 'maxUnobservedReductionHours', 'maxTrialCostCents', 'learningPriorityPriceCents', 'minimumHomeBenefitCents', 'homeDiscomfortCentsPerDegreeSquaredHour', 'cycleStartCostCents', 'cycleHourCostCents', 'economicUncertaintyFloorCents'];
     const orderedControls = [...(result.controls ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     for (const control of orderedControls) {
       const row = element('div', null, 'heating-explorer-control');
       const label = element('label', control.label); const id = `heating-limit-${control.key}`; label.htmlFor = id;
+      const heading = element('div', null, 'heating-explorer-control-label');
+      const explanation = element('span', null, 'heating-explorer-control-help');
+      const trigger = setStatusDetail(explanation, { label: 'ⓘ', title: control.label, detail: control.help,
+        key: `heating-explorer-control:${control.key}` });
+      if (trigger) trigger.setAttribute('aria-label', `Explain ${control.label}`);
+      heading.append(label, explanation);
       const input = element(control.options ? 'select' : 'input'); input.id = id;
       const wrapper = element('div', null, 'heating-explorer-control-input');
       if (control.options) for (const option of control.options) {
@@ -188,9 +248,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const current = control.options?.find(option => option.value === control.value)?.label ?? decimal(control.value);
       const effectiveDiffers = control.effectiveValue != null && control.effectiveValue !== control.value;
       const effective = control.options?.find(option => option.value === control.effectiveValue)?.label ?? decimal(control.effectiveValue);
-      const help = element('small', `${effectiveDiffers ? 'Configured' : 'Current'}: ${current}${control.unit ? ` ${control.unit}` : ''}${effectiveDiffers ? ` · Active cycle: ${effective}${control.unit ? ` ${control.unit}` : ''}` : ''}`); help.id = `${id}-current`;
-      row.append(label, wrapper, help);
-      $('heating-explorer-controls').append(row);
+      const help = element('small', `Configured: ${current}${control.unit ? ` ${control.unit}` : ''}${effectiveDiffers ? ` · Active cycle: ${effective}${control.unit ? ` ${control.unit}` : ''}` : ''}`); help.id = `${id}-current`;
+      row.append(heading, wrapper, help);
+      $(control.advanced ? 'heating-explorer-advanced-controls' : 'heating-explorer-controls').append(row);
       controls.set(control.key, { input, row, control });
     }
     $('heating-explorer-reset').textContent = result.controls.some(control => control.effectiveValue != null && control.effectiveValue !== control.value)
@@ -204,7 +264,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const item = element('li', null, 'heating-explorer-constraint'); item.dataset.status = constraint.status;
       const head = element('div', null, 'heating-explorer-constraint-head');
       const value = Number.isFinite(constraint.value) ? ` · ${decimal(constraint.value)}${constraint.unit ? ` ${constraint.unit}` : ''}`
-        : constraint.key === 'provisionalReference' ? ' · Unavailable' : '';
+        : constraint.key === 'normalReference' ? ' · Unavailable' : '';
       const availableLabel = constraint.kind === 'policy' ? 'Within limit'
         : constraint.kind === 'evidence' ? 'Observed support' : 'Available';
       head.append(element('strong', `${constraint.label}${value}`), element('span',
@@ -297,12 +357,13 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       ['Recovery cost', summary => money(summary.outcomes?.recoveryCostCents)],
       ['Recovery electricity', summary => unit(summary.outcomes?.recoveryEnergyKwh, 'kWh')],
       ['Recovery auxiliary electricity', summary => unit(summary.outcomes?.recoveryAuxKwh, 'kWh')],
-      ['Remaining thermal deficit', summary => unit(summary.outcomes?.terminalKwh, 'kWh')],
+      ['Estimated electricity for remaining heat debt', summary => unit(summary.outcomes?.terminalKwh, 'kWh')],
       ['Remaining deficit cost estimate', summary => money(summary.outcomes?.terminalCostCents)],
-      ['Predicted recovery completion', summary => summary.outcomes?.completeRecoveryPredicted === false ? 'Beyond evaluated horizon' : atTime(summary.outcomes?.recoveredAt)],
+      ['Predicted recovery completion', summary => !summary.schedule ? 'Not needed'
+        : summary.outcomes?.completeRecoveryPredicted === false ? 'Beyond evaluated horizon' : atTime(summary.outcomes?.recoveredAt)],
       ['Lowest indoor average', summary => room(summary.outcomes?.coldestIndoor)],
       ['Highest indoor average', summary => room(summary.outcomes?.warmestIndoor)],
-      ['Largest average temperature rise', summary => unit(summary.outcomes?.maxIndoorRiseC, '°C')],
+      ['Maximum rise above Normal', summary => unit(summary.outcomes?.maxIndoorRiseC, '°C')],
       ['Temperature uncertainty allowance', summary => unit(summary.outcomes?.uncertaintyC, '°C')],
     ];
     for (const [label, value] of fields) {
@@ -330,10 +391,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       card.append(element('span', metric.label), element('strong', metric.value), element('small', metric.detail)); $('heating-explorer-metrics').append(card);
     }
     timeline('heating-explorer-scenario-timeline', result.scenario);
-    const evidence = result.evidence ?? {};
-    $('heating-explorer-scenario-evidence').textContent = [evidence.actionValidated ? 'Independent action validation is available for this comparison.' : 'Initial and observed estimates support operation within the reviewed limits; independent action validation is still accumulating.',
-      Number.isFinite(evidence.validatedReductionHours) ? `Demonstrated reduction duration: ${decimal(evidence.validatedReductionHours)} h.` : '',
-      reasonsText(evidence.reasons), 'The best evaluated alternative is not a guarantee of the global optimum.'].filter(Boolean).join(' ');
+    $('heating-explorer-scenario-evidence').textContent = heatingEvidenceText(result.evidence);
     renderChart(result); renderBreakdown(result);
     const illustrative = result.illustrative;
     $('heating-explorer-illustrative').hidden = !illustrative;
@@ -419,6 +477,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   $('heating-explorer-close').addEventListener('click', close);
   dialog.addEventListener('close', () => {
     if (dialog.open) return;
+    closeStatusDetails(document);
     opener.setAttribute('aria-expanded', 'false'); opener.focus({ preventScroll: true });
   });
   $('heating-explorer-refresh').addEventListener('click', () => { void actions.load(); });
@@ -429,12 +488,18 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   });
   $('heating-explorer-form').addEventListener('submit', event => { event.preventDefault(); void actions.compare(); });
   $('heating-explorer-apply').addEventListener('click', async () => {
-    if (status?.webAccess?.role !== 'admin') return;
+    if (approving || status?.webAccess?.role !== 'admin') return;
     const state = actions.snapshot();
     if (state.busy || state.dirty || state.stale || !state.result?.application?.allowed) return;
-    const accepted = await confirm({ document, title: 'Use these limits for one cycle?',
-      message: `The reviewed limits apply only to this cycle${state.result.application.expiresAt ? ` and expire by ${atTime(state.result.application.expiresAt)}` : ''}. The controller rechecks evidence and average limits, and may shorten or cancel the cycle. Configured defaults remain unchanged.`, action: 'Approve one cycle' });
-    if (accepted && await actions.apply()) await afterMutation();
+    const previewId = state.result.previewId;
+    approving = true;
+    closeStatusDetails(document);
+    try {
+      const accepted = await confirm({ document, title: 'Use these limits for one cycle?',
+        message: heatingApprovalText(state.result), action: 'Approve one cycle' });
+      if (accepted && dialog.open && status?.webAccess?.role === 'admin'
+        && actions.snapshot().result?.previewId === previewId && await actions.apply()) await afterMutation();
+    } finally { approving = false; }
   });
   $('heating-explorer-cancel').addEventListener('click', async () => {
     if (status?.webAccess?.role !== 'admin') return;

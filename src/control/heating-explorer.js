@@ -10,22 +10,39 @@ const finite = Number.isFinite;
 const LIMITS = Object.freeze({
   maxReductionHours: { label: 'Maximum reduction', min: .25, max: 46, step: .25, unit: 'h' },
   maxAwayReductionHours: { label: 'Maximum reduction while away', min: .25, max: 46, step: .25, unit: 'h' },
-  maxUnobservedReductionHours: { label: 'Maximum reduction without native telemetry', min: .25, max: 46, step: .25, unit: 'h' },
+  maxUnobservedReductionHours: { label: 'Reduction limit without pump telemetry', min: .25, max: 46, step: .25, unit: 'h' },
   maxDropC: { label: 'Allowed average temperature drop', min: 0, max: 35, step: .25, unit: '°C' },
   maxRiseC: { label: 'Allowed average temperature rise', min: .25, max: 35, step: .25, unit: '°C' },
   maxPreheatHours: { label: 'Maximum preheat', min: .25, max: 24, step: .25, unit: 'h' },
-  preheatRoomBoostC: { label: 'Preheat ROOM increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
-  maxTrialCostCents: { label: 'One-cycle experiment allowance', min: 0, max: 1_000_000_000, step: 1, unit: 'cents' },
-  minimumHomeBenefitCents: { label: 'Minimum cycle benefit (negative permits extra cost)', min: -1_000_000_000, max: 1_000_000_000, step: 1, unit: 'cents' },
-  homeDiscomfortCentsPerDegreeSquaredHour:{label:'Comfort cost within temperature limits',min:0,max:1_000_000_000,step:1,unit:'c/°C²h'},
-  cycleStartCostCents:{label:'Cycle start allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
-  cycleHourCostCents:{label:'Preheat/reduction duration allowance',min:0,max:1_000_000_000,step:1,unit:'c/h'},
-  economicUncertaintyFloorCents:{label:'Minimum cost uncertainty allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
-  learningPriorityPriceCents:{label:'Price for learning priority',min:0,max:1_000_000_000,step:1,unit:'c/kWh'},
+  preheatRoomBoostC: { label: 'Preheat ROOM setting increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
+  maxTrialCostCents: { label: 'One-cycle experiment budget', min: 0, max: 1_000_000_000, step: 1, unit: 'cents' },
+  minimumHomeBenefitCents: { label: 'Minimum estimated saving', min: -1_000_000_000, max: 1_000_000_000, step: 1, unit: 'cents' },
+  homeDiscomfortCentsPerDegreeSquaredHour:{label:'Temperature deviation penalty',min:0,max:1_000_000_000,step:1,unit:'c/°C²h'},
+  cycleStartCostCents:{label:'Cycle start penalty',min:0,max:1_000_000_000,step:1,unit:'cents'},
+  cycleHourCostCents:{label:'Preheat/reduction duration penalty',min:0,max:1_000_000_000,step:1,unit:'c/h'},
+  economicUncertaintyFloorCents:{label:'Minimum savings uncertainty deduction',min:0,max:1_000_000_000,step:1,unit:'cents'},
+  learningPriorityPriceCents:{label:'Learning priority price threshold',min:0,max:1_000_000_000,step:1,unit:'c/kWh'},
+});
+const CONTROL_DETAILS = Object.freeze({
+  savingsStrategy:{help:'Chooses how strongly the planner pursues estimated savings within the temperature limits. More savings seeks the greatest conservative saving. Balanced may prefer a milder cycle retaining at least 80% of that saving; Gentle retains at least 60% and uses higher default economic hurdles. The monetary fields show the values used for this preview.'},
+  maxReductionHours:{help:'The longest reduction the planner may choose while the home is occupied, in hours. It may choose a shorter reduction or none. The normal-temperature limits and forecast coverage still apply; this is a ceiling, not a requested duration.'},
+  maxAwayReductionHours:{help:'The longest reduction the planner may choose while the home is away, in hours. Native frost protection remains active. The declared return time and recovery are included when assessing the return to occupied comfort.'},
+  maxDropC:{help:'The largest permitted drop of the weighted indoor average below its normal reference, in °C. For example, a 21 °C reference and 1.5 °C drop give a 19.5 °C lower boundary. Prediction and sensor-estimate uncertainty are included. Zero permits no predicted drop below the reference.'},
+  maxRiseC:{help:'The largest permitted rise of the weighted indoor average above its normal reference, in °C. For example, a 21 °C reference and 1.5 °C rise give a 22.5 °C upper boundary. The planner also checks delayed warming after preheat and includes uncertainty.'},
+  maxPreheatHours:{help:'The longest preheat before a reduction, in hours. Preheat stores warmth ahead of expensive electricity. The planner chooses whether and how long to preheat while checking the temperature rise, recovery and complete-cycle cost.'},
+  preheatRoomBoostC:{help:'The maximum increase of the heat pump’s native ROOM setting during preheat. This setting shifts the heating curve; it does not request the same increase in indoor temperature. The model assumes roughly 3 °C more heating-water temperature per 1 °C ROOM increase. Native limits may require a smaller increase; the separate allowed indoor rise still applies.'},
+  maxUnobservedReductionHours:{advanced:true,help:'The reduction ceiling used when current native heat-pump telemetry is unavailable. For example, 0.5 h means 30 minutes. With native telemetry available, the ordinary reduction ceiling applies instead. This is separate from model training or startup. Actual command capability and restoration remain required.'},
+  maxTrialCostCents:{advanced:true,help:'The estimated cost-exposure budget for one manually reviewed learning cycle, in cents: 150 cents is €1.50. It covers modeled extra cost and a better saving opportunity the experiment might displace. This reviewed budget is separate from the automatic daily experiment budget. Zero permits only trials with no modeled extra cost or displaced saving. It is an estimate, not a guarantee of the final bill.'},
+  minimumHomeBenefitCents:{advanced:true,help:'The minimum conservative estimated saving required to start a cycle, in cents, before adding the other penalties. Zero requires a positive saving after those penalties. A negative value explicitly permits estimated extra cost. Full preheat, reduction, recovery and remaining heat debt are included in the electricity-cost comparison.'},
+  homeDiscomfortCentsPerDegreeSquaredHour:{advanced:true,help:'An economic penalty for extra indoor-temperature deviation compared with Normal heating, within the permitted limits. Hot and cold deviations from the normal reference are squared and integrated over time, then compared with Normal heating. If Normal stays at the reference, a 1 °C deviation for 2 h gives 2 °C²h; a 2 °C deviation for 1 h gives 4 °C²h. Multiply by this rate in cents. Zero removes this penalty while keeping the temperature limits.'},
+  cycleStartCostCents:{advanced:true,help:'An extra economic hurdle for starting a new cycle, in cents. For example, 10 cents requires the estimated saving to cover an extra 10 cents before starting. Zero adds no start penalty. This is a planning preference, not an electricity charge, and is not charged again when continuing the same cycle.'},
+  cycleHourCostCents:{advanced:true,help:'An extra economic penalty per additional preheat and reduction hour, in cents per hour. For example, 5 c/h over 3 extra hours adds a 15-cent hurdle. Recovery hours are not counted by this penalty; recovery electricity is already included in energy cost. Zero removes this duration penalty.'},
+  economicUncertaintyFloorCents:{advanced:true,help:'A minimum deduction from nominal estimated savings, in cents. The planner uses the greater of this amount and the deduction indicated by its paired physical stress cases. For example, 10 cents means deducting at least 10 cents, not adding 10 cents to an existing larger deduction. Zero adds no minimum; the stress checks still apply.'},
+  learningPriorityPriceCents:{advanced:true,help:'The current all-in electricity price at or below which learning gets greater priority, in cents per kWh. At 15 c/kWh, the planner is more willing to spend its experiment budget on useful information. This is not a trial price ceiling. Budget, temperature and equipment checks still apply, and an upcoming expensive-price opportunity is protected.'},
 });
 
-/** Only explicit household policy can be explored. Equipment, evidence, training
- * budgets, native protection and source assumptions are never request fields. */
+/** Only explicit household policy and a reviewed one-cycle budget can be explored.
+ * Equipment, evidence, automatic daily budgets and native protection remain independent. */
 export function validateExplorerOverrides(overrides = {}) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(overrides)))
@@ -143,6 +160,7 @@ function summary(decision, args, baseline, { origin = 'recalculated', plan = dec
   return { origin, action: decision?.action ?? 'normal', phase: decision?.phase ?? 'normal',
     reasons: decision?.reasons ?? (plan ? ['currently-selected-cycle'] : ['normal-operation']),
     schedule: schedule ? structuredClone(schedule) : null, phases, trial: plan?.trial === true,
+    trialExposureCents: plan?.trial === true ? plan.trialAllowanceCents ?? null : null,
     outcomes: outcomes(prediction, args),
     estimatedBenefitCents: prediction && baseline ? baseline.costCents - prediction.costCents : null,
     lowerBenefitCents: economics?.lowerBenefitCents ?? null, uncertaintyCents: economics?.uncertaintyCents ?? plan?.uncertaintyCents ?? null,
@@ -198,10 +216,11 @@ function constraints(input, decision, evidence, selected) {
       detail: d?.economicsAssessed ? `${d.economicsRejected} of ${d.economicsAssessed} shortlisted alternatives failed paired stress, benefit or comfort hurdles.`
         : 'No normally eligible shortlist was assessed. Lower electricity purchase cost alone is insufficient.' },
   ];
-  if (input.equipment?.comfortReferenceProvisional === true) result.push({ key: 'provisionalReference',
-    label: 'Normal temperature reference', kind: 'evidence', status: 'learning',
+  result.unshift({ key: 'normalReference',
+    label: 'Normal temperature reference', kind: 'evidence', status: input.equipment?.comfortReferenceProvisional === true
+      ? 'learning' : finite(input.checkpoint?.baselineC) ? 'available' : 'unknown',
     value: input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? decision.comfort?.targetC ?? null, unit: '°C',
-    detail: 'The normal reference is still learning. When available, this is the reference temperature used for planning. The allowed temperature drop is shown separately.' });
+    detail: 'The reference temperature used for planning the weighted indoor average. The allowed drop and rise are shown separately. An initial measured Normal reference can be used while the occupied reference is learning.' });
   if (!input.equipment?.h66Available) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
     detail: 'The separate duration policy for unavailable native telemetry applies; an explicit one-cycle override can change it. Device authority and restoration remain required.' });
@@ -221,8 +240,8 @@ function constraints(input, decision, evidence, selected) {
       value: maxBoost, unit: '°C',
       detail: 'Initial estimates permit preheat with native ROOM headroom and conservative temperature checks. Demonstrated increases describe observed support; simulations add no evidence.' });
   }
-  if (!evidence.trialReady || !(input.trialBudgetRemainingCents > 0)) result.push({ key: 'trialReadiness',
-    label: 'Learning trial allowance', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
+  if (!evidence.trialReady || !(input.trialBudgetRemainingCents >= 0)) result.push({ key: 'trialReadiness',
+    label: 'Learning trial budget', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
     detail: 'A trial needs existing permission, observed equipment, usable evidence, remaining budget and the ordinary cold/hot stress checks.' });
   for (const reason of decision.reasons.filter(reason => ['missing-or-stale-indoor', 'awaiting-normal-temperature-reference',
     'awaiting-fireplace-response-evidence', 'no-useful-space-heating-window',
@@ -294,7 +313,7 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
     args, baseline, { origin: 'normal' });
   const readiness = scenarioDecision.plan?.readiness ?? scenarioDecision.readiness
     ?? learningReadiness(hypothetical.checkpoint, hypothetical.config, hypothetical.equipment);
-  const evidence = { ...readiness, validatedReductionHours: validatedReductionHours(hypothetical.checkpoint?.model) };
+  const evidence = { ...readiness, validatedReductionHours: validatedReductionHours(hypothetical.checkpoint?.model, scenario.schedule) };
   const boundaries = constraints(hypothetical, scenarioDecision, evidence, scenario);
   const opportunities = [];
   let plannerRuns = changedKeys.length ? 2 : 1;
@@ -331,8 +350,10 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   }
   current.limits = effectivePolicy;
   const controls = Object.entries(LIMITS).filter(([key]) => key !== (frozen.settings.occupancy.mode === 'away' ? 'maxReductionHours' : 'maxAwayReductionHours'))
-    .map(([key, spec]) => ({ key, ...spec, value: currentPolicy[key], effectiveValue: effectivePolicy[key], scenarioValue: scenarioPolicy[key] }));
-  controls.push({ key: 'savingsStrategy', label: 'Savings strategy', value: currentPolicy.savingsStrategy,
+    .map(([key, spec]) => ({ key, ...spec, ...CONTROL_DETAILS[key], value: currentPolicy[key], effectiveValue: effectivePolicy[key], scenarioValue: scenarioPolicy[key],
+      ...(['minimumHomeBenefitCents','homeDiscomfortCentsPerDegreeSquaredHour'].includes(key)
+        ? { usesStrategyDefault: frozen.config?.[key] == null } : {}) }));
+  controls.push({ key: 'savingsStrategy', label: 'Savings strategy', ...CONTROL_DETAILS.savingsStrategy, value: currentPolicy.savingsStrategy,
     effectiveValue: effectivePolicy.savingsStrategy, scenarioValue: scenarioPolicy.savingsStrategy,
     options: HEATING_STRATEGIES.map(item => ({ value: item.id, label: item.label })) });
   const indoor = frozen.observations?.indoor;

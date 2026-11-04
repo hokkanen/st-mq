@@ -12,12 +12,12 @@ test('normal reference reports its actual temperature separately from the allowe
   const input=heatingExplorerFixture();input.equipment.comfortReferenceProvisional=true;
   input.settings.comfort.targetC=21.25;input.settings.comfort.maxDropC=1.5;
   let result=exploreHeatingPlan(input,{},options);
-  const reference=result.constraints.find(row=>row.key==='provisionalReference');
+  const reference=result.constraints.find(row=>row.key==='normalReference');
   assert.equal(reference.value,21.25);assert.equal(reference.unit,'°C');assert.equal(reference.status,'learning');
   assert.equal(result.constraints.find(row=>row.key==='maxDropC').value,1.5);
   input.settings.comfort.targetC=null;input.checkpoint.baselineC=null;input.observations.indoor.stale=true;
   result=exploreHeatingPlan(input,{},options);
-  assert.equal(result.constraints.find(row=>row.key==='provisionalReference').value,null);
+  assert.equal(result.constraints.find(row=>row.key==='normalReference').value,null);
 });
 
 test('discarding some alternatives does not label available economics or forecast coverage blocked',()=>{
@@ -382,6 +382,6 @@ test('provisional reference preserves configured comfort and does not block an a
   const decision = chooseCycle(input), result = exploreHeatingPlan(input, {}, options);
   assert.equal(decision.comfort.maxDropC, input.settings.comfort.maxDropC);
   if (decision.plan) assert.equal(decision.plan.maxDropC, input.settings.comfort.maxDropC);
-  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, input.settings.comfort.targetC);
+  assert.equal(result.constraints.find(row => row.key === 'normalReference').value, input.settings.comfort.targetC);
   assert.equal(revalidatePlan({ ...input, plan: approved }).valid, true);
 });

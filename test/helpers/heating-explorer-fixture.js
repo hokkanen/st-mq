@@ -11,7 +11,7 @@ export function heatingExplorerFixture({ hours = 12, validatedHours = 8, price =
     parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
   model.equipmentResponse = { phases: { reduction: { ratio: 0, trainingEpisodes: 3, treatmentKey: 'reduction-only-v1' } },
     validation: { phases: { reduction: { accepted: true, episodes: 3, maxDurationHours: validatedHours, treatmentKey: 'reduction-only-v1' } } } };
-  model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: validatedHours };
+  model.forecastValidation = { accepted: true, episodes: 3, maxReductionHours: validatedHours, records: Array.from({length:3},(_,i)=>({id:`synthetic-advance-${i}`, treatmentKey:'reduction-only-v1', roomBoostC:0, preheatHours:0, reductionHours:validatedHours, temperatureMaeC:.2, minimumTemperatureErrorC:.3, energyRelativeError:.2, costRelativeError:.1})) };
   const intervals = Array.from({ length: hours * 4 }, (_, i) => ({ start: now + i * HOUR / 4,
     end: now + (i + 1) * HOUR / 4, outdoorC, solarRadiationWm2: 0,
     allInCentsPerKWh: i < 24 ? price : 1, issuedAt: now }));

@@ -34,6 +34,11 @@ function fixture({ native = true, failPopover = false, width = 390, height = 640
         this.hidePopover = () => { this.popoverOpen = false; this.dispatch('toggle', { newState: 'closed' }); };
       }
     }
+    get parentElement() { return this.parentNode; }
+    closest(selector) {
+      for (let node=this; node; node=node.parentNode) if (selector==='dialog[open]'&&node.tagName==='dialog'&&node.open) return node;
+      return null;
+    }
     get isConnected() { return this === document.body || Boolean(this.parentNode?.isConnected); }
     get textContent() { return this.ownText + this.children.map(child => child.textContent).join(''); }
     set textContent(value) { this.replaceChildren(); this.ownText = String(value); }
@@ -250,4 +255,19 @@ test('ending a session dismisses visible details with native and fallback popove
     setStatusDetail(root, { ...unavailable, detail: 'A late response' });
     assert.equal(popup().hidden, true);
   }
+});
+
+
+test('modal explanations remain inside the invoking dialog and can return to the page', () => {
+  const { document,root,popup }=fixture();
+  const dialog=document.createElement('dialog');dialog.open=true;document.body.append(dialog);
+  dialog.append(root);
+  const trigger=setStatusDetail(root,unavailable);trigger.dispatch('click');
+  const panel=popup();assert.equal(panel.parentElement,dialog);
+  assert.equal(panel.contains(document.activeElement),true);
+  document.dispatch('keydown',{key:'Escape'});
+  assert.equal(document.activeElement,trigger);assert.equal(dialog.open,true);
+  document.body.append(root);dialog.open=false;trigger.dispatch('click');
+  assert.equal(panel.parentElement,document.body);
+  assert.equal(panel.hidden,false);
 });

@@ -104,6 +104,21 @@ test('actual unchanged, partial and suppressed demand promptly replace the initi
   }
 });
 
+test('observed full runtime is not clipped to twice a small normal-demand estimate',()=>{
+  const model=initialAdaptiveModel(),state=initialHomeState(model,21,12);
+  const inputs={outdoorC:12,targetC:21,solarRadiationWm2:0,supplyC:35,brineC:0};
+  const nominal=predictEquipmentDuty(model,state,{...inputs,phase:'normal'},2).compressorDuty;
+  assert.ok(nominal>0&&nominal<.5);
+  const key='reduction-only-v1';
+  const row={episodeId:'manual',...state,segments:[{...inputs,start:0,end:2*HOUR,phase:'reduction',
+    treatmentKey:key,compressorDuty:1,auxKw:0,auxRoute:'space'}]};
+  model.equipmentResponse=fitEquipmentResponse(model,[row],[],[{id:'manual'}],[]);
+  const prediction=predictEquipmentDuty(model,state,{...inputs,phase:'reduction',treatmentKey:key},2);
+  assert.ok(model.equipmentResponse.phases.reduction.ratio>2);
+  assert.ok(Math.abs(prediction.compressorDuty-1)<1e-12,
+    'A contrary manual observation must not be turned into invented suppression');
+});
+
 test('earlier validation cannot freeze a response against contrary newly covered manual observations',()=>{
   const cp=restoreAdaptiveCheckpoint(null),start=Date.parse('2026-01-01T00:00Z'),key='reduction-only-v1';
   cp.model.equipmentResponse={phases:{reduction:{ratio:0,trainingEpisodes:3,treatmentKey:key}},
@@ -248,6 +263,24 @@ test('cheap preheating experiments can run before any thermal or reduction valid
   assert.equal(revalidatePlan({...x,plan:r.plan}).valid,true);
   x.equipment.learningTrialsToday=20;
   assert.equal(revalidatePlan({...x,plan:r.plan}).valid,true,'A daily target is not a lifetime exploration cap');
+});
+
+test('zero experimental budget permits useful free trials but never paid experimentation',()=>{
+  const x=startup({peak:false});
+  x.prices.forEach(row=>{row.allInCentsPerKWh=0;});
+  x.config.maxTrialCostCents=0;x.trialBudgetRemainingCents=0;
+  x.equipment.trialBudgetRemainingCents=0;
+  x.config.minimumHomeBenefitCents=1_000_000;
+  const free=chooseCycle(x);
+  assert.equal(free.plan?.trial,true);
+  assert.equal(free.plan.trialAllowanceCents,0);
+  assert.equal(revalidatePlan({...x,plan:free.plan}).valid,true);
+  x.prices.forEach(row=>{row.allInCentsPerKWh=2;});
+  const paid=chooseCycle(x);
+  assert.ok(!paid.plan || paid.plan.trialAllowanceCents===0, 'A zero budget cannot admit positive cost exposure');
+  assert.ok(!paid.plan || !paid.plan.schedule.roomBoostC, 'The paid preheat is replaced by a free reduction');
+  x.prices.forEach(row=>{row.allInCentsPerKWh=0;});x.config.learningTrials=false;
+  assert.equal(chooseCycle(x).plan,null,'The explicit experiment switch still disables free trials');
 });
 
 test('new planning still requires current temperatures and actual preheat capability',()=>{

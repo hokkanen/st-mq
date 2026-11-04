@@ -463,7 +463,7 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
     key,
     algorithmVersion: LEARNING_ALGORITHM, configVersion: learningVersion(configuration),
     forecastVersion: value.provenance?.forecastVersion ?? null,
-    payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
+    payload: { value, configuration, ...(kind === 'episode' ? { forecastAlgorithm: prior?.forecastAlgorithm ?? value.provenance?.forecastAlgorithm ?? LEARNING_ALGORITHM } : {}), ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
       ...(prior.epoch ? { epoch: prior.epoch } : {}) }
       : first ? { seed: seed ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
           initialization: 'explicit current v4 seed or configured initial thermal estimates' } } : {}) } });
@@ -553,7 +553,8 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     && (typeof value.startedAt === 'number' ? value.startedAt : Date.parse(value.startedAt)) < initial.measurementEpochAt;
   const next = entry.kind === 'sample'
     ? updateAdaptiveLearning(initial, value, { now: entry.at, config: configuration })
-    : entry.kind === 'episode' && !oldMeasurementEpisode && !fireplaceEpisodeAffected(value, fireplaceContext) ? updateAdaptiveEpisode(initial, value, { config: configuration })
+    : entry.kind === 'episode' && !oldMeasurementEpisode && !fireplaceEpisodeAffected(value, fireplaceContext) ? updateAdaptiveEpisode(initial, value, { config: configuration,
+        forecastCurrent: (entry.payload.forecastAlgorithm ?? entry.algorithmVersion) === LEARNING_ALGORITHM })
       : restoreAdaptiveCheckpoint(initial, configuration);
   const journalEntryHash = learningVersion(entry);
   const result = { ...next, ...(entry.kind === 'sample' ? { windowCursor: entry.payload.value.windowEnd ?? entry.at } : {}),

@@ -92,7 +92,7 @@ publication cannot renew source freshness: native OCPP snapshots retain their
 60-second source bound, ordinary electrical inputs retain their five-minute
 bound, and existing held-value exceptions require independent device telemetry.
 
-Home learning uses `committed-house-v19-independent-equipment-and-measurement-epochs` because admission
+Home learning uses `committed-house-v20-observed-response-and-free-experiments` because admission
 changes input selection. Current journals replay deterministically under that
 algorithm. The current schema includes an index for bounded startup rejection of unsupported
 learning algorithms, including inactive journal epochs. Earlier development
