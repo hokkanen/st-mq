@@ -402,6 +402,7 @@ try {
   assert.match(await evaluate(`document.getElementById('heating-explorer-trial-description').textContent`),/does not establish validation/);
   await evaluate(`document.getElementById('heating-explorer-refresh').click()`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+  assert.equal(await evaluate(`document.getElementById('heating-limit-maxDropC').value`),'1.75','Refreshing conditions preserves the edited draft');
   await evaluate(`explorerFixture.role='family'`);
   await until(`await explorerFixture.poll();return document.body.dataset.accessRole === 'family'`);
   await evaluate(`document.getElementById('heating-limit-maxReductionHours').value='6';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit()`);

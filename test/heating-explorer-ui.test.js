@@ -201,3 +201,20 @@ test('cycle approval explains paid trials, modeled exposure and its separate con
   assert.match(text,/drop below Normal: 1.25 °C/);assert.match(text,/even if Home automation is paused or disabled/);
   assert.match(text,/saved choices and configured defaults stay unchanged/);
 });
+
+
+test('refresh retains explicit draft values while updating untouched defaults and withdrawing approval',async()=>{
+  let generation=0;
+  const state=createHeatingExplorerState({clock:()=>now,request:async()=>makeResult({snapshotId:`draft-${++generation}`,
+    controls:[{key:'maxReductionHours',value:generation===1?4:6},{key:'maxDropC',value:1.5},
+      {key:'savingsStrategy',value:'balanced'},{key:'minimumHomeBenefitCents',value:0,usesStrategyDefault:true},
+      {key:'homeDiscomfortCentsPerDegreeSquaredHour',value:0,usesStrategyDefault:true}],previewId:null})});
+  await state.load();state.edit('maxDropC',2);state.edit('savingsStrategy','gentle');state.edit('minimumHomeBenefitCents',0);
+  await state.load({preserveDraft:true});const draft=state.snapshot();
+  assert.equal(draft.limits.maxDropC,2);assert.equal(draft.limits.maxReductionHours,6);
+  assert.equal(draft.limits.savingsStrategy,'gentle');assert.equal(draft.limits.minimumHomeBenefitCents,0);
+  assert.equal(draft.limits.homeDiscomfortCentsPerDegreeSquaredHour,5);
+  assert.equal(draft.dirty,true);assert.equal(draft.stale,false);assert.equal(await state.apply(),false);
+  state.reset();assert.equal(state.snapshot().limits.maxDropC,1.5);
+  assert.equal(state.snapshot().limits.savingsStrategy,'balanced');
+});

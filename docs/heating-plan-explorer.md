@@ -78,7 +78,9 @@ Native overrides retain bounded leases and refresh only with current authority.
 The current plan and alternatives share one captured set of temperatures, stored
 heat, model, weather, prices, occupancy and equipment evidence. Polling does not
 silently replace the baseline or discard edits. Refresh the comparison when it
-becomes stale. A retained current schedule remains distinct from a fresh planner
+becomes stale. **Refresh conditions** keeps explicitly edited limits, updates
+untouched defaults and requires a new comparison before approval. **Reset to
+configured limits** discards those edits. A retained current schedule remains distinct from a fresh planner
 choice under unchanged settings.
 
 Compare the additional estimated saving against the current plan first. The

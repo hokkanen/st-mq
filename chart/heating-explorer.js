@@ -80,8 +80,14 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     receipt: actionReceiptRecent(receipt?.at, clock()) ? receipt : null,
     stale: stale || !!result && Number.isFinite(result.expiresAt) && clock() >= result.expiresAt });
   const notify = () => onChange(snapshot());
-  async function run(path, body, { reset = false, mutation = false } = {}) {
+  function followStrategyDefaults() {
+    const strategy = HEATING_STRATEGIES.find(strategy => strategy.id === limits.savingsStrategy);
+    if (strategy) for (const control of result?.controls ?? []) if (control.usesStrategyDefault && !edited.has(control.key)
+      && Object.hasOwn(strategy, control.key)) limits[control.key] = strategy[control.key];
+  }
+  async function run(path, body, { reset = false, mutation = false, preserveDraft = false } = {}) {
     if (busy) return false;
+    const draft = preserveDraft ? new Map([...edited].map(key => [key, limits[key]])) : null;
     const ownGeneration = ++generation;
     busy = true; error = false; message = mutation ? 'Saving one-cycle limits…' : reset ? 'Reading current conditions…' : 'Comparing the same conditions…'; notify();
     try {
@@ -95,8 +101,15 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
         dirty = true;
       } else {
         result = next; stale = false; dirty = false;
-        if (reset) { limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value])); edited.clear(); }
-        message = reset ? '' : 'Comparison ready. Live settings are unchanged.';
+        if (reset) {
+          limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value])); edited.clear();
+          for (const control of next.controls ?? []) if (draft?.has(control.key)) {
+            limits[control.key] = draft.get(control.key); edited.add(control.key);
+          }
+          followStrategyDefaults(); dirty = edited.size > 0;
+        }
+        message = reset ? draft?.size ? 'Conditions refreshed. Your edited limits are kept; compare again.' : ''
+          : 'Comparison ready. Live settings are unchanged.';
       }
       return true;
     } catch (failure) {
@@ -110,22 +123,18 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     }
   }
   return { snapshot,
-    load: () => run(endpoint, undefined, { reset: true }),
+    load: ({ preserveDraft = false } = {}) => run(endpoint, undefined, { reset: true, preserveDraft }),
     edit(key, value) {
       if (busy || !result?.controls?.some(control => control.key === key)) return;
       edited.add(key);
-      limits[key] = value; dirty = true; notify();
-      if (key === 'savingsStrategy') {
-        const strategy = HEATING_STRATEGIES.find(strategy => strategy.id === value);
-        if (strategy) for (const control of result.controls) if (control.usesStrategyDefault && !edited.has(control.key)
-          && Object.hasOwn(strategy, control.key)) limits[control.key] = strategy[control.key];
-        notify();
-      }
+      limits[key] = value; dirty = true;
+      if (key === 'savingsStrategy') followStrategyDefaults();
+      notify();
     },
     reset() {
       if (busy || !result) return;
-      limits = Object.fromEntries(result.controls.map(control => [control.key, control.value])); dirty = true; notify();
-      edited.clear();
+      limits = Object.fromEntries(result.controls.map(control => [control.key, control.value])); dirty = true;
+      edited.clear(); notify();
     },
     compare() {
       if (!result || snapshot().stale) return Promise.resolve(false);
@@ -480,7 +489,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     closeStatusDetails(document);
     opener.setAttribute('aria-expanded', 'false'); opener.focus({ preventScroll: true });
   });
-  $('heating-explorer-refresh').addEventListener('click', () => { void actions.load(); });
+  $('heating-explorer-refresh').addEventListener('click', () => { void actions.load({ preserveDraft: true }); });
   $('heating-explorer-reset').addEventListener('click', () => actions.reset());
   $('heating-explorer-jump').addEventListener('click', () => {
     $('heating-explorer-form').scrollIntoView({ block: 'center' });
