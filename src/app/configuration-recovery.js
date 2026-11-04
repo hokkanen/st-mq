@@ -1,3 +1,4 @@
+import { runtimeLog } from './runtime-log.js';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
@@ -37,7 +38,7 @@ async function readBody(req) {
 
 /** Serve configuration only. This module never opens a store or starts a runtime. */
 export async function startConfigurationRecovery({ source, error, env = process.env,
-  clock = Date.now, installSignalHandlers = true, log = value => console.log(JSON.stringify(value)) }) {
+  clock = Date.now, installSignalHandlers = true, log = value => runtimeLog.warn(value) }) {
   const addon = env.STMQ_ADDON === '1';
   const information = await source.recoveryInfo();
   const environment = addon ? 'home-assistant' : 'linux';

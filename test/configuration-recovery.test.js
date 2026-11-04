@@ -173,19 +173,21 @@ test('actual CLI entry serves recovery for malformed configuration and exits cle
     env: { PATH: process.env.PATH, ...f.env }, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(() => { if (child.exitCode === null) child.kill('SIGKILL'); });
   let output = '', errors = '';
-  child.stderr.on('data', chunk => { errors += chunk; });
+  child.stdout.on('data', chunk => { output += chunk; });
   const ready = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Recovery CLI did not start')), 10000);
     child.on('error', reject);
     child.on('exit', code => { clearTimeout(timeout); reject(new Error(`Recovery CLI exited early: ${code}`)); });
-    child.stdout.on('data', chunk => {
-      output += chunk;
-      for (const line of output.split('\n').filter(Boolean)) {
+    child.stderr.on('data', chunk => {
+      errors += chunk;
+      for (const line of errors.split('\n').filter(Boolean)) {
         let entry; try { entry = JSON.parse(line); } catch { continue; }
         if (entry.event === 'configuration-recovery') { clearTimeout(timeout); resolve(entry); }
       }
     });
   });
+  assert.equal(ready.level, 'warn');
+  assert.ok(Number.isFinite(Date.parse(ready.time)));
   assert.doesNotMatch(output + errors, /fixture-secret|fixture-private/);
   assert.equal((await fetch(`http://127.0.0.1:${ready.address.port}/`)).status, 200);
   assert.equal(existsSync(f.env.STMQ_DATABASE_DIR), false);

@@ -1,3 +1,4 @@
+import { runtimeLog } from '../app/runtime-log.js';
 import { Store, isStoreConnection } from '../storage/store.js';
 
 const commitOwners = new WeakMap();
@@ -35,7 +36,7 @@ function afterCommitted(state, effect) {
 /** Finite process-local startup evidence. No timer, persistence, input parsing
  * or control decision belongs here; failures only omit optional diagnostics. */
 export function createOcppStartupDiagnostics({ wall = Date.now, monotonic = () => process.hrtime.bigint(),
-  report = row => console.error(JSON.stringify(row)),
+  report = row => runtimeLog.debug(row),
 } = {}) {
   const factory = factorySequence < 65535 ? ++factorySequence : null;
   const streams = new WeakMap(), frames = new WeakMap(), contexts = new WeakSet();
@@ -52,16 +53,18 @@ export function createOcppStartupDiagnostics({ wall = Date.now, monotonic = () =
     try {
       if (closed || stopped || factory === null || !phases.has(phase) || context !== null && !contexts.has(context)) return;
       const at = time(); if (!at || origin === null) return;
-      if (BigInt(at.monotonicNs) - origin > WINDOW_NS || emitted >= EVENTS - 1 || bytes >= BYTES - 512) {
+      if (BigInt(at.monotonicNs) - origin > WINDOW_NS || emitted >= EVENTS - 1 || bytes >= BYTES - 1024) {
         phase = 'truncated'; stopped = true;
       }
       const row = Object.freeze({ event: 'ocpp-startup-phase', phase, factory, listener: context?.listener ?? listener,
         attempt: context?.attempt ?? null, generation: context?.generation ?? null, ...at,
         receivedWallMs: received?.wallMs ?? null, receivedMonotonicNs: received?.monotonicNs ?? null,
         originalReceivedAt: received?.originalReceivedAt ?? null });
-      const encoded = JSON.stringify(row);
-      if (bytes + Buffer.byteLength(encoded) + 1 > BYTES) { stopped = true; return; }
-      emitted++; bytes += Buffer.byteLength(encoded) + 1;
+      // Reserve the runtime envelope's time/level fields inside the same cap,
+      // including when a synthetic sink observes only the original phase row.
+      const encodedBytes = Buffer.byteLength(JSON.stringify(row)) + 80;
+      if (bytes + encodedBytes + 1 > BYTES) { stopped = true; return; }
+      emitted++; bytes += encodedBytes + 1;
       void Promise.resolve(report(row)).catch(() => {});
     } catch { /* Clocks, sinks or encoding cannot affect an OCPP operation. */ }
   };

@@ -13,6 +13,31 @@ below are for development and manually managed operation. In Home Assistant, sta
 stop and restart the installed `st-mq` app under **Settings → Apps** and read its **Logs**
 tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
 
+## Runtime logs
+
+The HA app **Logs** tab and Linux service journal show concise JSON summaries.
+Each application record has an ISO UTC `time` (log emission time) and `level`.
+Startup, completed runtime shutdown and paired role changes include readiness or
+control availability; they do not establish a physical device outcome. Retained
+operational history remains in the dashboard [event log](event-log.md) and charging
+reports. Debug output is not a second evidence archive.
+
+`controller.log_level` defaults to `info` on both targets. Choose `debug` under
+**Log detail** for the bounded OCPP startup phases. Save and apply reviewed
+configuration on the master; restart a read-only instance to load its saved
+setting. Linux may override it with `STMQ_LOG_LEVEL=info|debug` (restart required).
+Return to `info` after troubleshooting. Native runtime warnings may also appear.
+
+Repeated application warnings/errors with the same event, reason and operation
+are limited to one per minute. The next occurrence reports `suppressedRepeats`;
+shutdown or bucket eviction flushes any remainder as `repeatSummary: true`.
+These are omitted log calls, not a count of physical failures. Producer-specific
+limits, including replica-read and MQTT event limits, remain separate. Buckets
+and counters are bounded; counts beyond 65,535 set `suppressedRepeatsClipped`.
+Source/receipt/commit fields retain their original clocks independently of `time`.
+Credentials, raw frames and installation identities are excluded from these
+application summaries. Logging failure cannot change controller decisions.
+
 ## Run locally
 
 Use Node.js 26.13 or newer within major 26 (LTS). Ubuntu setup and Home
@@ -156,6 +181,7 @@ electricity rates and the admin/family access policy.
 | Variable | Default / purpose |
 | --- | --- |
 | `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
+| `STMQ_LOG_LEVEL` | `info` or `debug`; overrides `controller.log_level` |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the app |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |

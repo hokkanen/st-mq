@@ -698,6 +698,14 @@ database reset. Independently incompatible saved database state needs an intact
 current-format backup or a deliberate fresh database. Loading or applying
 configuration never translates retired settings or resets a database.
 
+## Log detail
+
+`controller.log_level` selects `info` (default) or `debug` for application runtime
+output on HA and Linux. Debug includes bounded OCPP startup phases. This changes
+output detail, not recording, control permission or retained event/report history.
+See [runtime logs](startup.md#runtime-logs) for timestamps, repeated-failure
+summaries and the Linux environment override.
+
 ## Topology and role
 
 Use one `controller.topology` choice. Both computers in a mirror or pair use the

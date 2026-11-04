@@ -1,3 +1,5 @@
+import { runtimeLog } from './app/runtime-log.js';
+import { startupFailureDiagnostic } from './pairing/manager.js';
 import { weatherAcquisitionIdentity } from './acquisition/weather-identity.js';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
@@ -38,6 +40,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     validateTopology(config);
     await startupImport.persist();
   }
+  runtimeLog.setLevel(config.logLevel ?? 'info');
   if (config.topology === 'pair' && !pairContext) {
     const { startPaired } = await import('./pairing/runtime.js');
     const app = await startPaired({ config, readConfig, clock, providerOptions, mqttOptions,
@@ -82,8 +85,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     }
     // A failed write cannot reliably report itself with another database write.
     // Keep stderr useful without exposing arbitrary errors or private payloads.
-    console.error(JSON.stringify({ event: 'controller-error',
-      reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
+    runtimeLog.error({ event: 'controller-error',
+      reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false });
   }
   function close({ restore = true, preserveWebAccess = false } = {}) {
     if (closePending) return closePending;
@@ -120,6 +123,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       await attempt(() => store.close());
       clearInterval(storageDeadline);
       runtimeTiming.close();
+      runtimeLog.flush();
+      runtimeLog[errors.length ? 'error' : 'info']({ event: 'runtime-stopped', cleanupFailed: errors.length > 0 });
       if (errors.length) throw new AggregateError(errors, 'Application cleanup completed with errors; required restoration may remain pending.');
     })();
     return closePending;
@@ -423,6 +428,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           }
         });
         config = next;
+        runtimeLog.setLevel(config.logLevel ?? 'info');
         chartService?.configure(config.charts);
         configurationReviews.clear();
         await createRuntime();
@@ -451,6 +457,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         }
         await store.runWrite(() => { for (const [key, value] of previousState) store.setState(key, value); });
         config = previous;
+        runtimeLog.setLevel(config.logLevel ?? 'info');
         chartService?.configure(config.charts);
         await webAccess.apply(previous);
         try {
@@ -480,7 +487,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   if (shutdownSignal?.aborted) abortStartup();
   else shutdownSignal?.addEventListener('abort', abortStartup, { once: true });
   if (installSignalHandlers && !closed) for (const signal of ['SIGTERM', 'SIGINT']) {
-    const handler = () => { close().catch(() => { console.error(JSON.stringify({ event: 'shutdown-error', reason: 'cleanup-failed' })); process.exitCode = 1; }); };
+    const handler = () => { close().catch(() => { runtimeLog.error({ event: 'shutdown-error', reason: 'cleanup-failed' }); process.exitCode = 1; }); };
     signalHandlers.set(signal,handler); process.once(signal,handler);
   }
   try {
@@ -501,6 +508,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         for (const [signal, handler] of signalHandlers) process.removeListener(signal,handler);
         await store.close();
         runtimeTiming.close();
+        runtimeLog.flush();
+        runtimeLog.info({ event: 'runtime-stopped', cleanupFailed: false });
         return await stoppedControllerViewer({ config, authority, clock, installSignalHandlers });
       }
     }
@@ -556,8 +565,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     authority?.start();
     engine.onTemporaryChange = schedule;
     schedule();
-    console.log(JSON.stringify({ event: 'ready', input: config.input, environment: engine.environment(), manualHeatingTests: engine.heatingTests().available,
-      address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
+    runtimeLog.info({ event: 'ready', input: config.input, environment: engine.environment(),
+      role: config.role, canControl: canControl(), startupMs: Math.round(performance.now() - started) });
     finishStartup();
     return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, historyRecovery, mirror: replication, close, reloadSettings, previewSettings, revokeControl };
   } catch (error) {
@@ -587,5 +596,13 @@ function invokedAsMain() {
   catch { return false; }
 }
 if (invokedAsMain()) {
-  launch().catch(error => { console.error(error.message); process.exitCode = 1; });
+  launch().catch(error => {
+    const diagnostic = startupFailureDiagnostic(error, error?.code ?? 'runtime_failed');
+    runtimeLog.error({ ...diagnostic, event: 'startup-error',
+      ...(diagnostic.reason === 'peer_protocol_failed' ? { reason: 'runtime-startup-failed' } : {}),
+      ...(error?.code === 'EADDRINUSE' ? { reason: 'listen-port-unavailable',
+        message: 'EADDRINUSE: the port is already in use. Stop the existing ST-MQ process or service, or set a different STMQ_PORT.' } : {}),
+    });
+    process.exitCode = 1;
+  });
 }

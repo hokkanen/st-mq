@@ -1,3 +1,4 @@
+import { runtimeLog } from './runtime-log.js';
 export const REPLICA_CHECKPOINT_MISMATCH = Object.freeze({
   code: 'replica_checkpoint_mismatch',
   error: 'The read-only snapshot no longer matches its database checkpoint. Wait for verified synchronization, then refresh.',
@@ -32,7 +33,7 @@ export function replicaReadRefusalPhase(error) {
 /** One attempted diagnostic per server per 30 seconds. Suppression changes no
  * response or read admission; failed sinks are bounded too. No timer is added. */
 export function createReplicaReadRefusalReporter({
-  report = diagnostic => console.error(JSON.stringify(diagnostic)), monotonic = () => performance.now(),
+  report = diagnostic => runtimeLog.warn(diagnostic), monotonic = () => performance.now(),
 } = {}) {
   let lastAt = -Infinity, suppressed = 0, suppressedClipped = false;
   return (error, route) => {

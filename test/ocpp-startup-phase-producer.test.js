@@ -9,17 +9,20 @@ import { join } from 'node:path';
 import WebSocket, { WebSocketServer } from 'ws';
 import { Store } from '../src/storage/store.js';
 import { createEaseeOcpp } from '../src/acquisition/easee-ocpp.js';
+import { runtimeLog } from '../src/app/runtime-log.js';
 import { ocppCommitEffect } from '../src/acquisition/ocpp-startup-diagnostics.js';
 
 const sourceTime = Date.parse('2026-10-07T12:00:00Z');
-async function fixture(t, { deferredStart = false, sinkThrows = false } = {}) {
+async function fixture(t, { deferredStart = false, sinkThrows = false, logLevel = 'debug' } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-ocpp-phase-'));
   const path = join(directory, 'fixture.sqlite'), store = new Store(path), competitor = new DatabaseSync(path);
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening', { signal: t.signal });
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   const rows = [], waiters = new Set(), clients = [];
-  const original = console.error;
-  console.error = (...values) => {
+  runtimeLog.setLevel(logLevel);
+  t.after(() => runtimeLog.setLevel('info'));
+  const original = console.log;
+  console.log = (...values) => {
     let row;
     try { row = JSON.parse(values[0]); } catch { return original(...values); }
     if (row.event !== 'ocpp-startup-phase') return original(...values);
@@ -38,7 +41,7 @@ async function fixture(t, { deferredStart = false, sinkThrows = false } = {}) {
   t.after(async () => {
     if (cleaned) return; cleaned = true;
     release(); for (const client of clients) client.terminate();
-    await local.close(); console.error = original;
+    await local.close(); console.log = original;
     t.signal.removeEventListener('abort', cancel); competitor.close(); store.close(); rmSync(directory, { recursive: true, force: true });
   });
   const wait = predicate => {
@@ -235,4 +238,16 @@ test('invalid authentication records only observed TCP/Upgrade and never private
   for (const privateValue of ['fixture-charger', 'fixture-ocpp-pass', 'wrong-synthetic-password', 'Authorization', '/ocpp/', '127.0.0.1'])
     assert.equal(encoded.includes(privateValue), false);
   assert.equal(f.local.status().connectionGeneration, 0);
+});
+
+
+test('normal logging omits phase traces while authenticated OCPP still commits and replies', async t => {
+  const f = await fixture(t, { logLevel: 'info' });
+  const client = f.open(); await once(client, 'open', { signal: t.signal });
+  const reply = await f.heartbeat(client);
+  assert.equal(reply[0], 3);
+  assert.equal(f.local.status().transportConnected, true);
+  assert.equal(f.rows.length, 0);
+  await f.local.close();
+  assert.equal(f.rows.length, 0);
 });

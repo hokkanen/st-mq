@@ -8,6 +8,7 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
+import { runtimeLog } from '../src/app/runtime-log.js';
 
 async function saved(store) {
   const until = performance.now() + 3000;
@@ -42,6 +43,31 @@ async function setup(t, options = {}, overrides = {}) {
   };
   return { app, config, path, write, base, headers, post, preview };
 }
+
+test('reviewed log detail changes apply and invalid replacements retain the active level', async t => {
+  const { app, write, post, preview } = await setup(t);
+  const rows = [], original = console.log;
+  console.log = value => { try { rows.push(JSON.parse(value)); } catch {} };
+  try {
+    runtimeLog.debug({ event: 'fixture-log-check' });
+    assert.equal(rows.length, 0);
+    write({ controller: { log_level: 'debug' } });
+    const review = await (await preview()).json();
+    assert.deepEqual(review.restartRequired, []);
+    assert.ok(review.changes.some(row => row.path === 'controller.log_level' && row.after === 'debug'));
+    assert.equal((await post()).status, 200);
+    assert.equal(app.engine.config.logLevel, 'debug');
+    runtimeLog.debug({ event: 'fixture-log-check' });
+    assert.equal(rows.filter(row => row.event === 'fixture-log-check').length, 1);
+    write({ controller: { log_level: 'invalid' } });
+    assert.equal((await preview()).status, 400);
+    assert.equal(app.engine.config.logLevel, 'debug');
+    write({ controller: { log_level: 'info' } });
+    assert.equal((await post()).status, 200);
+    runtimeLog.debug({ event: 'fixture-log-check' });
+    assert.equal(rows.filter(row => row.event === 'fixture-log-check').length, 1);
+  } finally { console.log = original; runtimeLog.setLevel('info'); }
+});
 
 test('reload applies disk settings, rates and recording while preserving temporary controls and the listener', async t => {
   let now = Date.parse('2026-09-08T12:00Z');

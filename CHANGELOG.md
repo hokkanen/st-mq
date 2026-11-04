@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- HA and Linux runtime logs show timestamped startup and role summaries, with
+  bounded repeated-failure counts. Detailed OCPP startup traces require the
+  optional debug log detail.
+
 - Charging session edits reassess the joint schedule while charging. Ordinary
   ready-by edits reach the controller, including when the cheapest periods stay
   unchanged, and unconfirmed replacements keep an explanation beside the last

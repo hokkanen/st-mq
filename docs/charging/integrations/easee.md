@@ -364,8 +364,9 @@ pending database save. An independently connecting client keeps its own durable
 admission, and listener shutdown still cancels all pending upgrades. A completed
 save does not authorize attachment of a disconnected client.
 
-The local receiver records bounded private startup phase diagnostics for its
-first four monotonic minutes: the observed listening callback, TCP callback,
+With `controller.log_level: "debug"`, the local receiver emits bounded private
+startup phase diagnostics for its first four monotonic minutes (the normal
+`info` level omits these phases; see [runtime logs](../../startup.md#runtime-logs)): the observed listening callback, TCP callback,
 validated Upgrade, write entry and successful commit, authenticated attachment,
 and the first accepted transport envelope. Original WebSocket receipt, Store
 admission and committed success have distinct clocks. Rollback never supplies

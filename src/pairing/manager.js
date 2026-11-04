@@ -1,3 +1,4 @@
+import { runtimeLog } from '../app/runtime-log.js';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
@@ -99,9 +100,9 @@ export function operationFailureDiagnostics(error) {
 /** Node-local authority is deliberately never part of the mirrored application DB. */
 export class PairManager {
   constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements,
-    reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)),
-    reportPeerFailure = diagnostic => console.error(JSON.stringify(diagnostic)),
-    reportHandoverFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
+    reportStartupFailure = diagnostic => runtimeLog.error(diagnostic),
+    reportPeerFailure = diagnostic => runtimeLog.error(diagnostic),
+    reportHandoverFailure = diagnostic => runtimeLog.error(diagnostic) }) {
     this.config = config;
     configurePublicationRoots(config.snapshotDirectory, [config.directory,
       config.databasePath ? dirname(config.databasePath) : null]);
@@ -337,6 +338,7 @@ export class PairManager {
         return { bootstrapPending: false, everWritten: true, activationError: null };
       });
       this.error = null;
+      this.reportRole('master', true);
     } catch (error) {
       if (!ownsActivation()) throw pairError('authority_changed');
       this.activeAllowed = false;
@@ -392,6 +394,14 @@ export class PairManager {
     }
     await this.hooks.startReplica?.({ role: local.role, publication,
       dbPath: preserved?.dbPath ?? (local.role === 'protected' && local.everWritten ? local.activeDbPath : undefined) });
+    this.reportRole(local.role, this.canControl());
+  }
+
+  reportRole(role, canControl) {
+    const key = `${role}:${canControl}`;
+    if (this.lastReportedRole === key) return;
+    this.lastReportedRole = key;
+    runtimeLog.info({ event: 'paired-role', role, canControl });
   }
 
   publicRecovery() {

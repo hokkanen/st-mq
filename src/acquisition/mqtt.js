@@ -1,3 +1,4 @@
+import { runtimeLog } from '../app/runtime-log.js';
 import { createEquipmentCapture } from './equipment.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +52,7 @@ function observationFailure(cause) {
 // Each integration owns one explicit MQTT route for observations and commands.
 // Credentials and raw broker errors never enter event logs.
 export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
-  reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`), monotonicClock = () => performance.now() }) {
+  reportStorageFailure = diagnostic => runtimeLog.error(diagnostic), monotonicClock = () => performance.now() }) {
   validateGarageAdapterSnapshot(store.getState?.(`garage:adapter:${config.input}`));
   validateGarageSenderSnapshot(store.getState?.(`garage:sender:${config.input}`));
   const settings = { ...(config.h66 ?? {}) };

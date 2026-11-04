@@ -18,6 +18,7 @@ export function inheritConfigurationSnapshot(from, to) {
 // Environment settings have no file field for listening/storage overrides.
 // Known file fields retain their actual names when an environment override wins.
 const effectiveFields = [
+  ['controller.log_level', c => c.logLevel],
   ['controller.input', c => c.input], ['controller.topology', c => c.topology],
   ['mirror.role', c => c.role], ['controller.web_token', c => c.token],
   ['controller.web_family_token', c => c.familyToken],

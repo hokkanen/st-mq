@@ -1,9 +1,10 @@
+import { runtimeLog } from './runtime-log.js';
 import { storageOperationHealth } from '../storage/operation-health.js';
 import { Worker } from 'node:worker_threads';
 import { learningConfiguration } from './committed-learning.js';
 import { attachStorageAdmission } from '../storage/worker-admission.js';
 
-export function startHistoryLearning({ store, config = {}, WorkerClass = Worker, stderr = message => process.stderr.write(message) }) {
+export function startHistoryLearning({ store, config = {}, WorkerClass = Worker, stderr = () => runtimeLog.error({ event: 'learning-error', reason: 'diagnostic-storage-unavailable' }) }) {
   storageOperationHealth.register('learning-rebuild');
   let worker = null, stopped = false, fallbackReported = false;
   const reports = new Set(), lifetime = new AbortController();

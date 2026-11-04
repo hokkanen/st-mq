@@ -24,6 +24,12 @@ configuration:
           SSH from a fixed master to a read-only slave. pair synchronizes two
           computers with explicit manual handover. Neither mode takes over
           automatically. New pairs start with both computers as slaves.
+      log_level:
+        name: Log detail
+        description: >-
+          info shows startup, role changes and warnings or errors. debug also
+          includes bounded OCPP startup phases. Repeated failures are summarized.
+          Save and apply reviewed configuration; a read-only computer needs a restart.
       web_token:
         name: Direct-access admin password
         description: >-

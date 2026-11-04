@@ -110,9 +110,11 @@ test('bounded local tokens and scalar fields exclude spoofed context and private
 
 test('attempt, event, byte and lazy window limits never replenish across starts', () => {
   const f = fixture(); for (let index = 0; index < 300; index++) f.diagnostics.phase('upgrade-observed', f.stream);
-  assert.equal(f.rows.length, 128); assert.equal(f.rows.at(-1).phase, 'truncated');
-  assert.ok(Buffer.byteLength(f.rows.map(row => JSON.stringify(row)).join('\n')) <= 32768);
-  f.diagnostics.start(); f.diagnostics.listening(); assert.equal(f.rows.length, 128);
+  assert.ok(f.rows.length <= 128); assert.equal(f.rows.at(-1).phase, 'truncated');
+  assert.ok(Buffer.byteLength(f.rows.map(row => JSON.stringify({ ...row,
+    time: '+275760-09-13T00:00:00.000Z', level: 'debug' })).join('\n')) <= 32768);
+  const count = f.rows.length;
+  f.diagnostics.start(); f.diagnostics.listening(); assert.equal(f.rows.length, count);
   const capped = fixture(); for (let index = 0; index < 40; index++) capped.diagnostics.tcp({});
   assert.equal(capped.rows.filter(row => row.phase === 'tcp-observed').length, 32);
   assert.equal(capped.rows.at(-1).phase, 'truncated');

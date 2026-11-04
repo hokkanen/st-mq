@@ -1,3 +1,4 @@
+import { runtimeLog } from '../app/runtime-log.js';
 import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -64,7 +65,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   sourceContextFactory = createMqttSourceContext,
   managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, checkpointSource = databaseCheckpoint,
   resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase, createLocalReset, resumeLocalReset, finishLocalReset },
-  reportResetFailure = diagnostic => console.error(JSON.stringify(diagnostic)) } = {}) {
+  reportResetFailure = diagnostic => runtimeLog.error(diagnostic) } = {}) {
   let runtime = null, manager, closed = false, latestOperation = null;
   let primaryPath = config.dbPath;
   let closing = null;
@@ -586,6 +587,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       try { await manager.close(); } catch (error) { errors.push(error); }
       try { await resetWebAccess?.close(); } catch (error) { errors.push(error); }
       closed = true;
+      runtimeLog.flush();
+      runtimeLog[errors.length ? 'error' : 'info']({ event: 'paired-stopped', cleanupFailed: errors.length > 0 });
       if (errors.length) throw new AggregateError(errors, 'Paired cleanup completed with errors.');
     })();
     return closing;
@@ -602,6 +605,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     requireOpen();
     await manager.start();
     requireOpen();
+    runtimeLog.info({ event: 'paired-ready', role: manager.status().role, canControl: manager.canControl() });
     finishStartup();
     return { get pair() { return manager; }, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
       get server() { return runtime?.server ?? resetWebAccess?.server; }, get webAccess() { return runtime?.webAccess ?? resetWebAccess; }, close,

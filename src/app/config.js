@@ -382,7 +382,10 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   if (addon && [web.httpsPort, web.lanHttpPort].includes(ingressPort)) throw new Error('The ingress port must differ from the HTTPS and LAN HTTP ports.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
   const verification = env.STMQ_H66_VERIFICATION ?? options.controller?.h66_verification_file;
+  const logLevel = env.STMQ_LOG_LEVEL ?? options.controller?.log_level ?? 'info';
+  if (!['info', 'debug'].includes(logLevel)) throw new Error('controller.log_level / STMQ_LOG_LEVEL must be info or debug.');
   const config = { addon, topology, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
+    logLevel,
     host, port, token, familyToken, web, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
     electricityForecast: { enabled: options.electricity?.forecast_enabled === true },
