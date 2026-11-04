@@ -180,7 +180,7 @@ electricity rates and the admin/family access policy.
 
 | Variable | Default / purpose |
 | --- | --- |
-| `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
+| `STMQ_INPUT` | `simulated`; also `offline` or `providers` (Live integrations) |
 | `STMQ_LOG_LEVEL` | `info` or `debug`; overrides `controller.log_level` |
 | `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the app |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |

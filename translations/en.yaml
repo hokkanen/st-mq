@@ -14,9 +14,10 @@ configuration:
         name: Input source
         description: >-
           simulated uses synthetic data without device connections; offline
-          reads recorded data without device connections. providers uses live
-          sensors, prices and weather; mqtt also enables H66 readings when its
-          installed device prefix is configured.
+          reads recorded data without device connections. providers means Live
+          integrations: configured devices, MQTT sensors, prices and weather,
+          including H66 readings when its installed device prefix is configured.
+          Input selection does not grant permission to control equipment.
       topology:
         name: Computer topology
         description: >-

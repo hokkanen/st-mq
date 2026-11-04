@@ -13,7 +13,7 @@ assert.equal(spawnSync('arping', ['-V'], { stdio: 'ignore' }).status, 0);
 // Invalid arguments must fail without issuing any network mutation.
 assert.equal(spawnSync('/usr/local/bin/st-mq-vip', ['invalid'], { stdio: 'ignore' }).status, 1);
 const config = loadConfig({ XDG_CONFIG_HOME: '/missing-replica-fixture', STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave',
-  STMQ_INPUT: 'mqtt', STMQ_PORT: '0', STMQ_HOST: '127.0.0.1',
+  STMQ_INPUT: 'providers', STMQ_PORT: '0', STMQ_HOST: '127.0.0.1',
   STMQ_DATA_DIR: '/tmp/replica-smoke-unused', STMQ_MIRROR_DIR: '/tmp/replica-smoke-waiting' });
 const app = await start({ config });
 try {

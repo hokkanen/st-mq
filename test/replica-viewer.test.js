@@ -422,7 +422,7 @@ test('main replica startup bypasses legacy migration and providers and removes i
   const directory = fixture(t), legacy = snapshot(directory, 'st-mq');
   const databaseDir = join(directory, 'database');
   const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: join(directory, 'configuration'),
-    STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave', STMQ_INPUT: 'mqtt', STMQ_DATA_DIR: directory,
+    STMQ_TOPOLOGY: 'mirror', STMQ_MIRROR_ROLE: 'slave', STMQ_INPUT: 'providers', STMQ_DATA_DIR: directory,
     STMQ_DATABASE_DIR: databaseDir, STMQ_PORT: '0' }, directory);
   const signalCounts = Object.fromEntries(['SIGINT', 'SIGTERM'].map(signal => [signal, process.listenerCount(signal)]));
   const app = await start({ config, clock: () => at,

@@ -62,7 +62,7 @@ export function pairConfiguration(input = {}, env = {}, config = {}) {
   if (!isAbsolute(settings.vip.helperPath)) throw invalid('vip_helper');
   if (settings.vip.socketPath && !isAbsolute(settings.vip.socketPath)) throw invalid('vip_socket');
   if (peer.hostname === settings.vip.address) throw new Error('Pair peers must use fixed addresses, not the virtual IP');
-  if (!['mqtt', 'providers'].includes(config.input) || !settings.mqtt?.address)
+  if (config.input !== 'providers' || !settings.mqtt?.address)
     throw new Error('Paired controllers require live input and a local MQTT broker on each machine');
   if (directory === settings.snapshotDirectory || directory === resolve(config.databaseDir)) throw invalid('directory');
   if (settings.snapshotDirectory === resolve(config.databaseDir)) throw invalid('snapshot_directory');

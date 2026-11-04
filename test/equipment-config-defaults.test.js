@@ -38,7 +38,7 @@ test('public equipment defaults work with broker-only private settings and prese
   writeFileSync(privatePath, privateText);
   const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
   validateOptionFields(manifest.options, manifest.schema);
-  const config = loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: privatePath, HOME: directory }, directory);
+  const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: privatePath, HOME: directory }, directory);
   const devices = config.connections.equipment.devices;
   assert.deepEqual(devices.filter(row => row.enabled && row.protocol === 'shelly').map(row => row.id).sort(),
     ['caravan', 'dhwr', 'garage', 'heat_savings']);
@@ -103,7 +103,7 @@ test('an explicit device list replaces public defaults without switching protoco
   writeFileSync(privatePath, JSON.stringify({ mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: { devices: [
     { id: 'caravan', kind: 'metered_switch', connection: 'mqtt:synthetic/caravan/state' },
   ] } }));
-  const config = loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: privatePath, HOME: directory }, directory);
+  const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: privatePath, HOME: directory }, directory);
   assert.equal(config.connections.equipment.devices.length, 1);
   assert.equal(config.connections.equipment.devices[0].protocol, 'mqtt');
   assert.equal(config.connections.equipment.devices[0].topic, 'synthetic/caravan/state');

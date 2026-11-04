@@ -37,7 +37,7 @@ test('populated GiB history resets stay fast without backup and keep progress re
       { timeout: testCompletionLimit(180000) }, async t => {
         const preparationBegan = performance.now();
         const directory = join(root, `${mode}-${backup}`);
-        const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root), input: 'mqtt', role: 'slave', topology: 'pair',
+        const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root), input: 'providers', role: 'slave', topology: 'pair',
           connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
         config.pair = { directory: join(directory, 'pairing'), snapshotDirectory: join(directory, 'pair-snapshots'), databasePath: config.dbPath,
           platform: 'ubuntu', pairId: 'synthetic-reset-scale-pair', token: 'synthetic-reset-scale-shared-token-0123456789', peerUrl: 'http://127.0.0.1:1',

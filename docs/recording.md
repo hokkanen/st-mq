@@ -1474,7 +1474,7 @@ for source fencing, interruption and failure behavior.
 ## Local MQTT temperature sensors and interface
 
 Indoor and garage temperature acquisition uses the existing local MQTT broker in
-both `providers` and `mqtt` input modes. H66 is not required. Public topic defaults
+`providers` input (Live integrations). H66 is not required. Public topic defaults
 are in `config.json` under `options.equipment.devices`, with one explicit connection
 line per device:
 

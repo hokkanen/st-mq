@@ -264,7 +264,7 @@ async function runtimeFixture(t, devices = [native()]) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-equipment-api-'));
   const path = join(directory, 'settings.json');
   let now = INITIAL;
-  const options = { controller: { input: 'mqtt', web_token: TOKEN },
+  const options = { controller: { input: 'providers', web_token: TOKEN },
     mqtt: { address: 'mqtt://synthetic-equipment.invalid' }, teslamate: { enabled: false },
     equipment: { devices: [] } };
   const write = (selected = devices, patch = {}) => writeFileSync(path, JSON.stringify({ ...options, ...patch,

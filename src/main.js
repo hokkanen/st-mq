@@ -8,6 +8,7 @@ import { backupDirectory } from './storage/backup-directory.js';
 import { createBackupCatalog } from './storage/backup-catalog.js';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
+import { validateRuntimeInput } from './app/configuration-source.js';
 import { loadConfig, configurationReader, configurationSource, configurationLoader } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createEquipmentTests } from './app/equipment-tests.js';
@@ -25,6 +26,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairOptions = {},
   installSignalHandlers = true, shutdownSignal = null, startupTransaction = null, historyRecoveryOptions = {} } = {}) {
   const validateTopology = candidate => {
+    validateRuntimeInput(candidate.input);
     if (!['standalone', 'mirror', 'pair'].includes(candidate.topology ?? 'standalone')) throw new Error('Invalid local topology');
     if (candidate.role !== undefined && !['master', 'slave'].includes(candidate.role)) throw new Error('Invalid local instance role');
     if ((candidate.topology ?? 'standalone') === 'standalone' && candidate.role === 'slave' && !pairContext)
@@ -211,7 +213,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     requireRunning();
     await authority?.reconfigure(config.connections.mqtt);
     requireRunning();
-    if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
+    if (config.input === 'providers' && config.connections.mqtt?.address) {
       commandTransport = createHeatingTransport({ canControl });
     }
     await store.runWrite(() => { engine = new Engine({ store, config, clock, commandTransport, canControl,
@@ -228,7 +230,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       || engine.charging?.configuration?.chargers?.charger2?.enabled === true
       || Boolean(config.garage?.adapter?.stateTopic || config.garage?.adapter?.telemetryTopic || config.garage?.sender?.stateTopic)
       || config.connections.equipment?.devices?.length > 0;
-    if (['mqtt','providers'].includes(config.input) && hasMqttObservations && config.connections.mqtt?.address) {
+    if (config.input === 'providers' && hasMqttObservations && config.connections.mqtt?.address) {
       const { startMqtt } = await import('./acquisition/mqtt.js');
       requireRunning();
       const acquisition = await startMqtt({ ...mqttOptions, engine, store, config,
@@ -252,7 +254,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       if (acquisition.h66) engine.setH66(acquisition);
     }
     engine.equipmentTests = createEquipmentTests({ store, clock, getEquipment: () => engine.equipment,
-      canControl: () => canControl() && ['mqtt', 'providers'].includes(config.input) });
+      canControl: () => canControl() && config.input === 'providers' });
     engine.equipmentTests.tick();
   }
   async function startBackground() {
@@ -288,7 +290,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     }, Math.max(1, next - now));
   }
   async function startProviderRuntime() {
-    if (['providers', 'mqtt'].includes(config.input)) {
+    if (config.input === 'providers') {
       const { startProviders } = await import('./acquisition/providers.js');
       requireRunning();
       const provider = startProviders({ ...providerOptions, engine, store, config, clock, canControl });
@@ -492,7 +494,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
   try {
     requireRunning();
-    if (!pairContext && ['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
+    if (!pairContext && config.input === 'providers' && config.connections.mqtt?.address) {
       authority = await standaloneAuthority({ config, clock, connect: mqttOptions.connect,
         onLoss: async () => {
           controlRevoked = true;

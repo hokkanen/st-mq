@@ -17,7 +17,7 @@ async function fixture(t) {
   t.after(async () => { for (const app of apps) await app.close(); await rm(root, { recursive: true, force: true }); });
   const directory = join(root, 'data');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root),
-    input: 'mqtt', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+    input: 'providers', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
   config.charging.vehicles.bmw.mqttTopic = '';
   config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
   config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,

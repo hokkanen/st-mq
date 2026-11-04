@@ -23,7 +23,7 @@ const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
 async function assertReconstructedLearning(app) {
   await app.store.runWrite(() => {
     const before = app.store.db.prepare('SELECT total_changes() AS n').get().n;
-    assert.deepEqual(replayLearningJournal(app.store, 'mqtt', null,
+    assert.deepEqual(replayLearningJournal(app.store, 'providers', null,
       { rebuild: true, persistCheckpoint: false, persistCoefficients: false }), app.engine.checkpoint);
     assert.equal(app.store.db.prepare('SELECT total_changes() AS n').get().n, before,
       'Independent reconstruction verifies committed evidence without republishing model state');
@@ -55,18 +55,18 @@ test('a read-only paired viewer registers only derived cache proofs through its 
   await secondary.pair.synchronize(primary.pair.state.claim());
   const source=primary.store.checkpoint(),selection=primary.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
   const cacheId=derivedCacheId('/same/configured/database.sqlite',secondary.pair.state.value.nodeId);
-  const request={operation:'pin',input:'mqtt',source,selection};
+  const request={operation:'pin',input:'providers',source,selection};
   const body={cacheId,purpose:'firewood',request};
   const pending=await secondary.pair.peer.request('derived-cache-anchor',body);
   const proof=await secondary.pair.peer.request('derived-cache-anchor',{...body,
     request:{...request,...pending,operation:'publish',digest:'a'.repeat(64)}});
-  assert(matchesDerivedCacheAnchor(primary.store.db,{cacheId,purpose:'firewood',input:'mqtt',proof}));
+  assert(matchesDerivedCacheAnchor(primary.store.db,{cacheId,purpose:'firewood',input:'providers',proof}));
   assert.equal(secondary.pair.canControl(),false,'Cache persistence grants no equipment permission');
   await assert.rejects(primary.pair.peer.request('derived-cache-anchor',body));
   await secondary.pair.synchronize(primary.pair.state.claim());
   const publication=await readReplicaPublication(secondary.pair.config.snapshotDirectory);
   const reader=new Store(publication.dbPath,{readOnly:true});
-  try{assert(matchesDerivedCacheAnchor(reader.db,{cacheId,purpose:'firewood',input:'mqtt',proof}));}finally{await reader.close();}
+  try{assert(matchesDerivedCacheAnchor(reader.db,{cacheId,purpose:'firewood',input:'providers',proof}));}finally{await reader.close();}
 });
 const command = (action, extra = {}) => ({ action, requestId: randomUUID(), confirmed: true, ...extra });
 test('Linux setup promotion uses the reviewed node identity at the real pairing API boundary', async t => {
@@ -96,7 +96,7 @@ async function fixture(t) {
   async function open(name, role, platform) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-      input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+      input: 'providers', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
     config.charging.vehicles.bmw.mqttTopic = '';
     config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
     config.topology = 'pair';
@@ -347,7 +347,7 @@ test('full application handover switches controller/viewer, preserves durable ro
   assert.equal((await fetch(`${url(b)}/api/settings/reload`, { method: 'POST' })).status, 405);
   const handover = command('handover', { verifyWithFullSnapshot: true }); await apiAction(t, a, handover);
   assert.equal(a.pair.canControl(), false); assert.equal(b.pair.canControl(), true);
-  assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'mqtt');
+  assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'providers');
   assert.equal(b.store.latestObservation('indoor_temperature').value, 20);
   assert.deepEqual(f.sourceSeedAttempts.get('b'), [false], 'a handover recipient must bring the final verified source seed');
   const receiptPath = `/api/pair/action?nodeId=${handover.nodeId}&requestId=${handover.requestId}`;
@@ -447,7 +447,7 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
   const preview = master.status().recovery.preview;
   assert.equal(preview.status, 'checked'); assert.equal(preview.counts, undefined);
   const before = { observations: master.store.observations(), checkpoint: structuredClone(master.engine.checkpoint),
-    epoch: master.store.learningEpoch('mqtt'), journal: master.store.db.prepare('SELECT * FROM learning_journal_all').all() };
+    epoch: master.store.learningEpoch('providers'), journal: master.store.db.prepare('SELECT * FROM learning_journal_all').all() };
   for (const body of [command('recover', { previewId: preview.previewId, discardUnrecovered: true }),
     command('rejoin', { previewId: preview.previewId, discardUnrecovered: 'true' })]) {
     const rejected = await fetch(`${url(master)}/api/pair/action`, { method: 'POST',
@@ -457,7 +457,7 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
   await apiAction(t, master, command('rejoin', { previewId: preview.previewId, discardUnrecovered: true }));
   assert.deepEqual(master.store.observations(), before.observations);
   assert.deepEqual(master.engine.checkpoint, before.checkpoint);
-  assert.equal(master.store.learningEpoch('mqtt'), before.epoch);
+  assert.equal(master.store.learningEpoch('providers'), before.epoch);
   assert.deepEqual(master.store.db.prepare('SELECT * FROM learning_journal_all').all(), before.journal);
   assert.equal(master.status().recovery.report.recoverySkipped, true);
   assert.equal(master.status().recovery.report.imported, 0);

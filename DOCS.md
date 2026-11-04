@@ -481,8 +481,8 @@ apps or a Home Assistant Core API token.
 
 ## MQTT and optional Home Assistant integrations
 
-For live MQTT input, configure `mqtt.address`, `mqtt.user` and `mqtt.pw` in ST-MQ's
-saved options. The default `mqtt://core-mosquitto` targets Home Assistant's
+For MQTT devices under `providers` input (Live integrations), configure
+`mqtt.address`, `mqtt.user` and `mqtt.pw` in ST-MQ's saved options. The default `mqtt://core-mosquitto` targets Home Assistant's
 Mosquitto broker app; supply a login allowed by that broker. ST-MQ does not copy
 credentials from Home Assistant's MQTT integration. A separate broker needs its
 own reachable address. `simulated` and `offline` modes need no broker.

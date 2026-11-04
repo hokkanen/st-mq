@@ -119,6 +119,23 @@ test('HA rejects retired native token fields without translating or saving setti
   }
 });
 
+test('HA rejects retired mqtt input in saved options and imports without saving or resolving secrets', async t => {
+  for (const imported of [false, true]) {
+    const f = fixture(t);
+    f.state.current.mqtt.pw = '!secret fixture_broker_password';
+    if (imported) f.upload({ controller: { input: 'mqtt' } });
+    else f.state.current.controller.input = 'mqtt';
+    const before = structuredClone(f.state.current);
+    const bytes = imported ? readFileSync(f.paths.importPath) : null;
+    await assert.rejects(f.source.prepare({ startup: true }), /Retired controller.input.*mqtt.*providers/);
+    assert.equal(f.posts(), 0);
+    assert.deepEqual(f.state.current, before);
+    assert.equal(f.state.requests.some(row => row.url.endsWith('/options/config')), false);
+    if (imported) assert.deepEqual(readFileSync(f.paths.importPath), bytes);
+    assert.equal(existsSync(f.paths.receiptPath), false);
+  }
+});
+
 test('HA rejects retired topology imports and preserves both settings and source files', async t => {
   for (const retired of [{ replication: {} }, { pairing: {} }, { mirror: { enabled: false } },
     { pair: { enabled: true } }, { controller: { role: 'primary' } }, { controller: { role: 'replica' } },

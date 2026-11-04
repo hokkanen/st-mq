@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Live integrations use `controller.input: providers`, including configured MQTT
+  devices and H66. The redundant `mqtt` input value is rejected; database schemas
+  and saved-state namespaces are unchanged.
+
 - HA and Linux runtime logs show timestamped startup and role summaries, with
   bounded repeated-failure counts. Detailed OCPP startup traces require the
   optional debug log detail.

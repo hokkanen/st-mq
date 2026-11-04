@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../src/main.js';
@@ -46,6 +46,19 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
   const restarted = await start({ config });
   try { assert.equal(restarted.engine.status().automation.home.activity, 'paused'); }
   finally { await restarted.close(); }
+});
+
+test('programmatic startup rejects mqtt before opening storage or device connections', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-retired-startup-input-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
+  const bytes = Buffer.from('fixture-existing-storage-must-stay-untouched');
+  writeFileSync(config.dbPath, bytes);
+  const paths = readdirSync(directory);
+  await assert.rejects(start({ config: { ...config, input: 'mqtt' }, installSignalHandlers: false,
+    mqttOptions: { connect() { assert.fail('Invalid input must not connect to devices'); } } }), /Retired .*mqtt.*providers/);
+  assert.deepEqual(readFileSync(config.dbPath), bytes);
+  assert.deepEqual(readdirSync(directory), paths);
 });
 
 test('deployment metadata uses an explicit Node base, persistent storage and both required architectures', () => {
@@ -120,7 +133,7 @@ test('H66 observations coexist with weather and prices and acquisition only requ
     assert.equal(options.retain, false); done();
   };
   fake.end = (force, options, done) => { closed++; done(); };
-  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'mqtt', deviceId: 'fixture-h66',
+  const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_PORT: '0', STMQ_DATA_DIR: directory }, directory), input: 'providers', deviceId: 'fixture-h66',
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' } } };
   config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const app = await start({ config, clock: () => now, providerOptions: fixture.providerOptions,

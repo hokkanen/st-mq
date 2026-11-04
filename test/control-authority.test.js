@@ -31,7 +31,7 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
   const client = idleIdentityClient(), publications = [];
   client.publish = (topic, payload, options, done) => { publications.push(topic); done?.(); };
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-    input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid' } } };
+    input: 'providers', connections: { mqtt: { address: 'mqtt://invented.invalid' } } };
   let connections = 0;
   const options = { config, installSignalHandlers: false, providerOptions: { automatic: false },
     mqttOptions: { connect: () => { connections++; return client; } } };
@@ -87,7 +87,7 @@ test('authority loss invalidates a delayed settings reload without recreating ac
   const entered = new Promise(resolve => { enteredRead = resolve; });
   const clients = [];
   const config = { ...loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
-    input: 'mqtt', connections: { mqtt: { address: 'mqtt://invented.invalid' },
+    input: 'providers', connections: { mqtt: { address: 'mqtt://invented.invalid' },
       equipment: equipmentConfiguration({devices:[{id:'indoor',kind:'temperature',connection:'mqtt:invented/temperature'}]}) } };
   const app = await start({ config, installSignalHandlers: false, providerOptions: { automatic: false },
     readConfig: async () => { enteredRead(); await waiting; return config; },

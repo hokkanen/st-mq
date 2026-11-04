@@ -9,7 +9,7 @@ import { connectSetupHA, prepareConfigurationForHost, savedOptionsProgram, promo
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
 const app = { slug: 'synthetic_st-mq', repository: 'synthetic', version: '0.9.5', state: 'started',
-  options: { controller: { input: 'mqtt', topology: 'pair' }, mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-user', pw: 'synthetic-private-secret' },
+  options: { controller: { input: 'providers', topology: 'pair' }, mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-user', pw: 'synthetic-private-secret' },
     pair: { pair_id: 'synthetic-pair', token: 'synthetic-pair-token-12345678901234567890' } } };
 const pair = { nodeId: '11111111-1111-4111-8111-111111111111', pairId: 'synthetic-pair', bootstrapPending: true, canControl: false,
   role: 'slave', busy: false, phase: null, error: null, actions: { promote: true }, vip: { owned: false }, peer: { role: 'slave' } };
@@ -67,7 +67,7 @@ function fixture({ state = app.state, raw = app.options, broker = true, brokerNe
 }
 
 test('configuration copying retains sparse provider settings while resetting host-local paths and proof', () => {
-  const source = { controller: { input: 'mqtt', h66_verification_file: '/ha/private-proof.json' }, web: { https_directory: '/ha/https' },
+  const source = { controller: { input: 'providers', h66_verification_file: '/ha/private-proof.json' }, web: { https_directory: '/ha/https' },
     recording: { backup_directory: '/ha/backups' }, mqtt: { address: 'mqtt://core-mosquitto', user: 'synthetic-user', pw: 'synthetic-private-secret' },
     pair: { pair_id: 'synthetic-pair', directory: '/ha/pair', snapshot_directory: '/ha/snapshots', vip_socket: '/ha/socket', vip_interface: 'end0' },
     mirror: { directory: '/ha/mirror' } };

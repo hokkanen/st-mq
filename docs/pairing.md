@@ -101,7 +101,7 @@ select each computer's local defaults:
 {
   "controller": {
     "topology": "pair",
-    "input": "mqtt"
+    "input": "providers"
   },
   "mqtt": {
     "address": "mqtt://127.0.0.1"
@@ -124,9 +124,8 @@ select each computer's local defaults:
 }
 ```
 
-The example selects live `controller.input: "mqtt"`. Adapt this to `providers`
-if that is the installation's live input, and keep the intended control mode in
-each machine's private configuration. The default simulated input cannot be
+The example selects `controller.input: "providers"` (Live integrations), including
+configured MQTT devices and H66. Keep the intended configuration on each machine. The default simulated input cannot be
 used for pair mode. Pairing controls whether
 that runtime may start; copied active settings cannot activate a slave.
 

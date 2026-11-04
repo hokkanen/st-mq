@@ -138,7 +138,7 @@ export async function main(args = [], dependencies = {}) {
     const stateBefore = existsSync(savedStatePath) ? snapshotPrivate(savedStatePath) : null;
     const savedState = stateBefore ? parseSetupConfigurationConnection(stateBefore.bytes) : null;
     if (topology === 'standalone' && savedState) fail('This state belongs to a pair. Decommission pairing explicitly before choosing standalone operation. Setup does not replace saved authority.');
-    if (topology === 'pair' || ['mqtt', 'providers'].includes(previousEnvironment.STMQ_INPUT ?? options.controller?.input)) {
+    if (topology === 'pair' || (previousEnvironment.STMQ_INPUT ?? options.controller?.input) === 'providers') {
       if (options.mqtt?.address) brokerOrigin(options.mqtt.address); // Reject embedded credentials before displaying a default.
       const selectedBrokerOrigin = await io.ask(topology === 'pair' ? 'Linux local MQTT origin' : 'Primary MQTT origin',
         options.mqtt?.address && !options.mqtt.address.includes('core-mosquitto') ? options.mqtt.address : 'mqtt://127.0.0.1');

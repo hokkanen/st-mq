@@ -38,9 +38,18 @@ export function parseOptions(text, { allowWrapper = false } = {}) {
   return mergeOptions({}, options);
 }
 
-// Retired topology settings must fail even during the add-on's bootstrap,
+export function validateRuntimeInput(input) {
+  if (input === 'mqtt')
+    throw new Error('Retired controller.input / STMQ_INPUT: mqtt. Use providers for live integrations, including MQTT and H66.');
+  if (!['simulated', 'offline', 'providers'].includes(input))
+    throw new Error('controller.input / STMQ_INPUT must be simulated, offline or providers.');
+  return input;
+}
+
+// Retired controller/topology settings must fail even during the add-on's bootstrap,
 // before Supervisor resolves any unrelated secret references.
 export function validateTopologyOptions(options) {
+  if (options.controller?.input === 'mqtt') validateRuntimeInput(options.controller.input);
   if (object(options.controller) && Object.hasOwn(options.controller, 'mode'))
     throw new Error('Retired configuration field: controller.mode. Choose automation separately for Home and Garage in the dashboard.');
   for (const field of ['replication', 'pairing']) if (Object.hasOwn(options, field))

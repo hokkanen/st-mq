@@ -119,6 +119,13 @@ equipment capacity assumptions are intentional public engineering defaults.
 `test/public-config-privacy.test.js` guards these boundaries without printing
 values on failure; it does not replace review of newly added settings.
 
+`controller.input` accepts `simulated` (synthetic data), `offline` (recorded history)
+and `providers` (Live integrations: configured devices, MQTT, prices and weather).
+H66 uses the configured MQTT connection and device prefix under `providers`.
+`mqtt` is not a valid input value; MQTT remains a connection/integration setting.
+Input selection does not grant equipment-control permission. Saved history and
+state namespaces are not renamed or merged when validating configuration.
+
 ## Keep the private file small
 
 Garage manual control can be enabled with this sparse installation override:

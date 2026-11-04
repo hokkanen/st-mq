@@ -44,6 +44,19 @@ async function setup(t, options = {}, overrides = {}) {
   return { app, config, path, write, base, headers, post, preview };
 }
 
+test('configuration review rejects mqtt input and retains the running settings and saved state', async t => {
+  const { app, write, preview, post } = await setup(t);
+  const config = app.engine.config;
+  const savedSettings = app.store.getState('settings:simulated');
+  write({ controller: { input: 'mqtt' } });
+  const response = await preview();
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Retired controller.input.*mqtt.*providers/);
+  assert.equal((await post()).status, 400);
+  assert.equal(app.engine.config, config);
+  assert.deepEqual(app.store.getState('settings:simulated'), savedSettings);
+});
+
 test('reviewed log detail changes apply and invalid replacements retain the active level', async t => {
   const { app, write, post, preview } = await setup(t);
   const rows = [], original = console.log;
@@ -252,7 +265,7 @@ function fakeMqtt() {
 
 test('reload reconnects subscriptions and command transport, ignores late old publications and retains pending restoration', async t => {
   const mqtt = fakeMqtt();
-  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
+  const options = { controller: { input: 'providers' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const old = mqtt.clients[0];
   old.emit('message', 'invented/first', Buffer.from(JSON.stringify({value:21,timestamp:Date.now()})), { retain: false });
@@ -260,7 +273,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   const oldEngine = app.engine;
   const restore = oldEngine.executor.restore;
   oldEngine.executor.restore = async () => ({ restorationPending: true });
-  write({ controller: { input: 'mqtt', max_drop_c: 0.5 }, mqtt: { address: 'mqtt://second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] },
+  write({ controller: { input: 'providers', max_drop_c: 0.5 }, mqtt: { address: 'mqtt://second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] },
     acquisition: { easee_poll_seconds: 20 } });
   const blocked = await post();
   assert.equal(blocked.status, 400);
@@ -298,7 +311,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
 
 test('reload retains the current connection until Caravan native power restoration completes', async t => {
   const mqtt = fakeMqtt();
-  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' },
+  const options = { controller: { input: 'providers' }, mqtt: { address: 'mqtt://first.invalid' },
     equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:invented/first' }] } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const original = app.engine, client = mqtt.clients[0];
@@ -325,10 +338,10 @@ test('a failed reconnect restores the previous configuration and rate history wi
     if (++attempts === 2) throw new Error('synthetic-private-transport-failure');
     return mqtt.connect(...args);
   };
-  const options = { controller: { input: 'mqtt' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
+  const options = { controller: { input: 'providers' }, mqtt: { address: 'mqtt://first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect } });
   const originalContract = app.engine.contract();
-  write({ ...options, controller: { input: 'mqtt', max_drop_c: 0.5 }, electricity: { margin_ct_per_kwh_ex_vat: 0.9 } });
+  write({ ...options, controller: { input: 'providers', max_drop_c: 0.5 }, electricity: { margin_ct_per_kwh_ex_vat: 0.9 } });
   const response = await post();
   assert.equal(response.status, 400);
   const failure = await response.json();
@@ -343,7 +356,7 @@ test('a failed reconnect restores the previous configuration and rate history wi
 
 test('changing the H66 device starts with empty live readings and uses only the new subscription', async t => {
   const mqtt = fakeMqtt();
-  const options = { controller: { input: 'mqtt', h66_device: 'invented-first' }, mqtt: { address: 'mqtt://synthetic.invalid' } };
+  const options = { controller: { input: 'providers', h66_device: 'invented-first' }, mqtt: { address: 'mqtt://synthetic.invalid' } };
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const first = mqtt.clients[0];
   first.emit('message', 'invented-first/HP/0001', Buffer.from('31'), { retain: false });
@@ -351,7 +364,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
   await saved(app.store);
   assert.equal(app.engine.latest.return_temperature.value, 31);
   assert.equal(app.engine.outdoorCandidates['husdata-h66'], undefined, 'H66 outdoor is excluded before and after reload');
-  write({ ...options, controller: { input: 'mqtt', h66_device: 'invented-second' } });
+  write({ ...options, controller: { input: 'providers', h66_device: 'invented-second' } });
   const response = await post();
   assert.equal(response.status, 200);
   assert.equal(first.endCalls, 1);

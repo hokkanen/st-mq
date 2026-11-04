@@ -49,7 +49,7 @@ try {
   } else {
     directory = mkdtempSync(join(tmpdir(), 'stmq-http-reload-cancel-'));
     const path = join(directory, 'fixture-options.json');
-    writeFileSync(path, JSON.stringify({ controller: { input: 'mqtt' },
+    writeFileSync(path, JSON.stringify({ controller: { input: 'providers' },
       mqtt: { address: 'mqtt://fixture.invalid' }, equipment: { devices: [] } }));
     const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
     const entered = deferred(); release = deferred();

@@ -46,8 +46,8 @@ An illustrative partial configuration uses a deliberately invented identifier:
 }
 ```
 
-Both `providers` and `mqtt` input support H66. Preserve the installation's chosen
-live input and keep Home heating on **Paused** while commissioning; it does
+The `providers` input (Live integrations) supports H66 through MQTT. Keep Home
+heating on **Paused** while commissioning; selecting live input does
 not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save

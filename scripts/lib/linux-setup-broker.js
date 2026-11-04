@@ -84,7 +84,7 @@ export async function probeMQTTBroker(connection, { connect = mqtt.connect, time
 }
 
 export async function verifySetupBrokers(config, { probe = probeMQTTBroker, signal, skipPrimary = false, skipHA = false } = {}) {
-  if (!['mqtt', 'providers'].includes(config.input)) return;
+  if (config.input !== 'providers') return;
   const primary = config.connections?.mqtt;
   if (!primary?.address) return;
   if (!skipPrimary) await probe(primary, { signal });

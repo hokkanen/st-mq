@@ -94,7 +94,7 @@ test('environment output rejects invalid names, quotes, line breaks and non-stri
 });
 test('setup clears inherited application overrides before building the reviewed candidate', () => {
   assert.deepEqual(cleanSetupEnvironment({ PATH: '/usr/bin', HOME: '/home/operator', LANG: 'C.UTF-8',
-    STMQ_CONFIG: '/unreviewed/private.json', STMQ_ROLE: 'master', STMQ_ADDON: '1', STMQ_INPUT: 'mqtt', NODE_OPTIONS: '--eval arbitrary' }),
+    STMQ_CONFIG: '/unreviewed/private.json', STMQ_ROLE: 'master', STMQ_ADDON: '1', STMQ_INPUT: 'providers', NODE_OPTIONS: '--eval arbitrary' }),
   { PATH: '/usr/bin', HOME: '/home/operator', LANG: 'C.UTF-8' });
 });
 

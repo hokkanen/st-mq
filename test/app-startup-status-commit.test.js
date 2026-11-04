@@ -36,7 +36,7 @@ function providers(onConstruct = () => {}) {
 async function fixture(t, { hold = false, fail = false, holdReplay = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-first-status-'));
   const config = loadConfig({ HOME: directory, XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
-  config.input = 'mqtt'; config.deviceId = null;
+  config.input = 'providers'; config.deviceId = null;
   config.connections = { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic',
     temperatureReportIntervalMs: 70 * 60_000, temperatureReportGraceMs: 5 * 60_000 },
     equipment: equipmentConfiguration({ devices: [{ id: 'upstairs', kind: 'temperature',

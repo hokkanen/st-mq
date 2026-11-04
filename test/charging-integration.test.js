@@ -283,7 +283,7 @@ test('physical C2 alone starts MQTT acquisition when all vehicle feeds and other
  const {start}=await import('../src/main.js');
  const dir=mkdtempSync(join(tmpdir(),'stmq-physical-only-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const base=loadConfig({XDG_CONFIG_HOME:dir,STMQ_DATA_DIR:dir,STMQ_PORT:'0'},dir);
- const config={...base,input:'mqtt',deviceId:null,h66:{...base.h66,deviceId:null},
+ const config={...base,input:'providers',deviceId:null,h66:{...base.h66,deviceId:null},
   charging:{chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}},vehicles:{bmw:{mqttTopic:null}}},
   connections:{mqtt:{address:'mqtt://synthetic.invalid'},teslamate:{enabled:false}}};
  const subscriptions=[];let clients=0;

@@ -125,7 +125,7 @@ test('user systemd commands discover only the current account bus when session v
 
 test('real current configuration preflight is read-only and rejects runtime-local history paths', async t => {
   const f = fixture(t);
-  writeFileSync(f.configPath, JSON.stringify({ controller: { input: 'mqtt', topology: 'pair', h66_device: 'invented-gateway' },
+  writeFileSync(f.configPath, JSON.stringify({ controller: { input: 'providers', topology: 'pair', h66_device: 'invented-gateway' },
     mqtt: { address: 'mqtt://127.0.0.1' }, pair: { pair_id: 'synthetic-pair',
       token: 'synthetic-pairing-token-with-more-than-32-characters', peer_url: 'http://192.0.2.2:1244',
       vip_address: '192.0.2.100', vip_interface: 'eth0' } }));

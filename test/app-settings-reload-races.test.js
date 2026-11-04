@@ -129,13 +129,13 @@ function fakeMqtt() {
 test('shutdown during a delayed config read prevents reconnection and active dispatch', async t => {
   const entered = deferred(), release = deferred(), mqtt = fakeMqtt();
   let next;
-  const options = { controller: { input: 'mqtt' },
+  const options = { controller: { input: 'providers' },
     mqtt: { address: 'mqtt://invented-first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, write, read } = await setup(t, options, {
     mqttOptions: { connect: mqtt.connect },
     readConfig: async () => { entered.resolve(); await release.promise; return next; },
   });
-  write({ controller: { input: 'mqtt' },
+  write({ controller: { input: 'providers' },
     mqtt: { address: 'mqtt://invented-second.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/second' }] } });
   next = read();
   const old = app.engine;
@@ -165,10 +165,10 @@ test('failed replacement and recovery disable API mutations and scheduled contro
     if (++attempts > 1) throw new Error('synthetic-private-reconnect-failure');
     return mqtt.connect();
   };
-  const options = { controller: { input: 'mqtt' },
+  const options = { controller: { input: 'providers' },
     mqtt: { address: 'mqtt://invented-first.invalid' }, equipment: { devices: [{ id: 'indoor', kind: 'temperature', connection: 'mqtt:' + 'invented/first' }] } };
   const { app, base, post, write } = await setup(t, options, { clock: () => now, mqttOptions: { connect } });
-  write({ ...options, controller: { input: 'mqtt', max_drop_c: 0.5 } });
+  write({ ...options, controller: { input: 'providers', max_drop_c: 0.5 } });
   // A broken finally block would arm a tick just 25 ms after failure.
   now += 59_975;
   await assert.rejects(app.reloadSettings(), /runtime recovery failed/);

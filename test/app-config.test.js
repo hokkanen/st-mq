@@ -2,11 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration, haMqttConfiguration, chartConfiguration } from '../src/app/config.js';
 import { chargingConfiguration } from '../src/charging/config.js';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const loadConfig = (env = {}, cwd) => readConfig({ HOME: '/missing-stmq-test-home', ...env }, cwd);
+
+test('mqtt is retired at every configuration boundary before storage is touched', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-retired-input-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'options.json'), database = join(directory, 'st-mq.sqlite');
+  const existing = Buffer.from('fixture-existing-database-must-not-be-opened');
+  writeFileSync(database, existing);
+  const schema = JSON.parse(readFileSync('config.json', 'utf8')).schema;
+  assert.equal(schema.controller.input, 'list(simulated|offline|providers)');
+  for (const addon of [false, true]) for (const mirrorSlave of [false, true]) {
+    for (const fromFile of [false, true]) {
+      const options = { controller: { input: fromFile ? 'mqtt' : 'providers', topology: mirrorSlave ? 'mirror' : 'standalone' },
+        ...(mirrorSlave ? { mirror: { role: 'slave' } } : {}) };
+      const bytes = JSON.stringify(options);
+      writeFileSync(path, bytes);
+      const env = { STMQ_CONFIG: path, STMQ_DATA_DIR: directory, STMQ_INPUT: fromFile ? 'providers' : 'mqtt',
+        ...(addon ? { STMQ_ADDON: '1' } : {}) };
+      assert.throws(() => loadConfig(env, directory), /Retired .*mqtt.*providers/);
+      assert.equal(readFileSync(path, 'utf8'), bytes);
+      assert.deepEqual(readFileSync(database), existing);
+      assert.deepEqual(readdirSync(directory).sort(), ['options.json', 'st-mq.sqlite']);
+    }
+  }
+});
 
 const sensors = (ids = ['indoor', 'downstairs', 'bedroom', 'garage']) => ({ devices: ids.map(id => ({
   id, kind: 'temperature', signal: `${id}_temperature`, connection: `mqtt:invented/${id}`, area: id === 'garage' ? 'garage' : 'home',
@@ -122,7 +146,7 @@ test('optional HA MQTT keeps primary defaults and uses only its own credentials'
     const source = JSON.stringify({ mqtt: { address: 'mqtt://127.0.0.1', user: 'synthetic-primary-user', pw: 'synthetic-primary-password',
       ...(ha === undefined ? {} : { ha }) } });
     writeFileSync(path, source, { mode: 0o600 });
-    const config = loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: path }, directory);
+    const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory);
     assert.equal(readFileSync(path, 'utf8'), source);
     return config.connections.mqtt;
   };
@@ -151,7 +175,7 @@ test('HA MQTT rejects malformed, ambiguous and unsupported settings without expo
       'mqtt://ha.invalid\n'].map(address => ({ address }))]) {
     const source = JSON.stringify({ mqtt: { ha } });
     writeFileSync(path, source, { mode: 0o600 });
-    for (const input of ['mqtt', 'simulated']) assert.throws(() => loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path }, directory),
+    for (const input of ['providers', 'simulated']) assert.throws(() => loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path }, directory),
       error => /mqtt.ha/.test(error.message) && !error.message.includes('synthetic-private'));
     assert.equal(readFileSync(path, 'utf8'), source);
   }
@@ -160,7 +184,7 @@ test('paired HA MQTT may be remote while primary stays local and cannot follow t
   const directory = mkdtempSync(join(tmpdir(), 'stmq-paired-ha-mqtt-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
-  const options = { controller: { input: 'mqtt', topology: 'pair' }, mqtt: { address: 'mqtt://127.0.0.1',
+  const options = { controller: { input: 'providers', topology: 'pair' }, mqtt: { address: 'mqtt://127.0.0.1',
     ha: { address: 'mqtt://192.0.2.20:1885' } }, pair: { pair_id: 'synthetic-pair',
     token: 'synthetic-pair-token-longer-than-thirty-two-characters', peer_url: 'http://192.0.2.20:1244',
     vip_interface: 'eth0', vip_address: '192.0.2.30' } };
@@ -178,14 +202,14 @@ test('current equipment topics are exact, own each sensor and preserve the priva
   const path = join(directory,'fixture.json');
   const options = { mqtt: { address: 'mqtt://invented.invalid' }, equipment: sensors() };
   const original = JSON.stringify(options); writeFileSync(path,original);
-  const config = loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory);
+  const config = loadConfig({STMQ_INPUT:'providers',STMQ_CONFIG:path},directory);
   assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), ['invented/indoor','invented/downstairs','invented/bedroom','invented/garage']);
   assert.equal(Object.hasOwn(config.connections.mqtt,'temperatureTopics'),false);
   assert.equal(Object.hasOwn(config.connections,'shelly'),false);
   assert.deepEqual(config.control.indoorSensorWeights,{indoor_temperature:0.25,downstairs_temperature:0.25,bedroom_temperature:0.5});
   assert.equal(readFileSync(path,'utf8'),original);
   options.equipment.devices[0].connection = 'mqtt:invented/#'; writeFileSync(path,JSON.stringify(options));
-  assert.throws(() => loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic|wildcards/i);
+  assert.throws(() => loadConfig({STMQ_INPUT:'providers',STMQ_CONFIG:path},directory),/topic|wildcards/i);
 });
 
 test('retired Shelly roles and MQTT temperature aliases are rejected before runtime construction', t => {
@@ -195,7 +219,7 @@ test('retired Shelly roles and MQTT temperature aliases are rejected before runt
     'downstairs_temperature_topic','bedroom_temperature_topic','garage_temperature_topic','garage_temperature_2_topic']
     .map(key => ({mqtt:{[key]:'invented/topic'}}))]) {
     const source = JSON.stringify(options); writeFileSync(path,source);
-    assert.throws(() => loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory));
+    assert.throws(() => loadConfig({STMQ_INPUT:'providers',STMQ_CONFIG:path},directory));
     assert.equal(readFileSync(path,'utf8'),source);
   }
 });
@@ -221,7 +245,7 @@ test('indoor report deadlines default to seventy minutes plus five-minute grace 
   const path = join(directory, 'fixture.json');
   const read = mqtt => {
     writeFileSync(path, JSON.stringify({ mqtt: { address: 'mqtt://invented.invalid', ...mqtt } }), { mode: 0o600 });
-    return loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: path }, directory).connections.mqtt;
+    return loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory).connections.mqtt;
   };
   assert.equal(read({}).temperatureReportIntervalMs, 4_200_000);
   assert.equal(read({}).temperatureReportGraceMs, 300_000);
@@ -351,11 +375,11 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
   const path = join(directory, 'options.json');
   const options = { mqtt: { address: 'mqtt://invented.invalid' }, equipment: sensors(),
     geoloc: { latitude: '60', longitude: '25', country_code: 'fi' } };
-  for (const contents of [options, { options }]) for (const input of ['providers', 'mqtt']) {
+  for (const contents of [options, { options }]) {
     const original = JSON.stringify(contents);
     writeFileSync(path, original);
-    const config = loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
-    assert.equal(config.input, input);
+    const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
+    assert.equal(config.input, 'providers');
     assert.equal(config.deviceId, undefined);
     assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.25, downstairs_temperature: 0.25, bedroom_temperature: 0.5 });
     assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), sensors().devices.map(device => device.connection.slice(5)));
@@ -552,9 +576,9 @@ test('live MQTT can run without H66 and threshold configuration keeps native def
   const directory=mkdtempSync(join(tmpdir(),'stmq-live-config-'));
   t.after(()=>rmSync(directory,{recursive:true,force:true}));
   const path=join(directory,'options.json');
-  writeFileSync(path,JSON.stringify({controller:{input:'mqtt',compressor_integral_a1:-60,compressor_hysteresis_c:10},mqtt:{address:'mqtt://synthetic.invalid'}}));
+  writeFileSync(path,JSON.stringify({controller:{input:'providers',compressor_integral_a1:-60,compressor_hysteresis_c:10},mqtt:{address:'mqtt://synthetic.invalid'}}));
   const cfg=loadConfig({STMQ_CONFIG:path},directory);
-  assert.equal(cfg.input,'mqtt');assert.equal(Object.hasOwn(cfg.settings, 'mode'), false);assert.equal(cfg.h66.enabled,false);
+  assert.equal(cfg.input,'providers');assert.equal(Object.hasOwn(cfg.settings, 'mode'), false);assert.equal(cfg.h66.enabled,false);
   assert.equal(cfg.control.auxIntegralA2,-990);assert.equal(cfg.control.auxHysteresisC,30);
   assert.equal(cfg.control.compressorIntegralA1,-60);assert.equal(cfg.control.compressorHysteresisC,10);
   const defaults=loadConfig({},'/missing-repository');

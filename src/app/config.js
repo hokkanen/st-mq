@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { isIP } from 'node:net';
 import { createHash } from 'node:crypto';
 import { configuredPriceSettings } from './contract.js';
-import { configurationPaths, createConfigurationSource, readConfigurationOptions, validateTopologyOptions } from './configuration-source.js';
+import { configurationPaths, createConfigurationSource, readConfigurationOptions, validateTopologyOptions, validateRuntimeInput } from './configuration-source.js';
 import { pairConfiguration } from '../pairing/config.js';
 import { garageSettings } from '../garage/settings.js';
 import { garageAdapterSettings } from '../garage/contract.js';
@@ -323,15 +323,15 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   // Pair slaves retain their own future controller configuration privately.
   // The durable pair role decides whether a runtime may actually use it.
   const mirrorSlave = topology === 'mirror' && role === 'slave';
-  const input = mirrorSlave ? 'offline' : env.STMQ_INPUT ?? options.controller?.input ?? 'simulated';
-  if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
+  const configuredInput = validateRuntimeInput(env.STMQ_INPUT ?? options.controller?.input ?? 'simulated');
+  const input = mirrorSlave ? 'offline' : configuredInput;
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
   const haMqtt = haMqttConfiguration(options.mqtt?.ha);
   if (options.electricity?.forecast_enabled === true && marketLocation(options).country !== 'fi')
     throw new Error('electricity.forecast_enabled requires the Finnish electricity market.');
   let connections = {};
-  if (input === 'mqtt' || input === 'providers') {
+  if (input === 'providers') {
     const { ha: _ha, ...mqtt } = options.mqtt ?? {};
     if (haMqtt) mqtt.ha = haMqtt;
     const equipmentInput = options.equipment ?? {};
@@ -346,9 +346,6 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     if (options.easee) connections.easee = { ...options.easee, local_ocpp: localOcppConfiguration(options.easee.local_ocpp) };
     if (equipment.devices.some(device => device.enabled) && !mqtt.address) throw new Error('Equipment requires the existing MQTT broker connection');
     if (connections.teslamate.enabled && !mqtt.address) throw new Error('TeslaMate requires the existing MQTT broker connection');
-    if (input === 'mqtt') {
-      if (!connections.mqtt?.address) throw new Error('MQTT address is required for read-only acquisition');
-    }
   }
   const floorPreheat = floorOverrideConfiguration(options.controller?.floor_preheat);
   const port = Number(env.STMQ_PORT ?? 1234);

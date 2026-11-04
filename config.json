@@ -527,7 +527,7 @@
   },
   "schema": {
     "controller": {
-      "input": "list(simulated|offline|mqtt|providers)",
+      "input": "list(simulated|offline|providers)",
       "topology": "list(standalone|mirror|pair)",
       "log_level": "list(info|debug)",
       "web_token": "password",

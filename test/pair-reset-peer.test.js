@@ -12,7 +12,7 @@ import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-fr
 test('keep reset preserves an interrupted seed as evidence and starts a new peer delivery', async t => {
   const root = await mkdtemp(join(tmpdir(), 'stmq-reset-peer-')), directory = join(root, 'data');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root),
-    input: 'mqtt', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+    input: 'providers', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
   config.charging.vehicles.bmw.mqttTopic = '';
   config.recording = { ...config.recording, backupDirectory: join(root, 'managed-copies') };
   config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
