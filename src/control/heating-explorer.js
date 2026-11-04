@@ -241,8 +241,8 @@ function constraints(input, decision, evidence, selected) {
       detail: 'Initial estimates permit preheat with native ROOM headroom and conservative temperature checks. Demonstrated increases describe observed support; simulations add no evidence.' });
   }
   if (!evidence.trialReady || !(input.trialBudgetRemainingCents >= 0)) result.push({ key: 'trialReadiness',
-    label: 'Learning trial budget', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
-    detail: 'A trial needs existing permission, observed equipment, usable evidence, remaining budget and the ordinary cold/hot stress checks.' });
+    label: 'Learning trial readiness', kind: 'evidence', status: 'blocking', value: null, unit: null,
+    detail: 'Experiments require enabled permission, current compressor and hot-water routing observations, a measured indoor average, budget for their estimated exposure and cold/hot stress checks. Zero budget still permits zero-exposure trials. Economic cycles can use the initialized model within current input, equipment and configured limits while experiment prerequisites are missing.' });
   for (const reason of decision.reasons.filter(reason => ['missing-or-stale-indoor', 'awaiting-normal-temperature-reference',
     'awaiting-fireplace-response-evidence', 'no-useful-space-heating-window',
     'trial-comfort-or-forecast-limited', 'trial-incremental-cost-exceeds-allowance',

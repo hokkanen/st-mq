@@ -683,18 +683,20 @@ configuration defaults.
 ## Heating strategies and limits
 
 Home `controller.savings_strategy` selects Gentle, Balanced or More savings;
-More savings is the default. The minimum benefit before other burdens is respectively
+More savings is the default. The minimum estimated saving before penalties is respectively
 2, 0 or 0 cents. These are decision rules, not annual savings predictions.
 Optional nonnegative overrides make each monetary policy explicit:
 `controller.minimum_home_benefit_cents`,
 `controller.home_discomfort_cents_per_degree_squared_hour`,
 `controller.cycle_start_cost_cents`, `controller.cycle_hour_cost_cents` and
 `controller.economic_uncertainty_floor_cents`. Omitted values retain the strategy
-minimum/comfort cost and zero extra start, duration and residual cost allowances. Zero removes that monetary allowance; it does not
+minimum saving and temperature deviation penalty, with zero cycle start and duration
+penalties and a zero configured minimum uncertainty deduction. Zero removes the
+corresponding penalty or configured minimum deduction; it does not
 remove configured temperature bounds, physical stress cases or restoration.
 These are preferences and engineering margins, not measured electricity charges.
-The duration allowance counts extra preheat and reduction hours; recovery
-electricity remains included in full-cycle energy cost. The uncertainty allowance
+The duration penalty counts extra preheat and reduction hours; recovery
+electricity remains included in full-cycle energy cost. The uncertainty setting
 is a minimum deduction from nominal savings: the greater of this setting and the
 paired physical-stress deduction applies, rather than adding the setting twice.
 The manual planner can override them for one explicitly reviewed cycle, including

@@ -157,12 +157,12 @@ export function economicCalculation(strategyId,config={}) {
     equation('Electrical energy and cost', 'E = Σ(P_space × Δt);  C = Σ(P_space × Δt × price) + C_tail',
       'P_space is electrical kW; Δt is hours; price is cents/kWh. E is kWh and C is cents. C_tail prices remaining thermal deficit against the normal reference at the last forecast quote, bounded below by zero. This boundary estimate is identical across compared paths; it is not a quote beyond the forecast.'),
     equation('Conservative benefit', 'B_low = B_nominal − max(cost_floor, B_nominal − min(B_nominal, B_stress−, B_stress+))',
-      'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths; the configured cost_floor (default zero) supplies an additional residual allowance.'),
+      'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths. The configured cost_floor (default zero) sets a minimum uncertainty deduction; it is not added to a larger stress deduction.'),
     equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + hour_weight × extra_hours + start_weight × start',
-      `${strategy ? `${strategy.label}: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These are configurable decision allowances, not actual electricity charges.`),
+      `${strategy ? `${strategy.label}: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These configurable decision penalties increase the saving required to choose a cycle; they are not electricity charges.`),
     equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
       `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
-  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Automatic permission or explicit one-cycle approval determines whether a reviewed plan is applied.',
+  ], ['During continuation the minimum estimated saving and cycle start penalty are omitted; remaining temperature deviation and duration penalties still count. Gentle is not an off switch. Automatic permission or explicit one-cycle approval determines whether a reviewed plan is applied.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }
 
@@ -254,9 +254,9 @@ export function calibrationCalculation(key) {
       'E is space-heating electricity in kWh. This update requires explicitly metered executed energy and predicted energy above 0.1 kWh.'),
     equation('Updated relative allowance', 'u_new = clamp(max(1.5e, u_old + α × (1.5e − u_old)), u_floor, 1.5)',
       `u_floor is 0.4 until six measured episodes, then 0.2. ${weighting}`),
-    equation('Reported path cost allowance', 'U_cost = max(5, u × [Σ|C_interval| + |C_tail|] + U_unobserved_AUX)',
+    equation('Reported path cost uncertainty', 'U_cost = max(5, u × [Σ|C_interval| + |C_tail|] + U_unobserved_AUX)',
       'All costs are in cents. Without H66 availability, U_unobserved_AUX adds 0.5 × predicted AUX kWh × the nonnegative forecast-boundary tariff; otherwise that term is zero.'),
-  ], ['The initial relative allowance is 0.6. Unexpected observed AUX after a near-zero AUX prediction raises it to at least 0.6. It supports reported path and cycle-assessment uncertainty; automatic economic admission uses its separate paired physical stress cases and configurable residual allowance, default zero. It is neither meter accuracy nor a confidence level.']);
+  ], ['The initial relative allowance is 0.6. Unexpected observed AUX after a near-zero AUX prediction raises it to at least 0.6. It supports reported path and cycle-assessment uncertainty; automatic economic admission uses its separate paired physical stress cases and configurable minimum uncertainty deduction, default zero. It is neither meter accuracy nor a confidence level.']);
   return undefined;
 }
 

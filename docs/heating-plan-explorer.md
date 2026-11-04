@@ -86,7 +86,7 @@ choice under unchanged settings.
 Compare the additional estimated saving against the current plan first. The
 comparison with normal heating is also available. Cost and energy cover modeled
 space heating over the evaluated horizon, including recovery. Cost also includes
-a priced allowance for remaining thermal deficit; electricity totals exclude
+an estimated cost for remaining thermal deficit; electricity totals exclude
 that unobserved tail and show its estimate separately. Hot-water demand and
 recovery are not counterfactually modeled;
 the figures are not measured whole-house or bill savings.
@@ -146,12 +146,12 @@ If a device acknowledgement arrives after the start window or approval scope has
 ended, the exposure remains recorded, and recovery ends the approved action
 without renewing permission or discarding restoration duties.
 
-Admin-selected temperature allowances are explicit temporary preferences. A
+Admin-selected temperature limits are explicit temporary preferences. A
 reviewed drop greater than 2°C overrides that ordinary occupied guard for this
 cycle. Provisional model/reference quality and previous demonstrated durations
 add no hidden policy cap. An explicit experiment budget can enable learning
 for this cycle even when automatic experiments are disabled or their daily
-allowance is exhausted; its accepted exposure is separate from that automatic
+budget is exhausted; its accepted exposure is separate from that automatic
 budget. Zero experiment budget permits only trials with no modeled extra cost or
 displaced saving; the separate automatic experiment switch still disables
 automatic trials. A negative minimum estimated saving permits a deliberately

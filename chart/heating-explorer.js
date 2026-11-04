@@ -454,7 +454,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-trial-description').textContent = trial ? [
       `${humanize(trial.status)} · approved ${atTime(trial.approvedAt)}${trial.status === 'pending' ? ` · latest start ${atTime(trial.latestStartAt)}` : ''} · expires ${atTime(trial.expiresAt)}.`,
       authorized ? `Authorized limits: ${authorized}.` : '', trial.reason ?? '',
-      outcome ? `Recorded assessment: estimated space-heating benefit ${money(outcome.profitCents)}; recovery cost forecast error ${money(outcome.recoveryErrorCents)}${Number.isFinite(outcome.uncertaintyCents) ? `; uncertainty allowance ${money(outcome.uncertaintyCents)}` : ''}. The normal-heating reference remains an estimate.`
+      outcome ? `Recorded assessment: estimated space-heating benefit ${money(outcome.profitCents)}; recovery cost forecast error ${money(outcome.recoveryErrorCents)}${Number.isFinite(outcome.uncertaintyCents) ? `; cost uncertainty ${money(outcome.uncertaintyCents)}` : ''}. The normal-heating reference remains an estimate.`
         : !validTrial(trial) ? 'A completed outcome assessment is unavailable for this cycle.' : '',
       !validTrial(trial) ? 'Review Home learning outcomes for the recorded evidence. One completed cycle alone does not establish validation.' : '',
       'Recovery and equipment restoration remain the controller’s responsibility.',
