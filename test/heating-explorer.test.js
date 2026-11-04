@@ -8,6 +8,29 @@ import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 const HOUR = 3_600_000;
 const options = { includePlan: true, includeOpportunities: false };
 
+test('normal reference reports its actual temperature separately from the allowed drop',()=>{
+  const input=heatingExplorerFixture();input.equipment.comfortReferenceProvisional=true;
+  input.settings.comfort.targetC=21.25;input.settings.comfort.maxDropC=1.5;
+  let result=exploreHeatingPlan(input,{},options);
+  const reference=result.constraints.find(row=>row.key==='provisionalReference');
+  assert.equal(reference.value,21.25);assert.equal(reference.unit,'°C');assert.equal(reference.status,'learning');
+  assert.equal(result.constraints.find(row=>row.key==='maxDropC').value,1.5);
+  input.settings.comfort.targetC=null;input.checkpoint.baselineC=null;input.observations.indoor.stale=true;
+  result=exploreHeatingPlan(input,{},options);
+  assert.equal(result.constraints.find(row=>row.key==='provisionalReference').value,null);
+});
+
+test('discarding some alternatives does not label available economics or forecast coverage blocked',()=>{
+  const economic=heatingExplorerFixture();economic.config.minimumHomeBenefitCents=5;
+  const decision=chooseCycle(economic);
+  assert.ok(decision.plan&&decision.diagnostics.economicsRejected>0&&decision.diagnostics.economicsAdmitted>0);
+  assert.equal(exploreHeatingPlan(economic,{},options).constraints.find(row=>row.key==='economicAdmission').status,'available');
+  const horizon=heatingExplorerFixture();
+  horizon.prices.forEach(row=>{row.allInCentsPerKWh=row.start>=horizon.now+9.5*HOUR?500:1;});
+  const covered=chooseCycle(horizon);assert.ok(covered.plan&&covered.diagnostics.forecastRejected>0);
+  assert.equal(exploreHeatingPlan(horizon,{},options).constraints.find(row=>row.key==='forecastCoverage').status,'available');
+});
+
 test('demonstrated ROOM increase belongs to the requested treatment, not another floor treatment',()=>{
   const input=heatingExplorerFixture(),response=input.checkpoint.model.equipmentResponse;
   Object.assign(input.equipment,{preheatAvailable:true,roomSettingC:21});
@@ -98,7 +121,7 @@ test('initial operation beyond demonstrated duration never manufactures validati
   assert.equal(result.illustrative.extrapolated, true);
   assert.ok(result.illustrative.reasons.includes('outside-demonstrated-duration'));
   assert.equal((result.illustrative.schedule.reductionEnd - result.illustrative.schedule.reductionStart) / HOUR, 8);
-  assert.ok(result.constraints.some(row => row.key === 'validatedReductionHours' && row.status === 'available'));
+  assert.ok(result.constraints.some(row => row.key === 'validatedReductionHours' && row.status === 'initial'));
 });
 
 test('strict scenario input rejects evidence, protection, arbitrary fields and invalid limits', () => {
@@ -309,7 +332,7 @@ test('exploration exposes ROOM-increase evidence separately from permitted durat
   const boundary = result => result.constraints.find(row => row.key === 'validatedPreheatBoostC');
   const blocked = exploreHeatingPlan(input, { preheatRoomBoostC: 5 }, options);
   assert.equal(boundary(blocked).value, 1);
-  assert.equal(boundary(blocked).status, 'available', 'Initial operation remains available without inventing demonstrated boost support');
+  assert.equal(boundary(blocked).status, 'initial', 'Initial operation remains available without inventing demonstrated boost support');
   const supported = exploreHeatingPlan(input, { preheatRoomBoostC: 1 }, options);
   assert.equal(boundary(supported).status, 'available');
   input.equipment.roomSettingC = 34;
@@ -359,6 +382,6 @@ test('provisional reference preserves configured comfort and does not block an a
   const decision = chooseCycle(input), result = exploreHeatingPlan(input, {}, options);
   assert.equal(decision.comfort.maxDropC, input.settings.comfort.maxDropC);
   if (decision.plan) assert.equal(decision.plan.maxDropC, input.settings.comfort.maxDropC);
-  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, input.settings.comfort.maxDropC);
+  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, input.settings.comfort.targetC);
   assert.equal(revalidatePlan({ ...input, plan: approved }).valid, true);
 });

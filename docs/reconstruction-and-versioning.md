@@ -487,7 +487,7 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v18-initial-model-continuous-learning`, with
+The Home learning algorithm is `committed-house-v19-independent-equipment-and-measurement-epochs`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -560,6 +560,12 @@ tests. Configuration changes are recorded with their digest and snapshot. SQLite
 schema versioning is separate from learning algorithm versioning. A journal whose
 algorithm is unsupported must be reported as such, never silently reinterpreted.
 Historical CSV imports retain their source meaning and timestamps.
+
+Equipment power and thermal-prior changes reset the affected model inputs and
+equipment-response evidence while preserving the occupied temperature reference
+and room measurement epoch. They do not imply a replaced temperature sensor or
+start sensor settling. A changed indoor weighting definition retains its own
+measurement boundary; actual sensor corrections keep their recorded boundaries.
 
 Source events are stored once, input projections are derived and rolling state
 remains bounded. Do not add repeated full histories, per-minute model snapshots or

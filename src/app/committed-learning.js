@@ -469,15 +469,17 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
           initialization: 'explicit current v4 seed or configured initial thermal estimates' } } : {}) } });
 }
 
-function resetMeasurement(checkpoint, configuration, at) {
+function resetThermalLearning(checkpoint, configuration, at, { measurementChanged = true } = {}) {
   const initial = restoreAdaptiveCheckpoint(checkpoint, configuration), fresh = initialAdaptiveModel(configuration);
   return { ...initial, model: { ...fresh, parameters: { ...initial.model.parameters },
-      provenance: { ...fresh.provenance, measurementChangedAt: at, retainedParameters: true } },
-    samples: [], episodeArchive: [], comfortLearning: null, state: null,
-    baselineC: null, comfortReference: null, sinceFit: 0,
+      provenance: { ...fresh.provenance, [measurementChanged ? 'measurementChangedAt' : 'equipmentChangedAt']: at, retainedParameters: true } },
+    samples: [], episodeArchive: [], state: null, sinceFit: 0,
+    ...(measurementChanged ? { comfortLearning: null, baselineC: null, comfortReference: null,
+      baselineResetAt: at, measurementEpochAt: at } : {}),
     cursor: new Date(at).toISOString(), windowCursor: Math.floor(at / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS,
-    baselineResetAt: at, measurementEpochAt: at, equipmentEpochAt: at,
-    health: { status: 'prior-estimates', reason: 'sensor-measurement-changed', acceptedFits: 0, rejectedFits: 0 } };
+    equipmentEpochAt: at,
+    health: { status: 'prior-estimates', reason: measurementChanged ? 'sensor-measurement-changed' : 'equipment-model-changed',
+      acceptedFits: 0, rejectedFits: 0 } };
 }
 
 export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
@@ -496,7 +498,7 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     const defaults = initialAdaptiveModel(configuration).energy;
     const previous = initial.learningConfiguration;
     if (learningVersion(indoorWeights(previous)) !== learningVersion(indoorWeights(configuration)))
-      initial = resetMeasurement(initial, configuration, entry.at);
+      initial = resetThermalLearning(initial, configuration, entry.at);
     const changed = EQUIPMENT_KEYS.some(key => learningVersion(previous[key] ?? null) !== learningVersion(configuration[key] ?? null));
     if (changed) {
       initial.equipmentEpochAt = entry.at;
@@ -505,7 +507,7 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
       const structuralChanged = ['auxRatedKw', 'heatPumpModelConfirmed', 'floorThermalPriors'].some(key =>
         learningVersion(previous[key] ?? null) !== learningVersion(configuration[key] ?? null));
       if (structuralChanged) {
-        initial = resetMeasurement(initial, configuration, entry.at);
+        initial = resetThermalLearning(initial, configuration, entry.at, { measurementChanged: false });
         initial.model.performance = initialAdaptiveModel(configuration).performance;
         initial.model.floor = initialAdaptiveModel(configuration).floor;
         initial.model.parameters.hydronicCPerKwh = initialAdaptiveModel(configuration).parameters.hydronicCPerKwh;

@@ -693,6 +693,10 @@ Optional nonnegative overrides make each monetary policy explicit:
 minimum/comfort cost and zero extra start, duration and residual cost allowances. Zero removes that monetary allowance; it does not
 remove configured temperature bounds, physical stress cases or restoration.
 These are preferences and engineering margins, not measured electricity charges.
+The duration allowance counts extra preheat and reduction hours; recovery
+electricity remains included in full-cycle energy cost. The uncertainty allowance
+is a minimum deduction from nominal savings: the greater of this setting and the
+paired physical-stress deduction applies, rather than adding the setting twice.
 The manual planner can override them for one explicitly reviewed cycle, including
 a negative minimum benefit when deliberately accepting estimated extra cost.
 Home's Heating strategy & comfort panel explains the effective policy and independent limits.

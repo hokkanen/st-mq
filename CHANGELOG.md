@@ -6,6 +6,12 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Thermal equipment assumptions preserve the occupied temperature reference and
+  room measurement continuity. Changing them no longer starts sensor settling.
+  The heating planner shows the actual normal reference separately from the
+  allowed drop, distinguishes initial estimates from observed support, and
+  reports available economic alternatives despite rejecting other candidates.
+
 - Home starts with shared calibrated thermal coefficients and explicit initial
   native-response estimates, and can plan
   preheating, peak reduction and recovery before new training episodes exist.

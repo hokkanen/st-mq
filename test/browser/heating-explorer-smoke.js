@@ -128,6 +128,8 @@ try {
     application: { allowed: true, latestStartAt: now + hour, expiresAt: now + 12 * hour },
   };
   const allControls=exploreHeatingPlan(heatingExplorerFixture()).controls;
+  fixture.constraints.push({key:'provisionalReference',label:'Normal temperature reference',kind:'evidence',
+    status:'learning',value:21.25,unit:'°C',detail:'The normal reference is still learning; the allowed drop is shown separately.'});
   fixture.controls=allControls.map(control=>({...control,
     value:fixture.controls.find(existing=>existing.key===control.key)?.value??control.value}));
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
@@ -249,6 +251,8 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-heat-pump-details').open === initialHomeFold`), true, 'Opening explorer does not toggle Home disclosure');
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true');
   assert.match(await evaluate(`document.getElementById('heating-explorer-constraints').textContent`), /4 h/);
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-constraints [data-status="learning"]').textContent`),
+    /Normal temperature reference · 21.25 °C.*Learning/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-opportunities').textContent`), /€0.55.*6 h/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-context').textContent`), /estimate for one unavailable room.*±0.2 °C.*no learning evidence/);
   await keyPress('Escape');

@@ -64,8 +64,8 @@ preferences, with wider ranges than the automatic defaults.
 | Minimum cycle benefit | Savings strategy's benefit hurdle | Cents; a negative value explicitly permits estimated extra cost |
 | Comfort cost within temperature limits | `controller.home_discomfort_cents_per_degree_squared_hour` | Nonnegative cents per °C²-hour |
 | Cycle start allowance | `controller.cycle_start_cost_cents` | Nonnegative cents |
-| Cycle duration allowance | `controller.cycle_hour_cost_cents` | Nonnegative cents per hour |
-| Additional cost uncertainty allowance | `controller.economic_uncertainty_floor_cents` | Nonnegative cents |
+| Preheat/reduction duration allowance | `controller.cycle_hour_cost_cents` | Nonnegative cents per extra preheat/reduction hour |
+| Minimum cost uncertainty allowance | `controller.economic_uncertainty_floor_cents` | Minimum savings deduction, in nonnegative cents |
 | Savings strategy | `controller.savings_strategy` | Gentle, Balanced, More savings |
 
 Duration ranges fit the bounded 48-hour forecast and its recovery coverage; they

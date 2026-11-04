@@ -126,5 +126,5 @@ test('obsolete native Home checkpoints and payloads reject without journal mutat
   assert.throws(() => restoreAdaptiveCheckpoint({ version: 1, model: { version: 3 }, samples: [] }), /Unsupported Home checkpoint/);
   assert.throws(() => appendLearningRecord(store, 'mqtt', 'sample', { timestamp: start, intervalInputs: {} }), /Unsupported Home sample/);
   assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v18-initial-model-continuous-learning');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v19-independent-equipment-and-measurement-epochs');
 });

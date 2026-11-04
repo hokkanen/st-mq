@@ -19,8 +19,8 @@ const LIMITS = Object.freeze({
   minimumHomeBenefitCents: { label: 'Minimum cycle benefit (negative permits extra cost)', min: -1_000_000_000, max: 1_000_000_000, step: 1, unit: 'cents' },
   homeDiscomfortCentsPerDegreeSquaredHour:{label:'Comfort cost within temperature limits',min:0,max:1_000_000_000,step:1,unit:'c/°C²h'},
   cycleStartCostCents:{label:'Cycle start allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
-  cycleHourCostCents:{label:'Cycle duration allowance',min:0,max:1_000_000_000,step:1,unit:'c/h'},
-  economicUncertaintyFloorCents:{label:'Additional cost uncertainty allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
+  cycleHourCostCents:{label:'Preheat/reduction duration allowance',min:0,max:1_000_000_000,step:1,unit:'c/h'},
+  economicUncertaintyFloorCents:{label:'Minimum cost uncertainty allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
   learningPriorityPriceCents:{label:'Price for learning priority',min:0,max:1_000_000_000,step:1,unit:'c/kWh'},
 });
 
@@ -186,22 +186,22 @@ function constraints(input, decision, evidence, selected) {
         ? 'reached' : selected.search?.preheatExpansions > 0 ? 'available' : 'unknown',
       detail: 'The bounded preheat search considers permitted durations through this ceiling; treatment evidence and conservative average-temperature checks still apply.' },
     { key: 'validatedReductionHours', label: 'Demonstrated reduction duration', kind: 'evidence', value: evidence.validatedReductionHours, unit: 'h',
-      status: evidence.initialReady || evidence.actionValidated && evidence.validatedReductionHours >= p[durationKey] ? 'available' : 'blocking',
+      status: evidence.actionValidated && evidence.validatedReductionHours >= p[durationKey] ? 'available' : evidence.initialReady ? 'initial' : 'blocking',
       detail: 'Initial estimates permit economic planning within configured limits. Demonstrated duration describes independently observed support; simulations add no evidence.' },
     { key: 'forecastCoverage', label: 'Price and weather coverage', kind: 'forecast', value: null, unit: null,
-      status: !forecastCovered || d?.forecastRejected ? 'blocking' : 'available',
+      status: !forecastCovered ? 'blocking' : 'available',
       detail: !forecastCovered ? 'Fewer than four contiguous hours of fresh price and weather evidence are available.'
         : d?.forecastRejected ? `${d.forecastRejected} candidates lacked coverage through at least two recovery hours.`
         : 'A candidate needs contiguous fresh forecasts through reduction and at least two recovery hours.' },
     { key: 'economicAdmission', label: 'Benefit, comfort and recovery', kind: 'economic', value: null, unit: null,
-      status: d?.economicsRejected ? 'blocking' : d?.economicsAssessed ? 'available' : 'unknown',
+      status: d?.economicsAdmitted > 0 ? 'available' : d?.economicsAssessed ? 'blocking' : 'unknown',
       detail: d?.economicsAssessed ? `${d.economicsRejected} of ${d.economicsAssessed} shortlisted alternatives failed paired stress, benefit or comfort hurdles.`
         : 'No normally eligible shortlist was assessed. Lower electricity purchase cost alone is insufficient.' },
   ];
   if (input.equipment?.comfortReferenceProvisional === true) result.push({ key: 'provisionalReference',
-    label: 'Provisional normal temperature', kind: 'evidence', status: 'available',
-    value: p.maxDropC, unit: '°C',
-    detail: 'The reference is still learning. The configured comfort allowance applies from startup.' });
+    label: 'Normal temperature reference', kind: 'evidence', status: 'learning',
+    value: input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? decision.comfort?.targetC ?? null, unit: '°C',
+    detail: 'The normal reference is still learning. When available, this is the reference temperature used for planning. The allowed temperature drop is shown separately.' });
   if (!input.equipment?.h66Available) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
     detail: 'The separate duration policy for unavailable native telemetry applies; an explicit one-cycle override can change it. Device authority and restoration remain required.' });
@@ -217,7 +217,7 @@ function constraints(input, decision, evidence, selected) {
     const maxBoost = validated?.accepted === true && finite(validated.maxRoomBoostC) ? validated.maxRoomBoostC : null;
     const requestedBoost = preheatRoomRequest(input.equipment, input.config).roomBoostC;
     result.push({ key: 'validatedPreheatBoostC', label: 'Demonstrated preheat ROOM increase', kind: 'evidence',
-      status: !finite(requestedBoost) ? 'unknown' : evidence.initialReady || maxBoost !== null && requestedBoost <= maxBoost ? 'available' : 'blocking',
+      status: !finite(requestedBoost) ? 'unknown' : maxBoost !== null && requestedBoost <= maxBoost ? 'available' : evidence.initialReady ? 'initial' : 'blocking',
       value: maxBoost, unit: '°C',
       detail: 'Initial estimates permit preheat with native ROOM headroom and conservative temperature checks. Demonstrated increases describe observed support; simulations add no evidence.' });
   }

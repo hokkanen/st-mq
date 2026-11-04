@@ -10,12 +10,35 @@ import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
 import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint, learningConfiguration, LEARNING_ALGORITHM, LEARNING_WINDOW_MS} from '../src/app/committed-learning.js';
 import { DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const start = Date.parse('2026-01-01T00:00:00Z');
 const config = { heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025 };
+test('thermal equipment assumptions do not replace room measurements or reset their normal reference',t=>{
+  const prior={...config,indoorSensorWeights:{indoor_temperature:.5,downstairs_temperature:.3,bedroom_temperature:.2},
+    floorThermalPriors:{capacityKwhPerC:3.2,nativeCapacityKwhPerC:8.8}};
+  for(const change of [{floorThermalPriors:{capacityKwhPerC:3.2}},{auxRatedKw:6},{heatPumpModelConfirmed:true}]){
+    const store=new Store(':memory:');t.after(()=>store.close());
+    const reference=currentComfortReference(21.25,start),seed={version:1,samples:[],model:initialAdaptiveModel(prior),
+      baselineC:21.25,comfortReference:reference};
+    appendLearningRecord(store,'mqtt','context',{timestamp:start},{config:prior,seed});
+    const before=replayLearningJournal(store,'mqtt');
+    appendLearningRecord(store,'mqtt','context',{timestamp:start+HOUR},{config:{...prior,...change}});
+    const after=replayLearningJournal(store,'mqtt',before);
+    assert.equal(after.baselineC,21.25);assert.deepEqual(after.comfortReference,reference);
+    assert.equal(after.measurementEpochAt,before.measurementEpochAt);
+    assert.equal(after.baselineResetAt,before.baselineResetAt);
+    assert.equal(after.equipmentEpochAt,start+HOUR);
+    assert.equal(after.model.provenance.equipmentChangedAt,start+HOUR);
+    assert.deepEqual(replayLearningJournal(store,'mqtt',null,{rebuild:true}),after);
+    appendLearningRecord(store,'mqtt','context',{timestamp:start+2*HOUR},
+      {config:{...prior,...change,indoorSensorWeights:{indoor_temperature:1}}});
+    const measurement=replayLearningJournal(store,'mqtt',after);
+    assert.equal(measurement.baselineC,null);assert.equal(measurement.measurementEpochAt,start+2*HOUR);
+  }
+});
 test('committed configuration resolves every initial coefficient and owns its snapshot', () => {
   const resolved = learningConfiguration();
   assert.deepEqual(resolved.homeModel, DEFAULT_HOME_MODEL);
@@ -466,7 +489,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v18-initial-model-continuous-learning');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v19-independent-equipment-and-measurement-epochs');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

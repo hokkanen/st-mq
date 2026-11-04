@@ -198,12 +198,17 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderConstraints(result) {
     const list = $('heating-explorer-constraints'); list.replaceChildren();
-    const labels = { blocking: 'Limits this search', limiting: 'Limits this search', reached: 'Reached', available: 'Within limit', unknown: 'Not assessable' };
+    const labels = { blocking: 'Limits this search', limiting: 'Limits this search', reached: 'Reached',
+      initial: 'Initial estimate', learning: 'Learning', unknown: 'Not assessable' };
     for (const constraint of result.constraints ?? []) {
       const item = element('li', null, 'heating-explorer-constraint'); item.dataset.status = constraint.status;
       const head = element('div', null, 'heating-explorer-constraint-head');
-      const value = Number.isFinite(constraint.value) ? ` · ${decimal(constraint.value)}${constraint.unit ? ` ${constraint.unit}` : ''}` : '';
-      head.append(element('strong', `${constraint.label}${value}`), element('span', labels[constraint.status] ?? 'Not assessable', 'heating-explorer-constraint-status'));
+      const value = Number.isFinite(constraint.value) ? ` · ${decimal(constraint.value)}${constraint.unit ? ` ${constraint.unit}` : ''}`
+        : constraint.key === 'provisionalReference' ? ' · Unavailable' : '';
+      const availableLabel = constraint.kind === 'policy' ? 'Within limit'
+        : constraint.kind === 'evidence' ? 'Observed support' : 'Available';
+      head.append(element('strong', `${constraint.label}${value}`), element('span',
+        constraint.status === 'available' ? availableLabel : labels[constraint.status] ?? 'Not assessable', 'heating-explorer-constraint-status'));
       item.append(head, element('p', constraint.detail));
       for (const diagnostic of constraint.diagnostics ?? []) {
         if (!Number.isFinite(diagnostic.value)) continue;
