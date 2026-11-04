@@ -1974,7 +1974,9 @@ export class Engine {
     if (input !== 'offline') this.cycles.snapshot(metrics,now,checkpoint.model.trainedAt ?? 'prior-v1');
     this.store.event('decision',{input,automationEnabled:this.automationEnabled('home'),action:decision.action,phase:decision.phase,reasons:decision.reasons,
       commands:decision.commands,execution:execution.status},now);
-    const visibleCheckpoint = { ...checkpoint, samples:undefined };
+    // Fitting archives stay in working learning/replay state. Sending their raw
+    // sample bodies on every status poll grows past the dashboard response bound.
+    const visibleCheckpoint = { ...checkpoint, samples:undefined, episodeArchive:undefined };
     const visiblePlan = decision.plan ? { ...decision.plan, model:undefined, intervals:undefined,
       prediction:{...decision.plan.prediction,trajectory:undefined},referencePrediction:{...decision.plan.referencePrediction,trajectory:undefined} } : null;
     const visibleCycle = this.cycles.active();

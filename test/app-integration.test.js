@@ -7,7 +7,8 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { readPlanningVoltage } from '../src/storage/voltage.js';
-import { recordLearningContext } from '../src/app/committed-learning.js';
+import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
+import { appendLearningRecord, replayLearningJournal, recordLearningContext } from '../src/app/committed-learning.js';
 import { loadConfig } from '../src/app/config.js';
 import { createAppServer } from '../src/app/server.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
@@ -287,4 +288,28 @@ test('temporary controls API checks authentication, JSON and atomic Finnish date
   assert.equal(status.automation.home.enabled, false);
   assert.equal((await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ awayUntilLocal: null, pauseUntilLocal: '2026-09-05T00:00' }) })).status, 400);
   assert.equal(engine.status().settings.occupancy.mode, 'away');
+});
+
+
+test('status stays compact as completed episode fitting archives grow, without removing replay evidence',t=>{
+  const {engine,store}=setup(t),now=engine.clock(),quarter=900000;
+  const seed=restoreAdaptiveCheckpoint(null,engine.control);
+  const samples=Array.from({length:400},(_,i)=>({timestamp:now-(400-i)*quarter,indoorC:21,outdoorC:0,
+    phase:'normal',regime:'occupied',quality:['simulated'],thermalCompressorDuty:.5,thermalAuxKw:0,
+    indoorSensors:Object.fromEntries([['indoor_temperature',.5],['downstairs_temperature',.3],['bedroom_temperature',.2]]
+      .map(([signal,weight])=>[signal,{value:21,weight,observedAt:now-(400-i)*quarter}])),
+    inputSegments:[{start:now-(401-i)*quarter,end:now-(400-i)*quarter,phase:'normal',regime:'occupied',
+      outdoorC:0,solarRadiationWm2:0,thermalCompressorDuty:.5,thermalAuxKw:0,auxRoute:'space',floorOverrideMode:'off',quality:['simulated']}]}));
+  seed.episodeArchive=Array.from({length:4},(_,i)=>({id:`synthetic-status-archive-${i}`,startedAt:now-10000000,
+    endedAt:now-1000000,treatmentKey:'reduction-only-v1',phases:['reduction'],samples}));
+  appendLearningRecord(store,'simulated','context',{timestamp:now},{config:engine.control,seed});
+  const status=engine.tick(),json=JSON.stringify(status),visible=JSON.parse(json).learning.adaptive;
+  assert.equal(Object.hasOwn(visible,'samples'),false);
+  assert.equal(Object.hasOwn(visible,'episodeArchive'),false,'Status does not transfer raw fitting history');
+  assert.ok(Buffer.byteLength(json)<256*1024,'Ordinary status stays small despite a megabyte-scale fitting archive');
+  assert.deepEqual(visible.model,JSON.parse(JSON.stringify(engine.checkpoint.model)));
+  assert.equal(engine.checkpoint.episodeArchive.length,4);
+  assert.equal(engine.checkpoint.episodeArchive[0].samples.length,400);
+  const replay=replayLearningJournal(store,'simulated',null,{rebuild:true,persistCheckpoint:false,persistCoefficients:false});
+  assert.deepEqual(replay.episodeArchive,engine.checkpoint.episodeArchive,'The committed journal retains exact archive reconstruction');
 });

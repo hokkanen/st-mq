@@ -335,6 +335,10 @@ comfort cost, including duration within an allowed band. They do not relax hard
 occupied-average upper/lower bounds for ordinary automation. An explicitly
 reviewed manual cycle may override those policy limits without changing defaults;
 see the [manual planner](heating-plan-explorer.md#use-a-scenario-for-one-cycle).
+The dashboard status includes model, reference and evidence metadata; raw fitting
+samples and episode archives remain in learning/replay storage rather than every
+status response. This does not remove observations or reconstruction inputs.
+
 The planner uses the same weighted indoor
 average for prediction, limits and discomfort in every path, including bounded
 trials and recovery. Individual rooms have no automatic veto. An admitted
