@@ -1,9 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
+import { H66_REGISTERS } from '../domain/telemetry.js';
 import { validateExplorerOverrides } from '../control/heating-explorer.js';
 
 const PREVIEW_MS = 5 * 60_000;
 const INPUT_MAX_AGE_MS = 2 * 60_000;
+// Routine compressor cycles, water temperatures, integral and counters evolve
+// during review. Keep settings, protection and measured room inputs pinned;
+// dispatch independently revalidates the exact schedule with current telemetry.
+const NATIVE_REVIEW_SIGNALS = new Set(['room_setting', 'dhw_stop_setting', 'dhw_start_setting',
+  'operating_mode', 'room_influence', 'heating_curve', 'maximum_supply_setting', 'heat_stop_setting',
+  'tariff_reduction_setting', 'alarm_active', 'alarm_code']);
+const ROOM_REVIEW_SIGNALS = new Set(['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature']);
 const ACTIVE = new Set(['pending', 'running']);
 const failure = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -94,18 +102,22 @@ export class HeatingExplorer {
   }
   binding() {
     const e = this.engine, checkpoint = e.checkpoint, native = e.h66Status?.();
+    const rooms = e.control.indoorSensorWeights
+      ? new Set(Object.entries(e.control.indoorSensorWeights).filter(([, weight]) => weight > 0).map(([signal]) => signal))
+      : ROOM_REVIEW_SIGNALS;
     return digest({ configuration: e.config, settings: e.settings, target: e.automationTarget('home'),
-      journalCursor: checkpoint?.journalCursor, model: checkpoint?.model,
+      model: checkpoint?.model,
       measurementEpochAt: checkpoint?.measurementEpochAt ?? null, sensorEpochs: checkpoint?.sensorEpochs ?? {},
       fireplaceRevision: checkpoint?.fireplaceRevision ?? 0, sensorRevision: checkpoint?.sensorRevision ?? 0,
       rebuild: e.store.getState(`fireplace:rebuild:${e.config.input}`)?.status,
       market: e.store.getState('provider:market'), weather: e.store.getState('provider:weather'),
       observations: Object.fromEntries(Object.entries(e.latest ?? {}).filter(([signal]) =>
-        /temperature|room_setting|compressor|auxiliary|dhw_routing|alarm|operating_mode|integral|valve/.test(signal))
+        rooms.has(signal) || NATIVE_REVIEW_SIGNALS.has(signal))
         .map(([signal, row]) => [signal, { value: row.value, quality: row.quality, source: row.source, device: row.device }])),
       native: native ? { available: native.available, connected: native.connected, controlsReady: native.controlsReady,
         phase: native.phase, externalChangeRevision: native.externalChangeRevision,
-        controls: native.controls, readings: Object.fromEntries(Object.entries(native.readings ?? {}).map(([key, row]) =>
+        controls: native.controls, readings: Object.fromEntries(Object.entries(native.readings ?? {})
+          .filter(([key]) => !H66_REGISTERS[key] || NATIVE_REVIEW_SIGNALS.has(H66_REGISTERS[key].signal)).map(([key, row]) =>
           [key, { value: row.value, available: row.available }])) } : null,
       nativeRevision: native?.externalChangeRevision ?? this.input?.equipment?.externalChangeRevision ?? 0 });
   }

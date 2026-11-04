@@ -134,7 +134,11 @@ The confirmation summarizes estimated saving or extra cost against Normal,
 maximum predicted temperature drop and any learning-trial cost exposure and
 reviewed budget. The approval uses server-held comparison data. It is bound to the current
 equipment and configuration, expires, and is checked again before the cycle
-starts. Changed or missing evidence can reject it. During execution the existing
+starts. Changes to the model, weighted room readings, forecasts, settings, protection or readiness
+can reject it. Routine water-temperature, integral, runtime-counter and compressor
+cycle updates do not erase the reviewed opportunity. The exact approved schedule
+is still revalidated with current physical inputs before dispatch; a preview does
+not freeze equipment conditions or bypass those checks. During execution the existing
 comfort, forecast, equipment and economic checks can shorten the cycle.
 If a device acknowledgement arrives after the start window or approval scope has
 ended, the exposure remains recorded, and recovery ends the approved action

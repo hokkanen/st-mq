@@ -72,7 +72,7 @@ test('failure of an evicted comparison cannot remove its newer in-flight replace
 
 for (const change of ['model', 'forecast', 'observation', 'settings', 'authority', 'expired']) test(`approval rejects ${change} changes after a reviewed preview`, async t => {
   const r = fixture(t), preview = await r.preview();
-  if (change === 'model') r.engine.checkpoint.journalCursor++;
+  if (change === 'model') r.engine.checkpoint.model.parameters.lossPerHour *= 1.1;
   if (change === 'forecast') r.store.setState('provider:weather', { fetchedAt: r.now + 1 });
   if (change === 'observation') r.engine.latest.indoor_temperature = { value: 20, sourceTime: r.now + 1 };
   if (change === 'settings') r.engine.settings.comfort.maxDropC = 1;
@@ -269,4 +269,40 @@ test('exploration bounds its queue and shutdown rejects queued work without a co
   for (const result of await settled) {
     assert.equal(result.status, 'rejected'); assert.equal(result.reason.statusCode, 503);
   }
+});
+
+
+test('routine pump operation and new journal input do not erase an otherwise unchanged reviewed opportunity',async t=>{
+  const r=fixture(t);
+  r.engine.control.indoorSensorWeights={indoor_temperature:1};
+  Object.assign(r.engine.latest,{downstairs_temperature:{value:20},indoor_temperature:{value:21,source:'fixture',device:'room'},
+    supply_temperature:{value:35},return_temperature:{value:29},integral:{value:-100},compressor_hours:{value:100},dhw_routing:{value:0}});
+  let native={available:true,connected:true,controlsReady:true,phase:'ready',externalChangeRevision:0,
+    controls:{room:21},readings:{'0001':{value:29,available:true},'0002':{value:35,available:true},
+      '8105':{value:-100,available:true},'6C60':{value:100,available:true}}};
+  r.engine.h66Status=()=>native;
+  const view=await r.service.view(),preview=await r.service.simulate({snapshotId:view.snapshotId,limits:{maxReductionHours:8}});
+  r.engine.checkpoint.journalCursor++;
+  Object.assign(r.engine.latest,{downstairs_temperature:{value:20.1},supply_temperature:{value:35.1},return_temperature:{value:29.1},integral:{value:-99},compressor_hours:{value:101},dhw_routing:{value:1}});
+  native={...native,readings:{'0001':{value:29.1,available:true},'0002':{value:35.1,available:true},
+    '8105':{value:-99,available:true},'6C60':{value:101,available:true}}};
+  const refreshed=await r.service.simulate({snapshotId:view.snapshotId,limits:{maxReductionHours:8}});
+  assert.equal(refreshed.application.allowed,true);
+  assert.equal(r.service.apply({previewId:preview.previewId}).activeTrial.status,'pending');
+  assert.deepEqual(r.engine.pendingPlan.schedule,r.service.trial().plan.schedule,
+    'Only the exact reviewed opportunity is authorized; the controller still revalidates current physical inputs');
+});
+
+
+for(const change of ['alarm','native-setting','readiness','external-revision'])test(`reviewed approval still rejects changed ${change}`,async t=>{
+  const r=fixture(t),native={available:true,connected:true,controlsReady:true,phase:'ready',externalChangeRevision:0,
+    controls:{room:21},readings:{'1A20':{value:0,available:true},'0206':{value:45,available:true}}};
+  r.engine.h66Status=()=>native;
+  const preview=await r.preview();
+  if(change==='alarm')native.readings['1A20'].value=1;
+  if(change==='native-setting')native.readings['0206'].value=40;
+  if(change==='readiness')native.controlsReady=false;
+  if(change==='external-revision')native.externalChangeRevision++;
+  assert.throws(()=>r.service.apply({previewId:preview.previewId}),/changed/);
+  assert.equal(r.service.trial(),null);
 });
