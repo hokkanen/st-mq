@@ -47,7 +47,8 @@ estimated thermal kW; estimated space-heating AUX kW is then added. One
 The two manufacturer B0/W35 and B0/W45 points support water-temperature
 interpolation, not a brine correction or a metered-heat claim. Extrapolation,
 missing operating temperatures and an unconfirmed installed model add uncertainty.
-The default is `0.75/9.4`, not a carryover of old fitted compressor/AUX evidence.
+The shared calibrated `controller.home_model.hydronic_c_per_kwh` supplies the
+starting gain; it does not carry over independently validated compressor/AUX evidence.
 [Equations and limitations](learning-and-control.md#what-learns) also appear in the
 combined parameter's UI fold.
 
@@ -57,8 +58,10 @@ boost and comfort target are retained as distinct chart views. Firewood addition
 and modeled delayed release remain separate. The number of chart choices is not
 the number of fitted parameters. A sent valve command is not confirmed open flow.
 
-Requested-mode compressor-response ratios are separate estimates, shrunk towards
-unchanged normal demand using episode counts rather than quarter-hour row counts.
+Requested-mode compressor-response ratios are separate estimates. Initial ratios
+are engineering assumptions; covered treatment episodes replace them using equal
+episode weights rather than quarter-hour row counts. Independent response checks
+remain separate from these prompt updates.
 Electrical ratings, recovery multiplier, auxiliary-risk allowance and native
 integral/hysteresis settings are also separate from thermal coefficients. Current
 integral and supply shortfall inform only the observed mode and near-term forecast.
