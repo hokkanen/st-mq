@@ -264,9 +264,17 @@ for (const trial of [false, true]) for (const missing of ['treatment', 'recovery
     r.engine.checkpoint.cursor = r.engine.checkpoint.samples.at(-1).timestamp;
     r.engine.checkpoint.health.usableSamples = 4;
     r.engine.pendingPlan.trial = true;
+    // This fixture isolates loss of forecast coverage after admission. Its
+    // moderate Normal demand needs a longer useful window than the deliberately
+    // short validated-plan fixture; an idle quarter-hour is no longer a trial.
+    r.engine.pendingPlan.schedule.reductionEnd = r.now + 90 * MINUTE;
+    const market = r.store.getState('provider:market');
+    market.intervals.forEach(row => { row.spotCtPerKwh = 10; });
+    r.store.setState('provider:market', market);
   }
   const admitted = r.engine.tick(); await r.settle();
-  assert.equal(admitted.decision.phase, 'reduction', JSON.stringify(admitted.decision.reasons));
+  assert.equal(admitted.decision.phase, 'reduction', JSON.stringify({ reasons: admitted.decision.reasons,
+    rejected: r.store.events().filter(event => event.type === 'scheduled-cycle-rejected').map(event => event.payload) }));
   const cycle = r.engine.cycles.active(); assert(cycle, 'The real Engine has admitted and activated a cycle');
   assert.equal(cycle.plan.trial, trial);
   const weather = r.store.getState('provider:weather');

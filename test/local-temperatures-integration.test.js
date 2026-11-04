@@ -59,8 +59,8 @@ async function connect(f) {
   return { client, subscriptions, mqtt, publish };
 }
 
-for (const input of ['providers', 'mqtt']) test(`${input} uses three local room channels for the model average alongside H66 without HTTP`, async t => {
-  const f = fixture(t, input), m = await connect(f);
+test('providers uses three local room channels for the model average alongside H66 without HTTP', async t => {
+  const f = fixture(t, 'providers'), m = await connect(f);
   const providers = startProviders({ ...f, automatic: false });
   try {
     assert(m.subscriptions.includes('invented/smoke/1'));
@@ -93,7 +93,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
       .find(row => row.key === 'main-temperatures');
     assert.equal(grouped.display.title, 'Main temperatures & Weather · MQTT');
     assert.equal(grouped.display.state, 'Needs attention');
-    const chart = getChartData({ store: f.store, now: f.clock(), startDate: '2026-09-09', endDate: '2026-09-09', input });
+    const chart = getChartData({ store: f.store, now: f.clock(), startDate: '2026-09-09', endDate: '2026-09-09', input: f.config.input });
     for (const [signal, value] of [['indoor_temperature', 22], ['bedroom_temperature', 21],
       ['downstairs_temperature', 20], ['garage_temperature', 10]]) assert(chart.series[signal].some(point => point.y === value));
     f.setTime(initial + MINUTE);
@@ -109,7 +109,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
 });
 
 test('repeated timestamped retained MQTT publications preserve sensor age and missing room input invalidates the average', async t => {
-  const f = fixture(t, 'mqtt'), m = await connect(f);
+  const f = fixture(t, 'providers'), m = await connect(f);
   try {
     const sendRooms = () => {
       for (const [channel, value] of [[1, 22], [2, 21], [3, 20]]) m.publish(`invented/smoke/${channel}`, value, initial - MINUTE, true);
@@ -134,7 +134,7 @@ test('repeated timestamped retained MQTT publications preserve sensor age and mi
 });
 
 test('untimestamped retained room values cannot become fresh model inputs after connecting', async t => {
-  const f = fixture(t, 'mqtt'), m = await connect(f);
+  const f = fixture(t, 'providers'), m = await connect(f);
   try {
     for (const [channel, value] of [[1, 22], [2, 21], [3, 20]])
       m.client.emit('message', `invented/smoke/${channel}`, Buffer.from(String(value)), { retain: true });
@@ -152,7 +152,7 @@ test('untimestamped retained room values cannot become fresh model inputs after 
 });
 
 test('unchanged room reports survive compression and restart, then expire independently and recover', async t => {
-  const f = fixture(t, 'mqtt'), m = await connect(f);
+  const f = fixture(t, 'providers'), m = await connect(f);
   try {
     const rooms = () => {
       for (const [channel, value] of [[1, 22], [2, 21], [3, 20]]) m.publish(`invented/smoke/${channel}`, value);
@@ -184,7 +184,7 @@ test('unchanged room reports survive compression and restart, then expire indepe
 });
 
 test('retransmissions and cached timestamps cannot renew a periodic report deadline', async t => {
-  const f = fixture(t, 'mqtt'), m = await connect(f);
+  const f = fixture(t, 'providers'), m = await connect(f);
   try {
     for (const channel of [1, 2, 3]) m.publish(`invented/smoke/${channel}`, 21);
     f.setTime(initial + ROOM_MAX_AGE - MINUTE);

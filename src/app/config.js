@@ -75,7 +75,7 @@ export const CONTROL_DEFAULTS = Object.freeze({
   a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
   maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
   maxPreheatHours: 2, preheatRoomBoostC: 5, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 100,
-  maxTrialCostCents: 50, recoveryTimeoutHours: 48,
+  maxTrialCostCents: 50, learningTrialTargetPerDay: 2, recoveryTimeoutHours: 48,
   recoveryCompressorOnly: true, recoveryHoldMinutes: 60, recoveryComfortMarginC: 0.5,
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
 });
@@ -241,6 +241,7 @@ export function controlConfiguration(input = {}) {
     preheat_room_boost_c: 'preheatRoomBoostC', heat_pump_model_confirmed: 'heatPumpModelConfirmed',
     max_preheat_hours: 'maxPreheatHours', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
+    learning_trial_target_per_day: 'learningTrialTargetPerDay',
     recovery_timeout_hours: 'recoveryTimeoutHours', recovery_compressor_only: 'recoveryCompressorOnly',
     recovery_hold_minutes: 'recoveryHoldMinutes', recovery_comfort_margin_c: 'recoveryComfortMarginC' };
   const result = { ...CONTROL_DEFAULTS };
@@ -262,6 +263,7 @@ export function controlConfiguration(input = {}) {
     || result.compressorHysteresisC !== null && (result.compressorHysteresisC <= 0 || result.compressorHysteresisC > 50)
     || result.circulationKw < 0 || result.circulationKw > 1 || result.dhwrKw < 0 || result.dhwrKw > 1 || result.trialBudgetCentsPerDay < 0 || result.trialBudgetCentsPerDay > 1000
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
+    || !Number.isInteger(result.learningTrialTargetPerDay) || result.learningTrialTargetPerDay < 1 || result.learningTrialTargetPerDay > 4
     || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
     || !Number.isInteger(result.recoveryHoldMinutes) || result.recoveryHoldMinutes < 1 || result.recoveryHoldMinutes > 240
     || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1

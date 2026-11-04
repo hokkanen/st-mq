@@ -12,6 +12,16 @@ const until = async (t, predicate) => {
   while (!predicate()) await delay(10, undefined, { signal: t.signal });
 };
 
+function assertControllerErrorReports(reports) {
+  assert.equal(reports.length, 1);
+  const { time, level, ...event } = reports[0];
+  assert.equal(level, 'error');
+  assert.equal(typeof time, 'string');
+  assert.equal(new Date(time).toISOString(), time, 'Runtime log timestamps use canonical UTC');
+  assert.deepEqual(event, { event: 'controller-error', reason: 'controller-tick-failed', eventStored: false });
+  assert.doesNotMatch(JSON.stringify(reports), /synthetic-sensitive/);
+}
+
 test('a scheduled controller survives SQLite contention and resumes after the writer releases its lock', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-lock-recovery-'));
   let now = Date.parse('2026-09-08T12:00:00Z');
@@ -68,7 +78,7 @@ test('failed error persistence cannot terminate the controller or expose the ori
   });
   now += 59_999; app.engine.onTemporaryChange();
   await until(t, () => reports.length > 0 && attempts > 1);
-  assert.deepEqual(reports, [{ event: 'controller-error', reason: 'controller-tick-failed', eventStored: false }]);
+  assertControllerErrorReports(reports);
   assert(app.server.listening);
 });
 
@@ -166,6 +176,6 @@ for (const [name, error, shutdown] of [
   const stopping = shutdown ? app.close() : Promise.resolve();
   release(); await stopping;
   await until(t, () => reports.length > 0);
-  assert.deepEqual(reports, [{ event: 'controller-error', reason: 'controller-tick-failed', eventStored: false }]);
+  assertControllerErrorReports(reports);
   assert.doesNotMatch(JSON.stringify(reports), /synthetic-sensitive/);
 });

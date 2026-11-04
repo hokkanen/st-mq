@@ -203,7 +203,9 @@ function constraints(input, decision, evidence, selected) {
     label: 'Learning trial allowance', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
     detail: 'A trial needs existing permission, observed equipment, usable evidence, remaining budget and the ordinary cold/hot stress checks.' });
   for (const reason of decision.reasons.filter(reason => ['missing-or-stale-indoor', 'awaiting-normal-temperature-reference',
-    'awaiting-fireplace-response-evidence'].includes(reason))) result.push({ key: reason, label: reason.replaceAll('-', ' '),
+    'awaiting-fireplace-response-evidence', 'no-useful-space-heating-window',
+    'trial-comfort-or-forecast-limited', 'trial-incremental-cost-exceeds-allowance',
+    'daily-learning-trial-target-reached'].includes(reason))) result.push({ key: reason, label: reason.replaceAll('-', ' '),
     kind: 'evidence', status: 'blocking', value: null, unit: null, detail: 'This prerequisite is unchanged by policy exploration.' });
   return result;
 }

@@ -81,6 +81,22 @@ export class CycleTracker {
     const state = this.store.getState(`trials:${this.input}`);
     return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
   }
+  trialProgress(now) {
+    // A Finnish day is at most 25 hours. Seek a bounded recent suffix instead
+    // of repeatedly extracting fields from large old recovery-cycle payloads.
+    const rows = this.store.cycleSummaries({ input: this.input, limit: 100, since: now - 26 * HOUR });
+    const date = dateKey(now), today = rows.filter(row => row.trial && row.startedAt <= now && dateKey(row.startedAt) === date);
+    const previous = this.store.cycleSummaries({ input: this.input, limit: 1 })[0];
+    const cooldownHours = previous?.status === 'incomplete' ? 24 : 6;
+    const until = number(previous?.endedAt) ? previous.endedAt + cooldownHours * HOUR : null;
+    return { date, target: this.config.learningTrialTargetPerDay, attempted: today.length,
+      completed: today.filter(row => row.status === 'completed').length,
+      incomplete: today.filter(row => row.status === 'incomplete').length,
+      assessed: today.filter(row => number(row.profitCents)).length,
+      observedCompressorRunHours: today.reduce((sum, row) => sum + (row.compressorRunHours ?? 0), 0),
+      remainingCents: this.budget(now), nextEligibleAt: until > now ? until : null,
+      basis: 'Actual recorded trials today in Europe/Helsinki; completion and comparable assessment do not establish model acceptance.' };
+  }
   start(plan, sample, now, { executed = false } = {}) {
     if (this.active()) return this.active();
     plan = structuredClone({ ...plan, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });

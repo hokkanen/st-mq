@@ -15,6 +15,7 @@ import { acceptPeerPublication, applyPeerPublication } from '../src/replication/
 import { peerOperation, PeerTransfers, receivePeerTransfer } from '../src/replication/coalesced.js';
 import { databaseCheckpoint, sameCheckpoint } from '../src/replication/incremental.js';
 import { checkpointAt, journalBase } from '../src/storage/journal.js';
+import { runtimeLog } from '../src/app/runtime-log.js';
 
 const generic = { error: 'Request could not be confirmed. Retry shortly.' };
 const mismatch = { code: 'replica_checkpoint_mismatch',
@@ -22,6 +23,9 @@ const mismatch = { code: 'replica_checkpoint_mismatch',
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
 async function fixture(t, { makeChartService, readPublication, sinkFailure = null } = {}) {
+  // Each fixture is a fresh application. Retain production repeat suppression,
+  // but do not inherit a previous fixture's process-wide logger buckets.
+  runtimeLog.flush();
   const root = await mkdtemp(join(tmpdir(), 'stmq-replica-diagnostic-'));
   const source = new Store(join(root, 'source.sqlite'));
   const diagnostics = [], publicationReads = [], requestClocks = [];
@@ -68,7 +72,10 @@ const phaseDiagnostic = (latestManifestState, changes = {}) => ({ event: 'replic
 
 function phaseDiagnostics(f) {
   return f.diagnostics.map(record => {
-    const { reportedAt, monotonicMs, ...phase } = record;
+    const { reportedAt, monotonicMs, time, level, ...phase } = record;
+    assert.equal(level, 'warn');
+    assert.equal(typeof time, 'string');
+    assert.equal(new Date(time).toISOString(), time, 'Runtime log timestamps use canonical UTC');
     assert(Number.isSafeInteger(reportedAt) && reportedAt >= 0 && reportedAt <= 8640000000000000);
     assert(Number.isFinite(monotonicMs) && monotonicMs >= 0 && monotonicMs <= Number.MAX_SAFE_INTEGER);
     assert(f.requestClocks.some(request => request.status === 503 && request.route === record.route

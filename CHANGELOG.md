@@ -6,6 +6,13 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Heating learning trials follow observed space-heating cycles and forecast
+  demand instead of a fixed half-hour initial ceiling. The controller seeks two
+  useful daily opportunities by default and reports actual attempts separately
+  from completed cycles and accepted learning. Trial allowances screen additional
+  cycle cost, including recovery, rather than hypothetical full-rated recovery
+  consumption; native AUX restrictions and negative-price exposure remain applied.
+
 - Live integrations use `controller.input: providers`, including configured MQTT
   devices and H66. The redundant `mqtt` input value is rejected; database schemas
   and saved-state namespaces are unchanged.

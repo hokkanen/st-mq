@@ -54,6 +54,7 @@ import { copyOwnedValue, immutableValue } from '../domain/immutable.js';
 import { isGarageDoorSignal, confirmedGarageDoor } from '../garage/door-state.js';
 import { HeatingExplorer, validateHeatingTrialState } from './heating-explorer.js';
 import { applyExplorerOverrides } from '../control/heating-explorer.js';
+import { heatingDemandHistory } from '../control/heating-trials.js';
 
 const OBSERVATION_MAX_AGE_MS = OUTDOOR_MAX_AGE_MS;
 // Larger replaceable model caches are saved separately from the controller's
@@ -1622,6 +1623,15 @@ export class Engine {
     yield { kind: 'control-ready', now };
     this.lastSample = sample;
     equipment.comfortReferenceProvisional = this.settings.comfort.targetC == null && checkpoint.comfortReference?.provisional === true;
+    const trialProgress = this.cycles.trialProgress(now);
+    equipment.learningTrialsToday = trialProgress.attempted;
+    equipment.learningTrialsDate = trialProgress.date;
+    // A compact planning-only view; raw samples never cross the planner worker.
+    if (this.heatingDemandCheckpoint !== checkpoint) {
+      this.heatingDemandCheckpoint = checkpoint;
+      this.heatingDemandSummary = heatingDemandHistory(checkpoint.samples, now);
+    }
+    equipment.heatingDemand = this.heatingDemandSummary;
     const targetC = this.settings.comfort.targetC ?? checkpoint.baselineC ?? (this.plant ? 21 : null);
     const baseSettings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
     const scopedTrial = this.heatingExplorer.reconcile(now);
@@ -1687,7 +1697,7 @@ export class Engine {
           const economics = stress ? null : economicAdmission({ prediction: continued, referencePrediction: restored, args, schedule,
             reference: { ...schedule, preheatEnd: Math.min(schedule.preheatEnd, now), reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: now },
             settings, continuing: true });
-          const uneconomic=stress?stress.costExposureCents>cycle.plan.trialAllowanceCents:!economics.admitted;
+          const uneconomic=stress?!Number.isFinite(stress.costExposureCents)||stress.costExposureCents>cycle.plan.trialAllowanceCents:!economics.admitted;
           if (unsafe || uneconomic) {
             const reason=unsafe?'predicted-comfort-limit':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
             this.cycles.shorten(now,reason);
@@ -1919,6 +1929,8 @@ export class Engine {
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:this.cycles.budget(now)}),
         controlHold,outcomes:this.cycles.outcomes(),
+        trials: { ...this.cycles.trialProgress(now), blockingReason: decision.plan?.trial ? null : decision.reasons[0],
+          opportunity: decision.plan?.trialOpportunity ?? null },
         parameters:this.control,background:this.store.getState('learning:health')},
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };
     if (this.learningStartupPending) this.store.afterCommit(() => {

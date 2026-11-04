@@ -25,6 +25,8 @@ export class HeatingPlanning {
       nativeRevision: input.equipment?.externalChangeRevision,
       roomSettingC: input.equipment?.roomSettingC,
       roomSettingMaximumC: input.equipment?.roomSettingMaximumC,
+      learningTrialsToday: input.equipment?.learningTrialsToday,
+      learningTrialsDate: input.equipment?.learningTrialsDate,
     })).digest('hex');
   }
   invalidate() {

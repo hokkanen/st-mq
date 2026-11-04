@@ -879,7 +879,7 @@ export class Store {
   }
 
   /** Dashboard/control summaries avoid materializing complete observation tapes. */
-  cycleSummaries({ input, limit = 100, completedOnly = false } = {}) {
+  cycleSummaries({ input, limit = 100, completedOnly = false, since = null } = {}) {
     return this.db.prepare(`SELECT id,status,started_at AS startedAt,ended_at AS endedAt,
       CASE WHEN NOT ${cycleAssessmentExcluded('learning_cycles.id')}
         THEN json_extract(payload,'$.assessment.profitCents') END AS profitCents,
@@ -890,9 +890,13 @@ export class Store {
         THEN json_extract(payload,'$.assessment.recoveryErrorCents') END AS recoveryErrorCents,
       json_extract(payload,'$.actual.missingHours') AS missingHours,
       json_extract(payload,'$.actual.auxiliarySpaceObserved') AS auxiliarySpaceObserved,
-      json_extract(payload,'$.incompleteReason') AS incompleteReason
+      json_extract(payload,'$.incompleteReason') AS incompleteReason,
+      json_extract(payload,'$.plan.trial') AS trial,
+      json_extract(payload,'$.actual.compressorRunHours') AS compressorRunHours
       FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
-      ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit))
+      ${since === null ? '' : 'AND started_at>=?'}
+      ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'),
+        ...(since === null ? [] : [instant(since, 'cycle summary start')]), limitValue(limit))
       .map(row => ({ ...row, auxiliarySpaceObserved: row.auxiliarySpaceObserved === 1 }));
   }
 

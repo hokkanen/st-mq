@@ -68,7 +68,7 @@ export function homePolicyValues(status = {}) {
   const money = value => `€${amount(value / 100)}`;
   const trialBudget = parameters.learningTrials === false ? 'Learning trials are disabled in configuration.'
     : parameters.learningTrials === true && Number.isFinite(parameters.trialBudgetCentsPerDay) && Number.isFinite(parameters.maxTrialCostCents)
-      ? `Learning trials are enabled, with estimated exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Current evidence and remaining budget still determine whether a trial can run.`
+      ? `Learning trials are enabled, seeking ${parameters.learningTrialTargetPerDay ?? 2} useful opportunities per day, with incremental cost exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Duration follows heating demand; current evidence, comfort, cooldown and remaining budget still determine whether a trial can run.`
       : 'Learning-trial settings are unavailable.';
   const economics = status.decision?.plan?.economics;
   const benefit = status.decision?.plan?.trial === true

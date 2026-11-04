@@ -50,6 +50,14 @@ configuration:
           Preferred drop of the configured indoor average below its learned normal-heating reference.
           Away periods have no comfort-drop limit. Away and Pause deadlines
           are dashboard controls, not configuration defaults.
+      learning_trial_target_per_day:
+        name: Daily learning trial target
+        description: >-
+          Seek 1–4 useful heating trial opportunities per Finnish calendar day
+          (default 2). Duration follows observed space-heating cycles and forecast
+          demand within comfort and duration limits. Equipment readiness, cost
+          allowance, recovery and cooldown still apply. Attempts and completed
+          cycles do not establish accepted model learning.
       indoor_sensor_weights:
         name: Indoor average weights
         description: >-
@@ -61,8 +69,8 @@ configuration:
       h66_device:
         name: Installed H66 device prefix
         description: >-
-          Exact installed MQTT prefix. Leave empty when H66 is not used. MQTT
-          input and the configured broker are required for H66 acquisition.
+          Exact installed MQTT prefix. Leave empty when H66 is not used.
+          A configured MQTT broker is required for H66 acquisition.
       h66_verification_file:
         name: Reviewed H66 register verification file
         description: >-

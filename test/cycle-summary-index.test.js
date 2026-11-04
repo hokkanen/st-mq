@@ -67,3 +67,18 @@ test('completed-cycle seeks retain latest start ordering, recovery exclusions an
       'Ordinary all-cycle summaries still include incomplete attempts');
   } finally { store.close(); }
 });
+
+test('daily trial summaries seek recent starts without scanning large old cycle payloads', () => {
+  const store = new Store(':memory:');
+  try {
+    incompletePrefix(store, 10_000);
+    const reads = recordedReads(store);
+    const rows = reads.summaries({ input: 'providers', since: 10990, limit: 100 });
+    assert.equal(rows.length, 10);
+    assert.equal(rows[0].startedAt, 10999);
+    for (const plan of reads.plans) {
+      assert(plan.some(detail => /USING INDEX.*input=.*started_at>/.test(detail)), plan.join('\n'));
+      assert(!plan.some(detail => /SCAN learning_cycles\b|USE TEMP B-TREE FOR ORDER BY/.test(detail)), plan.join('\n'));
+    }
+  } finally { store.close(); }
+});

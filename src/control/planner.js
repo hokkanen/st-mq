@@ -3,6 +3,7 @@ import { estimateHeatPumpPerformance, hydronicGain } from '../domain/heat-pump-p
 import { heatingStrategy } from '../domain/heating-strategy.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
 import { fireplaceInfluence, fireplaceRate } from '../domain/fireplace.js';
+import { trialOpportunity } from './heating-trials.js';
 
 const HOUR = 3600000, STEP = 900000;
 const number = Number.isFinite;
@@ -183,6 +184,8 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
     const nativeCompressorDemand = equipment.observedPhase === phase ? projected.nativeCompressorDemand : null;
     const duty = predictEquipmentDuty(model, before, { ...inputs, nativeCompressorDemand }, dt);
     inputs.compressorDuty = clamp(duty.compressorDuty + (c.scenarioDutyShift ?? 0), 0, 1);
+    if (!native && phase === 'reduction' && number(c.scenarioReductionScale))
+      inputs.compressorDuty *= clamp(c.scenarioReductionScale, 0, 1);
     const preliminary = predictThermalStep(model, before, inputs, dt);
     const shortage = Math.max(0, targetC - preliminary.indoorC);
     const reserveShortage = Math.max(0, targetC - preliminary.reserveC);
@@ -378,7 +381,7 @@ function preheatTrialHours(model,config) {
 }
 
 export function trialEnvelope({ schedule, initialState, targetC, intervals, model, config = {}, occupancy = {}, maxDropC = 1.5,
-  maxRiseC = 1.5, equipment = {} }) {
+  maxRiseC = 1.5, equipment = {}, assessCost = true }) {
   config = { ...CONTROL_DEFAULTS, ...config };
   maxDropC = effectiveComfortDropC(maxDropC, equipment);
   if (!cycleForecastCovered(intervals, schedule)) return { available: false, reason: 'forecast-coverage-lost',
@@ -398,17 +401,7 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
   // Away leaves the minimum temperature to native pump protection. Occupied
   // comfort returns at the declared return time, including the recovery window.
   const coldSafe = number(floorC) && weather.length > 0 && (!occupied || floorC >= targetC-Math.min(1,maxDropC));
-  const recoveryPrices = intervals.filter(i => i.end > schedule.reductionEnd && i.start < schedule.reductionEnd + 4*HOUR);
-  const replacementPrice = Math.max(0, ...recoveryPrices.map(i => i.price));
   const preheatHours=Math.max(0,(schedule.preheatEnd-schedule.preheatStart)/HOUR);
-  const preheatPrice=Math.max(0,...intervals.filter(i=>i.end>schedule.preheatStart&&i.start<schedule.preheatEnd).map(i=>i.price));
-  const ratedKw = config.heatPumpCompressorKw + config.circulationKw + config.auxRatedKw;
-  // A no-heat trial can also lose income from negative all-in electricity
-  // prices. The unknown tariff response cannot establish that this loss is zero.
-  const foregoneIncomeCents = weather.reduce((sum, interval) => sum + Math.max(0, -interval.price)
-    * Math.max(0, Math.min(interval.end, schedule.reductionEnd) - Math.max(interval.start, schedule.reductionStart)) / HOUR, 0) * ratedKw;
-  const costExposureCents = Math.max(5, (duration * replacementPrice * 1.5 + preheatHours*preheatPrice)
-    * ratedKw + foregoneIncomeCents);
   let hotSafe = true, hotPeakC = initialState.indoorC, hotPeakAt = intervals[0]?.start ?? null,
     hotStressHours = 0, hotStressReason = null;
   const hasPreheat = preheatHours > 0 || schedule.floorOverride === true || schedule.roomBoostC > 0;
@@ -481,9 +474,56 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
       }
     }
   }
-  return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, costExposureCents, foregoneIncomeCents,
+  const cost = assessCost && coldSafe && hotSafe ? trialCostExposure({ schedule, initialState, targetC, intervals, model, config,
+    occupancy, maxDropC, maxRiseC, equipment }) : { costExposureCents: null, foregoneIncomeCents: null };
+  return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, ...cost,
     hotPeakC, hotPeakAt, hotStressHours, hotStressReason,
     basis: 'No-heat cold stress plus full compressor/rated permitted AUX during preheat and native demand afterward; weighted indoor limits include source uncertainty, and delayed peaks and fixed slab routing remain estimated.' };
+}
+
+/** Complete-cycle incremental exposure. Every physical scenario is applied to
+ * both alternatives; ordinary heating is not charged again as trial spending.
+ * Unknown reduction response spans unchanged demand through complete suppression.
+ * These are engineering scenarios, never calibrated confidence bounds. */
+export function trialCostExposure(args) {
+  const floor = args.model.floor;
+  if (floor?.enabled && (floor.capacityBudgetExceeded
+    || !['capacityKwhPerC', 'nativeCapacityKwhPerC', 'exchangeKwPerC'].every(key => number(floor[key]) && floor[key] > 0)
+    || !number(floor.groundLossKwPerC) || floor.groundLossKwPerC < 0))
+    return { costExposureCents: null, foregoneIncomeCents: null, costBasis: 'Unavailable: invalid physical floor model.' };
+  let costExposureCents = 0, foregoneIncomeCents = 0;
+  for (const direction of [-1, 0, 1]) {
+    const source = estimateHeatPumpPerformance({ ...args.model.performance,
+      supplyC: args.equipment?.supplyC, brineC: args.equipment?.brineC });
+    const scenario = { ...args,
+      model: { ...args.model, parameters: { ...args.model.parameters,
+        hydronicCPerKwh: clamp(hydronicGain(args.model) * (1 - direction * .15), ...THERMAL_PARAMETER_BOUNDS.hydronicCPerKwh),
+        lossPerHour: clamp(args.model.parameters.lossPerHour * (1 + direction * .15), ...THERMAL_PARAMETER_BOUNDS.lossPerHour) } },
+      initialState: { ...args.initialState, reserveC: (args.initialState.reserveC ?? args.initialState.indoorC) + direction * .5,
+        slabC: number(args.initialState.slabC) ? args.initialState.slabC + direction * .5 : null },
+      config: { ...args.config, scenarioElectricalScale: 1 + direction * source.relativeUncertainty,
+        scenarioAuxScale: 1 + direction * .5 } };
+    const reference = evaluateCycle({ ...scenario, schedule: null });
+    for (const scale of [0, 1]) {
+      const action = evaluateCycle({ ...scenario, config: { ...scenario.config, scenarioReductionScale: scale } });
+      costExposureCents = Math.max(costExposureCents, action.costCents - reference.costCents);
+      const lost = reference.trajectory.reduce((sum, row) => {
+        // Evaluate on each trajectory's real boundaries: schedule and recovery
+        // transitions need not align with a market interval or the reference.
+        const start = Math.max(row.at - row.durationHours * HOUR, args.schedule.reductionStart);
+        const end = Math.min(row.at, args.schedule.reductionEnd);
+        if (end <= start) return sum;
+        const quote = args.intervals.find(interval => interval.start <= start && interval.end > start);
+        if (!quote || quote.price >= 0) return sum;
+        const actionKwh = action.trajectory.reduce((energy, step) => energy + step.powerKw
+          * Math.max(0, Math.min(step.at, end) - Math.max(step.at - step.durationHours * HOUR, start)) / HOUR, 0);
+        return sum + Math.max(0, row.powerKw * (end - start) / HOUR - actionKwh) * -quote.price;
+      }, 0);
+      foregoneIncomeCents = Math.max(foregoneIncomeCents, lost);
+    }
+  }
+  return { costExposureCents: Math.max(costExposureCents, foregoneIncomeCents), foregoneIncomeCents,
+    costBasis: 'Maximum additional space-heating cycle cost across paired physical/reduction-response scenarios, including priced thermal debt; not predicted spending.' };
 }
 
 /** Recheck the exact promised schedule using current evidence before commanding it. */
@@ -505,6 +545,8 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const targetC = settings.comfort.targetC ?? checkpoint.baselineC;
   if (!number(targetC)) return rejected('scheduled-cycle-target-unavailable');
   const readiness = learningReadiness(checkpoint,c,equipment), duration = (plan.schedule.reductionEnd-plan.schedule.reductionStart)/HOUR;
+  if (plan.trial && !plan.userTrial && (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay)
+    return rejected('daily-learning-trial-target-reached');
   const configuredMaximum = equipment.h66Available ? settings.occupancy.mode === 'away' ? c.maxAwayReductionHours : c.maxReductionHours : c.maxUnobservedReductionHours;
   const requestedRoom = preheatRoomRequest(equipment, c);
   if (duration > configuredMaximum || plan.schedule.preheatEnd - plan.schedule.preheatStart > c.maxPreheatHours * HOUR
@@ -529,14 +571,16 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const benefit = referencePrediction.costCents-prediction.costCents;
   const economics = economicAdmission({ prediction, referencePrediction, args, schedule: plan.schedule, reference: plan.reference, settings });
   const risk = economics.uncertaintyCents;
-  const trialSafety=trialEnvelope({...args,schedule:plan.schedule});
-  const allowance=Math.max(0,-benefit,trialSafety.costExposureCents);
-  if (plan.trial ? prediction.severe || !readiness.trialReady || duration > Math.max(.5,validatedReductionHours(model)*1.5)
-    || !trialSafety.comfortSafe || allowance > Math.min(c.maxTrialCostCents,trialBudgetRemainingCents)
+  const trialSafety=plan.trial?trialEnvelope({...args,schedule:plan.schedule}):null;
+  const allowance=plan.trial?Math.max(0,-benefit,trialSafety.costExposureCents):0;
+  const opportunity = trialOpportunity({ schedule: plan.schedule, baseline: referencePrediction, equipment, initialState, intervals });
+  if (plan.trial ? prediction.severe || !readiness.trialReady || duration > configuredMaximum || !opportunity.useful
+    || !trialSafety.comfortSafe || !number(trialSafety.costExposureCents) || allowance > Math.min(c.maxTrialCostCents,trialBudgetRemainingCents)
     : !economics.admitted)
     return rejected('scheduled-cycle-no-longer-admissible');
   return {valid:true,plan:{...plan,...args,generatedAt:now,prediction,referencePrediction,readiness,
     trialSafety:plan.trial?trialSafety:null,trialAllowanceCents:plan.trial?allowance:0,
+    trialOpportunity:plan.trial?opportunity:null,
     estimatedBenefitCents:benefit,uncertaintyCents:risk,economics}};
 }
 
@@ -565,17 +609,19 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const baseline = evaluation(null), candidates = [];
   const away = settings.occupancy.mode === 'away';
   const readiness = learningReadiness(checkpoint, c, equipment);
+  const targetReached = (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay;
+  const canTrial = readiness.trialReady && trialBudgetRemainingCents > 0 && !targetReached;
   const configuredMaximum = equipment.h66Available ? (away ? c.maxAwayReductionHours : c.maxReductionHours) : c.maxUnobservedReductionHours;
   const testedMaximum = validatedReductionHours(model);
   const economicMaximum = readiness.actionValidated ? Math.min(configuredMaximum, testedMaximum) : 0;
-  const trialMaximum = Math.min(configuredMaximum, Math.max(0.5, economicMaximum * 1.5));
-  if (!economicMaximum && !(readiness.trialReady && trialBudgetRemainingCents > 0))
-    return { ...normal('awaiting-tariff-response-evidence'), readiness };
-  const maxReduction = Math.max(economicMaximum, readiness.trialReady ? trialMaximum : 0);
+  const trialMaximum = configuredMaximum;
+  if (!economicMaximum && !canTrial)
+    return { ...normal(targetReached ? 'daily-learning-trial-target-reached' : 'awaiting-tariff-response-evidence'), readiness };
+  const maxReduction = Math.max(economicMaximum, canTrial ? trialMaximum : 0);
   const durations = [...new Set([0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 18, 24, economicMaximum, maxReduction])]
     .filter(d => d > 0 && d <= maxReduction).sort((a,b) => a-b);
   // Published price changes define useful starts without assuming hourly tariffs.
-  const preheatTrialReady=readiness.trialReady&&readiness.thermalValidated&&actionEvidenceReady(model,'reduction');
+  const preheatTrialReady=canTrial&&readiness.thermalValidated&&actionEvidenceReady(model,'reduction');
   const trialPreheat=preheatTrialHours(model,c);
   const starts = [...new Set([now,...(preheatTrialReady?[now+trialPreheat*HOUR]:[]), ...intervals.filter((row, i) => i && row.price !== intervals[i-1].price)
     .map(row => row.start).filter(t => t <= now + 12 * HOUR)])].slice(0, 32);
@@ -585,7 +631,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const addCandidate=(schedule,duration)=>{
     const result=evaluation(schedule);evaluatedCandidates++;
     const trialSafety=trialEnvelope({schedule,initialState,targetC,intervals,model,config:c,
-      occupancy:settings.occupancy,maxDropC,maxRiseC:settings.comfort.maxRiseC ?? 1.5,equipment});
+      occupancy:settings.occupancy,maxDropC,maxRiseC:settings.comfort.maxRiseC ?? 1.5,equipment,assessCost:false});
     const option={schedule,result,duration,trialSafety,firstActionAt:schedule.preheatStart};
     if (!result.severe)candidates.push(option);
     else {
@@ -658,21 +704,37 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
       || (a.duration + (a.schedule.preheatEnd-a.schedule.preheatStart)/HOUR)
       - (b.duration + (b.schedule.preheatEnd-b.schedule.preheatStart)/HOUR))[0];
   let trial = false;
-  const explore=Boolean(chosen)&&economicMaximum>0&&(model.energy?.episodes??0)%4===3;
-  if ((!chosen||explore) && readiness.trialReady && trialBudgetRemainingCents > 0) {
+  if (canTrial) {
     const small = candidates.filter(o => o.firstActionAt === now && o.duration <= trialMaximum
 
       && (!o.schedule.roomBoostC || o.schedule.preheatEnd-o.schedule.preheatStart<=trialPreheat*HOUR)
-      && (!explore||o.duration>economicMaximum||o.schedule.roomBoostC>validatedRoomBoost(model)
-        || o.schedule.roomBoostC&&(o.schedule.preheatEnd-o.schedule.preheatStart)/HOUR
-          >(model.equipmentResponse?.validation?.phases?.preheat?.maxDurationHours??0))
-      && o.trialSafety.comfortSafe && Math.max(o.trialSafety.costExposureCents, -o.benefit)
-        <= Math.min(c.maxTrialCostCents, trialBudgetRemainingCents));
-    // A trial must expose useful action coverage, not repeat an already well-sampled normal regime.
-    const selectedTrial = small.sort((a,b) => a.result.score - b.result.score || b.duration-a.duration)[0];
+      && o.trialSafety.comfortSafe && !o.result.severe);
+    for (const option of small) option.opportunity = trialOpportunity({ schedule: option.schedule,
+      baseline, equipment, initialState, intervals });
+    const useful = small.filter(option => option.opportunity.useful)
+      .sort((a, b) => a.duration - b.duration || a.result.score - b.result.score);
+    const expanding = economicMaximum > 0 ? useful.filter(option => option.duration > economicMaximum
+      || option.schedule.roomBoostC > validatedRoomBoost(model)) : [];
+    const trialOptions = [...expanding, ...useful.filter(option => !expanding.includes(option))];
+    diagnostics.trialCandidates = small.length;
+    diagnostics.usefulTrialCandidates = useful.length;
+    diagnostics.trialCostAssessed = 0;
+    let selectedTrial;
+    // Cost scenarios run only for a bounded immediate shortlist, never for the
+    // entire schedule grid. The shared rule also owns dispatch and continuation.
+    for (const option of trialOptions.slice(0, 16)) {
+      option.trialSafety = { ...option.trialSafety, ...trialCostExposure({ ...args, schedule: option.schedule }) };
+      diagnostics.trialCostAssessed++;
+      if (number(option.trialSafety.costExposureCents) && Math.max(option.trialSafety.costExposureCents, -option.benefit)
+        <= Math.min(c.maxTrialCostCents, trialBudgetRemainingCents)) { selectedTrial = option; break; }
+    }
+    diagnostics.trialBlockedReason = !small.length ? 'trial-comfort-or-forecast-limited'
+      : !useful.length ? 'no-useful-space-heating-window'
+        : !selectedTrial ? 'trial-incremental-cost-exceeds-allowance' : null;
     if (selectedTrial) {chosen=selectedTrial;trial=true;}
   }
-  if (!chosen) return { ...normal('normal-operation-preferred'), readiness,
+  if (!chosen && targetReached) diagnostics.trialBlockedReason = 'daily-learning-trial-target-reached';
+  if (!chosen) return { ...normal(diagnostics.trialBlockedReason ?? 'normal-operation-preferred'), readiness,
     diagnostics, evaluation: { baselineCostCents: baseline.costCents, candidates: candidates.length, search } };
   const reference = null, referenceResult = baseline;
   const phase = phaseAt(chosen.schedule, now);
@@ -686,6 +748,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
       savingsStrategy: settings.savingsStrategy,
       trial, trialAllowanceCents: trial ? Math.max(0, -chosen.benefit, chosen.trialSafety.costExposureCents) : 0,
       trialSafety: trial ? chosen.trialSafety : null, readiness, search, diagnostics, economics: chosen.economics ?? null,
+      trialOpportunity: trial ? chosen.opportunity : null,
       prediction: chosen.result, referencePrediction: referenceResult,
       estimatedBenefitCents: referenceResult.costCents - chosen.result.costCents,
       uncertaintyCents: chosen.risk, evidence: 'Estimated complete-cycle comparison; unexecuted reference is modelled.' } };

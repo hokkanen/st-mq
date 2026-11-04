@@ -386,19 +386,42 @@ and retries after communication returns. All four ground-floor circuits form one
 treatment and one selected-slab state for learning.
 
 With little evidence, automatic action requires enabled learning trials, usable
-recorded temperature/equipment evidence and remaining allowance. Initial trials
-last at most half an hour. A no-heat cooling scenario and rated-power recovery
-scenario must fit comfort and cost allowances. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Weighted-average upper limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
+recorded temperature/equipment evidence and remaining allowance. The controller
+seeks two useful trial opportunities per Finnish day by default, prioritizing
+learning before that target. This is an objective, not a promise to act through a
+blocked condition. Configured reduction ceilings also bound initial trials;
+there is no fixed half-hour bootstrap ceiling. A bounded summary of the last
+48 hours of committed Normal space-heating coverage supplies typical runs and
+demand, excluding DHW, gaps, interventions and meaningful fireplace heat. Forecast
+indoor/outdoor temperature differences adjust the expected demand. The shortest
+admissible window must expose a representative run; without three complete
+recorded cycles, the unvalidated Normal forecast must supply at least 15 minutes
+of expected compressor operation. Starting during an observed space-heating run
+can use a shorter window. A window without useful demand is skipped, not counted
+as learning. Successful checked coverage is extended when a longer useful trial
+fits the limits.
+
+A no-heat cooling scenario must fit comfort allowances. Trial costs compare the
+complete action cycle with Normal under paired physical scenarios and reduction
+response ranging from unchanged demand to complete suppression. Screening uses
+the maximum additional space-heating cost, including recovery and priced remaining
+heat debt, rather than charging the entire rated-power recovery as extra spending.
+Native AUX restrictions and included circulation are respected. A nominal zero
+does not remove scenario uncertainty, but alternatives consuming nothing in every
+scenario have no arbitrary minimum charge. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Weighted-average upper limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
 guarantees that fallback costs cannot exceed the allowance. Disabled trials cannot
 be bypassed by an unvalidated economic action. Trials pause for six hours after
 completion or 24 hours after an incomplete attempt; new automatic cycles also wait
-24 hours after an incomplete attempt. Occasional bounded trials can
-extend a tested duration; small preheat trials require thermal and reduction-response
+24 hours after an incomplete attempt. Small preheat trials require thermal and reduction-response
 evidence. Unexecuted promises are not counted as learning episodes.
 
 Trial cost screening also includes the income that may be lost by reducing
-consumption during negative all-in prices. Negative prices cannot make that
-exposure disappear from the trial allowance.
+scenario consumption during negative all-in prices. Negative prices cannot make
+that exposure disappear from the trial allowance. Daily attempts, completions,
+comparable space-heating assessments and accepted model updates remain separate;
+compressor runtime across an attempt includes recovery and does not prove how
+much heating was displaced. Daily counts come from recorded actual cycles and
+survive restart. These planning changes do not reinterpret the learning journal.
 
 Recovery restores normal ROOM and tariff operation while applying one shared
 **60-minute hold** (`controller.recovery_hold_minutes`). Until its fixed deadline,

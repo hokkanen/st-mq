@@ -688,6 +688,36 @@ Balanced is the default. The minimum benefit before other burdens is respectivel
 Home's Heating strategy & comfort panel explains the policy and independent limits.
 Garage has no savings strategy or economic temperature changes.
 
+`controller.learning_trials` enables bounded learning experiments.
+`controller.learning_trial_target_per_day` selects 1–4 useful daily opportunities
+(default 2), using Finnish calendar days. Before the target, admissible trials
+take priority over ordinary economic choices. Current evidence, comfort,
+equipment readiness, forecast coverage, recovery and cooldown still govern each
+attempt. Trial duration follows recorded space-heating cycles and forecast demand
+within the configured reduction ceiling; increasing the ceiling does not force
+a longer trial. The target controls planning, not thermal fitting or model resets.
+
+`controller.trial_budget_cents_per_day` and `controller.max_trial_cost_cents`
+bound screened incremental exposure, not total electricity used during recovery
+or predicted spending. Shared defaults remain 100 cents/day and 50 cents/trial.
+A more active installation can explicitly configure 300 and 150 respectively;
+these are exposure allowances, not guaranteed bill limits. Apply installation
+overrides through the normal configuration workflow. Changing these planning
+preferences does not change equipment assumptions or reset the learned reference.
+
+For example, a sparse installation override for that allowance is:
+
+```json
+{
+  "controller": {
+    "learning_trials": true,
+    "learning_trial_target_per_day": 2,
+    "trial_budget_cents_per_day": 300,
+    "max_trial_cost_cents": 150
+  }
+}
+```
+
 Home's shared `controller.max_drop_c` and `controller.max_rise_c` apply to the
 configured indoor average around its single learned normal-temperature reference.
 The strategy changes selection within these bounds; it never widens them.

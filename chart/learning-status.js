@@ -239,6 +239,14 @@ export function learningDisplay(learning = {}, context = {}) {
     if (readiness.reasons?.length) record('Readiness conditions', 'Current assessment', `Readiness: ${readiness.reasons.map(words).join('; ')}.`);
   }
   const outcomes = learning.outcomes;
+  const trials = learning.trials;
+  if (trials) record('Daily learning trials', `${trials.attempted} attempted / ${trials.target} sought`,
+    `Today in Finland: ${trials.completed} completed, ${trials.incomplete} incomplete, ${trials.assessed} with a comparable space-heating assessment. `
+    + `Observed compressor runtime across these trials: ${number(trials.observedCompressorRunHours, 2)} hours; this includes recovery and is not proof of displaced heating. `
+    + `Currently available screened allowance: €${number(trials.remainingCents / 100)}. `
+    + (trials.nextEligibleAt ? `Cooldown ends ${new Date(trials.nextEligibleAt).toLocaleString('en-GB', { timeZone: 'Europe/Helsinki' })} Finnish time. ` : '')
+    + (trials.blockingReason ? `Current decision: ${words(trials.blockingReason)}. ` : '')
+    + 'Duration follows recorded Normal space-heating cycles and forecast demand within comfort limits. An attempt or completed cycle does not establish accepted model learning.');
   if (outcomes) record('Attempted cycles', `${outcomes.completed ?? 0} completed / ${outcomes.attempted ?? 0} attempted`, `Recent attempted cycles (latest 100): ${outcomes.attempted ?? 0}; completed ${outcomes.completed ?? 0}, incomplete ${outcomes.incomplete ?? 0}${finite(outcomes.aborted) ? `, aborted ${outcomes.aborted}` : ''}, in progress ${outcomes.inProgress ?? 0}. ${outcomes.assessed ?? 0} have a comparable space-heating assessment.${finite(outcomes.observedCostCents) ? ` Covered cycle electricity cost estimate: €${number(outcomes.observedCostCents / 100)}; source-map or nominal-power estimates are used unless metered.` : ''}${finite(outcomes.missingHours) && outcomes.missingHours > 0 ? ` ${number(outcomes.missingHours, 1)} hours without cost coverage are excluded.` : ''} Completed-subset benefits exclude unfinished attempts; hot-water service changes prevent a whole-cycle savings claim.`);
   const configured = learning.parameters;
   if (finite(learning.controlHold?.until)) record('Automatic cycle hold', 'Waiting after an incomplete attempt', `Automatic cycles wait until ${new Date(learning.controlHold.until).toLocaleString('en-GB', { dateStyle:'medium',timeStyle:'short',timeZone:'Europe/Helsinki' })} Finnish time after an incomplete attempt (${words(learning.controlHold.reason)}). Recording and passive learning continue.`);

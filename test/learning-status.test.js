@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('daily trials distinguish attempts, completion and assessed evidence without claiming learned savings', () => {
+  const display = learningDisplay({ trials: { attempted: 2, target: 2, completed: 1,
+    incomplete: 1, assessed: 0, observedCompressorRunHours: .5, remainingCents: 150,
+    nextEligibleAt: Date.parse('2026-01-02T22:00:00Z'), blockingReason: 'recent-cycle-incomplete' } });
+  const row = display.evidenceRows.find(item => item.key === 'Daily learning trials');
+  assert.equal(row.value, '2 attempted / 2 sought');
+  assert.match(row.detail, /1 completed, 1 incomplete, 0 with a comparable/);
+  assert.match(row.detail, /includes recovery and is not proof of displaced heating/);
+  assert.match(row.detail, /does not establish accepted model learning/);
+});
+
 test('unfinished reconstruction displays its readiness limit without inventing learned coefficients',()=>{
   const reason='The heating model is rebuilding from recorded inputs. Automatic heat optimisation waits for the complete model.';
   const learning={status:'rebuilding',adaptive:null,reconstruction:{status:'rebuilding',reason}};
