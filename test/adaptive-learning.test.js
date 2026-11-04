@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { initialHomeState } from '../src/domain/home-model.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,8 +40,9 @@ test('solar, preheat demand and charged thermal memory affect future temperature
   assert.ok(sunny.indoorC > normal.indoorC);
   assert.ok(preheat.indoorC > normal.indoorC);
   assert.ok(preheat.reserveC > normal.reserveC);
-  assert.equal(reduction.indoorC, normal.indoorC);
-  assert.equal(reduction.compressorDuty, normal.compressorDuty, 'Unobserved tariff response cannot promise less compressor electricity');
+  assert.ok(reduction.indoorC < normal.indoorC);
+  assert.ok(reduction.compressorDuty < normal.compressorDuty, 'The initial response is an explicit estimate; observed duty still overrides it');
+  assert.equal(model.validation, null);
   assert.ok(stored.indoorC > reduction.indoorC);
   assert.ok(preheat.compressorDuty >= normal.compressorDuty);
   const warm = predictThermalStep(model, { indoorC: 27, reserveC: 27 },
@@ -208,5 +210,5 @@ test('a sparse sensor-change boundary retains samples but never fits or propagat
   cp.state.reserveC = 30;
   cp = updateAdaptiveLearning(cp, after, { now: after.timestamp });
   assert.equal(cp.samples.length, 2, 'Older evidence remains retained');
-  assert.equal(cp.state.reserveC, 25, 'No thermal propagation across the measurement jump');
+  assert.equal(cp.state.reserveC, initialHomeState(cp.model, after.indoorC, after.outdoorC, after.solarRadiationWm2).reserveC, 'A new state hypothesis cannot propagate the old measurement jump');
 });

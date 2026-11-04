@@ -1,4 +1,5 @@
 import { initialAdaptiveModel } from '../../src/control/adaptive-learning.js';
+import { initialHomeState } from '../../src/domain/home-model.js';
 
 export const EXPLORER_NOW = Date.parse('2026-01-01T00:00:00Z');
 export function heatingExplorerFixture({ hours = 12, validatedHours = 8, price = 500,
@@ -23,5 +24,5 @@ export function heatingExplorerFixture({ hours = 12, validatedHours = 8, price =
     settings: { savingsStrategy: 'balanced', comfort: { targetC: 21, maxDropC, maxRiseC: 2 }, occupancy: { mode: 'occupied' } },
     equipment: { supplyC: 35, brineC: 0, nativeAuxAllowed: false, h66Available: true,
       compressorOn: 1, dhwRouting: 0, preheatAvailable: false },
-    thermalState: { indoorC: 21, reserveC: 25.725 }, trialBudgetRemainingCents: 0 };
+    thermalState: initialHomeState(model,21,outdoorC), trialBudgetRemainingCents: 0 };
 }

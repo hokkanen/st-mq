@@ -9,6 +9,35 @@ import { appendLearningRecord, LEARNING_ALGORITHM } from '../src/app/committed-l
 import { Store } from '../src/storage/store.js';
 const HOUR = 3600000, start = Date.UTC(2026, 0, 1);
 const zero = { outdoorC: 20, compressorDuty: 0, auxKw: 0, solarRadiationWm2: 0, phase: 'normal' };
+test('a reserve derived from the full supported coefficient range remains a usable model',()=>{
+  const model=initialAdaptiveModel({homeModel:{memoryExchangePerHour:.4,reserveTimeHours:72,hydronicCPerKwh:.005},
+    floorThermalPriors:{capacityKwhPerC:3.2}});
+  const result=predictThermalStep(model,{indoorC:20,reserveC:20,slabC:20},zero,.25);
+  assert.equal(result.indoorC,20);assert.equal(result.reserveC,20);assert.equal(result.slabC,20);
+});
+test('malformed floor capacities and initial gains fail before entering integration',()=>{
+  for(const field of ['capacityKwhPerC','nativeCapacityKwhPerC','exchangeKwPerC'])for(const value of [0,-1,NaN,Infinity]){
+    const model=initialAdaptiveModel({floorThermalPriors:{capacityKwhPerC:2}});
+    model.floor[field]=value;
+    assert.throws(()=>predictThermalStep(model,{indoorC:20,reserveC:20,slabC:20},zero,.25),/Valid thermal model/);
+  }
+  const tiny=initialAdaptiveModel({floorThermalPriors:{capacityKwhPerC:2}});
+  tiny.floor.nativeCapacityKwhPerC=Number.MIN_VALUE;
+  assert.throws(()=>predictThermalStep(tiny,{indoorC:20,reserveC:20,slabC:20},zero,.25),/Valid thermal model/);
+  for(const value of [NaN,Infinity,-1]){
+    const model=initialAdaptiveModel();model.initialModel.internalCPerHour=value;
+    assert.throws(()=>predictThermalStep(model,{indoorC:20,reserveC:20},zero,.25),/Valid thermal model/);
+  }
+});
+test('configured internal heat appears in the complete thermal energy balance without becoming electrical input',()=>{
+  const model=initialAdaptiveModel({homeModel:{internalCPerHour:.1}}),state={indoorC:20,reserveC:20};
+  const result=predictThermalStep(model,state,zero,2),p=model.parameters;
+  const capacity=p.memoryExchangePerHour*p.reserveTimeHours/p.hydronicCPerKwh;
+  const change=(result.indoorC-state.indoorC)/p.hydronicCPerKwh+capacity*(result.reserveC-state.reserveC);
+  assert.equal(result.hydronicKwh,0);
+  assert.ok(Math.abs(result.otherHeatKwh-2*.1/p.hydronicCPerKwh)<1e-10);
+  assert.ok(Math.abs(change+result.envelopeLossKwh-result.otherHeatKwh)<1e-9);
+});
 function rk4(model, initial, outside, hours) {
   const p = model.parameters, f = model.floor;
   const derivative = ([room, reserve, slab]) => [
@@ -97,5 +126,5 @@ test('obsolete native Home checkpoints and payloads reject without journal mutat
   assert.throws(() => restoreAdaptiveCheckpoint({ version: 1, model: { version: 3 }, samples: [] }), /Unsupported Home checkpoint/);
   assert.throws(() => appendLearningRecord(store, 'mqtt', 'sample', { timestamp: start, intervalInputs: {} }), /Unsupported Home sample/);
   assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v17-time-evidence-admission');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v18-initial-model-continuous-learning');
 });

@@ -20,7 +20,7 @@ they do not prove optimal settings or savings for the actual house.
 | Sample counts could qualify coefficients whose effect was absent or confounded. | Test observed-input sensitivity and independent variation before fitting. Keep unsupported coefficients fixed. |
 | Reduction imposed an artificial compressor-capacity ceiling. Preheat received extra heat merely because it was requested. | Separate observed thermal input from estimated equipment response. A reduction can run the compressor fully. No direct preheat heat credit. |
 | The slow state could not charge before the room warmed. | Put hydronic heat into a slow node with conservation-weighted exchange; keep the unobserved topology/memory constants explicit priors. |
-| A thermal fit could authorize a long economic action without tested control response. | Require separate conditional thermal, equipment-response and frozen advance-cycle checks; limit action durations to repeated treatment-specific evidence; preheat uses one configured ROOM increase, default +5 °C, above the saved normal setting. |
+| A thermal fit could authorize a long economic action without tested control response. | Keep separate conditional thermal, equipment-response and frozen advance-cycle accuracy checks; initial estimates support bounded operation before those checks pass; preheat uses one configured ROOM increase, default +5 °C, above the saved normal setting. |
 | Sparse weekly cycles could never fit three held-out episodes into a short rolling tail. | Preserve complete episode samples with causal thermal warmup, and reserve the latest three episodes chronologically once enough exist, with an embargo. |
 | A queued plan could start using stale benefit calculations. | Re-evaluate the promised schedule against current evidence, settings, prices and weather before dispatch. |
 | Multiplying every reduction by every preheat duration/boost could block the control loop for seconds. | Evaluate the reduction grid first, then expand a bounded set of promising preheat choices while retaining trial opportunities. This remains an approximate search. |
@@ -169,3 +169,26 @@ publication keep their source/control fences; see the
 [reconstruction contract](reconstruction-and-versioning.md). Native Raspberry Pi
 latency, prospective device response and the unobserved storage topology still
 need installation-specific validation.
+
+## Initial operation and continuous evidence
+
+Shared calibrated estimates support useful price-aware operation without
+post-installation training episodes. The defaults are fitted using data from a
+real installation and adapt to each installation as new observations arrive.
+Sparse `controller.home_model` overrides adjust the initial coefficients; an
+omitted or empty profile inherits the shared defaults. Learned coefficients and
+actual validation retain separate status.
+The current observed Normal average supplies a provisional planning reference
+until the ordinary comfort learner establishes its own reference.
+
+A causal six-hour observation prefix estimates the initial reserve from bounded
+hypotheses. Scored targets begin after that prefix. A fresh reading in one room
+can update the aggregate, with evidence weight limited to that room's configured
+contribution. Held components earn no independent target. Full required room-report
+coverage remains necessary; real gaps are not filled or normalized away.
+
+Manual treatments, paused periods and automatic operation share thermal evidence.
+Closed manual interventions additionally supply response-only episodes. They can
+improve conditional duty response without fabricating an unissued forecast,
+complete recovery or assessed savings. Explicit cycle assessments keep their own
+stronger evidence requirements. Learning has no terminal completed state.

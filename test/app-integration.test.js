@@ -123,7 +123,15 @@ test('changing charger transport preserves saved voltage while changed physical 
 test('automatic simulation applies pulse sequence once and restart preserves recency and timed override', async t => {
   const { engine, store, createEngine, advance } = setup(t);
   engine.updateSettings({ comfort: { maxDropC: 1 } });
+  await engine.heatingPlanning.service.close();
+  engine.heatingPlanning.service={
+    async request(){return {action:'normal',phase:'normal',reasons:['normal-operation-preferred'],plan:null};},
+    async close(){},
+  };
   await engine.setAutomation({ feature: 'home', enabled: true });
+  assert.equal(engine.plant.state.pulseUntil,0,'A pending price search does not start a competing circulation pulse');
+  await engine.heatingPlanning.pending?.promise;
+  engine.tick();
   assert.ok(engine.plant.state.pulseUntil > engine.clock());
   const pulseUntil = engine.plant.state.pulseUntil;
   advance(15 * 60_000);

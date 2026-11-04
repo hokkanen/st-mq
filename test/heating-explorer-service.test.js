@@ -175,7 +175,7 @@ test('starting command acknowledgement after cancellation records exposure but i
   assert.equal(r.service.publicTrial().status, 'cancelled');
 });
 
-for (const change of ['start expiry', 'outer expiry', 'configuration', 'authority', 'automation', 'suspension']) {
+for (const change of ['start expiry', 'outer expiry', 'configuration', 'authority', 'suspension']) {
   test(`a delayed command acknowledgement cannot renew scenario consent after ${change}`, async t => {
     const r = fixture(t), preview = await r.preview();
     r.service.apply({ previewId: preview.previewId });
@@ -186,7 +186,6 @@ for (const change of ['start expiry', 'outer expiry', 'configuration', 'authorit
     if (change === 'outer expiry') r.advance(r.service.trial().expiresAt - r.now + 1);
     if (change === 'configuration') r.engine.config.controller = { max_drop_c: 1 };
     if (change === 'authority') r.engine.canControl = () => false;
-    if (change === 'automation') r.engine.automationEnabled = () => false;
     if (change === 'suspension') r.engine.suspended = true;
     r.store.transaction(() => r.service.started(cycle));
     assert.equal(cycle.executionSchedule.reductionEnd, r.now);
@@ -195,6 +194,41 @@ for (const change of ['start expiry', 'outer expiry', 'configuration', 'authorit
     assert.deepEqual(r.store.getState('executor:home'), { restorationPending: true });
   });
 }
+
+test('reviewed cycle authority remains separate from automatic control permission',async t=>{
+  const r=fixture(t);r.engine.automationEnabled=()=>false;
+  r.service.input.blockedReason='heating-paused';
+  const preview=await r.preview();assert.equal(preview.application.allowed,true);
+  r.service.apply({previewId:preview.previewId});
+  const plan=r.engine.pendingPlan;
+  assert.equal(r.service.authorizes(plan),true);
+  assert.ok(r.service.reconcile(r.now));
+  r.service.cancel({});
+  assert.equal(r.service.authorizes(plan),false);
+  assert.equal(r.engine.automationEnabled(),false);
+});
+
+test('explicit review can approve unchanged limits and a start tomorrow',async t=>{
+  const r=fixture(t),run=r.worker.run.bind(r.worker);
+  r.worker.run=async(...args)=>{const result=await run(...args);for(const key of ['preheatStart','preheatEnd','reductionStart','reductionEnd'])
+    result.executablePlan.schedule[key]+=24*HOUR;return result;};
+  const preview=await r.preview({});
+  assert.equal(preview.application.allowed,true);
+  r.service.apply({previewId:preview.previewId});
+  assert.ok(r.service.trial().latestStartAt>r.now+24*HOUR);
+  assert.equal(r.service.authorizes(r.engine.pendingPlan),true);
+});
+
+test('copying a genuine approval id cannot authorize a different schedule or wider cycle limits',async t=>{
+  const r=fixture(t),preview=await r.preview();r.service.apply({previewId:preview.previewId});
+  const original=r.engine.pendingPlan;
+  assert.equal(r.service.authorizes(original),true);
+  const shifted=structuredClone(original);shifted.schedule.reductionEnd+=HOUR;
+  assert.equal(r.service.authorizes(shifted),false);
+  const widened=structuredClone(original);widened.userTrial.limits.maxTrialCostCents=10000;
+  assert.equal(r.service.authorizes(widened),false);
+  assert.equal(r.service.authorizes(structuredClone(original)),true);
+});
 
 test('approved state can end from an actual completed cycle and exposes its recorded assessment', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });

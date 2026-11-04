@@ -15,6 +15,7 @@ import { garageSenderSettings } from '../garage/sender.js';
 import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
 import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
+import { homeModelConfiguration, DEFAULT_HOME_MODEL } from '../domain/home-model.js';
 import { rememberConfigurationOptions } from './configuration-preview.js';
 import { marketLocation } from '../acquisition/market.js';
 
@@ -74,10 +75,13 @@ export const CONTROL_DEFAULTS = Object.freeze({
   auxIntegralA2: -990, auxHysteresisC: 30, compressorIntegralA1: null, compressorHysteresisC: null,
   a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
   maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
-  maxPreheatHours: 2, preheatRoomBoostC: 5, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 100,
-  maxTrialCostCents: 50, learningTrialTargetPerDay: 2, recoveryTimeoutHours: 48,
+  maxPreheatHours: 2, preheatRoomBoostC: 5, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 300,
+  maxTrialCostCents: 150, learningTrialTargetPerDay: 4,learningPriorityPriceCents:15,recoveryTimeoutHours: 48,
   recoveryCompressorOnly: true, recoveryHoldMinutes: 60, recoveryComfortMarginC: 0.5,
   dhwrPulseMinutes: 10, observationMaxAgeMs: 1800000,
+  minimumHomeBenefitCents:null,homeDiscomfortCentsPerDegreeSquaredHour:null,
+  cycleStartCostCents:0,cycleHourCostCents:0,economicUncertaintyFloorCents:0,
+  homeModel:DEFAULT_HOME_MODEL,
 });
 
 function interval(value, fallback, minimum, maximum, name) {
@@ -242,13 +246,19 @@ export function controlConfiguration(input = {}) {
     max_preheat_hours: 'maxPreheatHours', learning_trials: 'learningTrials',
     trial_budget_cents_per_day: 'trialBudgetCentsPerDay', max_trial_cost_cents: 'maxTrialCostCents',
     learning_trial_target_per_day: 'learningTrialTargetPerDay',
+    learning_priority_price_cents:'learningPriorityPriceCents',
     recovery_timeout_hours: 'recoveryTimeoutHours', recovery_compressor_only: 'recoveryCompressorOnly',
-    recovery_hold_minutes: 'recoveryHoldMinutes', recovery_comfort_margin_c: 'recoveryComfortMarginC' };
+    recovery_hold_minutes: 'recoveryHoldMinutes', recovery_comfort_margin_c: 'recoveryComfortMarginC',
+    minimum_home_benefit_cents:'minimumHomeBenefitCents',
+    home_discomfort_cents_per_degree_squared_hour:'homeDiscomfortCentsPerDegreeSquaredHour',
+    cycle_start_cost_cents:'cycleStartCostCents',cycle_hour_cost_cents:'cycleHourCostCents',
+    economic_uncertainty_floor_cents:'economicUncertaintyFloorCents' };
   const result = { ...CONTROL_DEFAULTS };
   for (const [key, value] of Object.entries(input)) if (map[key]) result[map[key]] = value;
   for (const [key, value] of Object.entries(result)) {
-    if (['a2Basis', 'learningTrials', 'recoveryCompressorOnly', 'heatPumpModelConfirmed'].includes(key)) continue;
-    if (value === null && ['compressorIntegralA1', 'compressorHysteresisC'].includes(key)) continue;
+    if (['a2Basis', 'learningTrials', 'recoveryCompressorOnly', 'heatPumpModelConfirmed','homeModel'].includes(key)) continue;
+    if (value === null && ['compressorIntegralA1', 'compressorHysteresisC','minimumHomeBenefitCents',
+      'homeDiscomfortCentsPerDegreeSquaredHour','cycleStartCostCents','cycleHourCostCents','economicUncertaintyFloorCents'].includes(key)) continue;
     if (!Number.isFinite(value)) throw new Error(`Invalid controller setting: ${key}`);
   }
   if (!['absolute', 'offset'].includes(result.a2Basis) || typeof result.learningTrials !== 'boolean'
@@ -264,12 +274,16 @@ export function controlConfiguration(input = {}) {
     || result.circulationKw < 0 || result.circulationKw > 1 || result.dhwrKw < 0 || result.dhwrKw > 1 || result.trialBudgetCentsPerDay < 0 || result.trialBudgetCentsPerDay > 1000
     || result.maxTrialCostCents < 0 || result.maxTrialCostCents > result.trialBudgetCentsPerDay
     || !Number.isInteger(result.learningTrialTargetPerDay) || result.learningTrialTargetPerDay < 1 || result.learningTrialTargetPerDay > 4
+    || result.learningPriorityPriceCents<0||result.learningPriorityPriceCents>1_000_000_000
     || result.recoveryTimeoutHours < 4 || result.recoveryTimeoutHours > 168
     || !Number.isInteger(result.recoveryHoldMinutes) || result.recoveryHoldMinutes < 1 || result.recoveryHoldMinutes > 240
     || result.recoveryComfortMarginC < 0 || result.recoveryComfortMarginC > 1
     || result.dhwrPulseMinutes < 1 || result.dhwrPulseMinutes > 60)
     throw new Error('Controller settings exceed supported bounds');
   if (input.floor_thermal_priors !== undefined && (input.floor_thermal_priors === null || typeof input.floor_thermal_priors !== 'object' || Array.isArray(input.floor_thermal_priors))) throw new Error('Floor thermal priors must be an object');
+  result.homeModel = homeModelConfiguration(input.home_model);
+  for(const key of ['minimumHomeBenefitCents','homeDiscomfortCentsPerDegreeSquaredHour','cycleStartCostCents','cycleHourCostCents','economicUncertaintyFloorCents'])
+    if(result[key]!==null&&(result[key]<0||result[key]>1_000_000_000))throw new Error('Heating economic policy is outside supported bounds');
   if (input.floor_thermal_priors && Object.keys(input.floor_thermal_priors).length) {
     const keys = { capacity_kwh_per_c: 'capacityKwhPerC', native_capacity_kwh_per_c: 'nativeCapacityKwhPerC',
       exchange_kw_per_c: 'exchangeKwPerC', ground_loss_kw_per_c: 'groundLossKwPerC', ground_c: 'groundC',

@@ -17,7 +17,7 @@ import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.j
 import { MODEL_COEFFICIENT_INFO } from '../src/domain/history-series.js';
 import { applyLearningRecord, learningConfiguration, learningVersion,
   LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord as appendSourceRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord as appendSourceRecord, currentHomeSample } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 
 /** Explicit synthetic producer fixture: persist the ordered projections before
@@ -344,25 +344,26 @@ test('a real sample refit reconstructs the same changed coefficients as the orde
   const hour = 60 * MINUTE, begin = start - 14 * 24 * hour;
   // This synthetic trajectory exercises replay and fitting together. It makes
   // no claim about physical accuracy or calibration of an installed building.
-  const generator = initialAdaptiveModel({ thermalPriors: { lossPerHour: 0.03, hydronicCPerKwh: 1.2 / 9.4 } });
+  const configuration={thermalPriors:{lossPerHour:.018,hydronicCPerKwh:.08,memoryExchangePerHour:.08,reserveTimeHours:12}};
+  const generator = initialAdaptiveModel({ thermalPriors: { ...configuration.thermalPriors,lossPerHour: 0.03, hydronicCPerKwh: 1.2/9.4 } });
   let state = { indoorC: 21, reserveC: 21 };
   const samples = [];
   for (let i = 0; i <= 336; i++) {
     const inputs = { outdoorC: 7 + 5 * Math.sin(i / 24), compressorDuty: 0.4 + 0.2 * Math.sin(i / 5),
       auxKw: 0, solarRadiationWm2: 0, phase: 'normal', targetC: 21, roomBoostC: 0 };
     if (i) state = predictThermalStep(generator, state, inputs, 1);
-    samples.push({ timestamp: begin + i * hour, indoorC: state.indoorC, ...inputs,
+    samples.push(currentHomeSample({ timestamp: begin + i * hour, indoorC: state.indoorC, ...inputs,
       regime: 'occupied', quality: [], windowStart: begin + (i - 1) * hour,
-      intervalInputs: inputs, actualModeKnown: true });
+      intervalInputs: inputs, actualModeKnown: true }));
   }
-  const seed = restoreAdaptiveCheckpoint(null);
+  const seed = restoreAdaptiveCheckpoint(null,configuration);
   seed.samples = samples.slice(0, -1); seed.cursor = samples.at(-2).timestamp;
   seed.sinceFit = 11; seed.baselineC = 21;
-  context(store, start - hour, { seed });
-  appendLearningRecord(store, 'providers', 'sample', samples.at(-1));
+  context(store, start - hour, { seed,config:configuration });
+  appendLearningRecord(store, 'providers', 'sample', samples.at(-1),{config:configuration});
   let expected = null;
   for (const entry of store.learningJournal({ input: 'providers' })) expected = applyLearningRecord(expected, entry);
-  assert.equal(expected.health.acceptedFits, 1);
+  assert.equal(expected.health.acceptedFits, 1, JSON.stringify(expected.health));
   for (const parameter of ['lossPerHour', 'hydronicCPerKwh'])
     assert.notEqual(expected.model.parameters[parameter], seed.model.parameters[parameter]);
   const before = databaseSnapshot(store);

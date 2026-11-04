@@ -6,8 +6,24 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Home starts with shared calibrated thermal coefficients and explicit initial
+  native-response estimates, and can plan
+  preheating, peak reduction and recovery before new training episodes exist.
+  The defaults are fitted using data from a real installation and adapt as new
+  observations arrive. Initial estimates do not claim installed validation.
+  Cheap informative trials include preheat from startup and can
+  continue beyond the daily priority target after recovery. Manual treatments and
+  paused observations contribute to continuous learning. Configured comfort limits
+  apply immediately, without a separate startup cap or learning cooldown. Explicit
+  manual-planner approval can relax cycle policy and operate while Home automatic
+  control is paused or disabled, preserving defaults and independent manual holds.
+  Causal reserve
+  initialization and weighted genuine sensor updates avoid discarding sparse
+  useful evidence. The Home learning algorithm changes; incompatible development
+  journals still reject before mutation, with no automatic database conversion.
+
 - Heating learning trials follow observed space-heating cycles and forecast
-  demand instead of a fixed half-hour initial ceiling. The controller seeks two
+  demand instead of a fixed half-hour initial ceiling. The controller seeks four
   useful daily opportunities by default and reports actual attempts separately
   from completed cycles and accepted learning. Trial allowances screen additional
   cycle cost, including recovery, rather than hypothetical full-rated recovery

@@ -1,4 +1,5 @@
-import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
+import { HEATING_STRATEGIES, heatingEconomics } from '../src/domain/heating-strategy.js';
+import { DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
 
 // Presentation of implemented calculations. Symbols are defined beside each
 // equation; these descriptions do not participate in prediction or control.
@@ -72,7 +73,7 @@ export function sourceCalculation() {
     'The map interpolates from 35–45 °C. Only 30–35 and 45–50 °C use provisional extrapolation. Automatic preheat requires known supply temperature and a projected supply within 30–50 °C.',
     'For degraded observations, missing supply uses 35 °C; out-of-range supply retains its actual value but evaluates the nearest 30/50 °C boundary with extra uncertainty. Both source points have the same brine temperature, so they cannot identify a brine correction. Missing brine stays unknown.',
     'Example: at 40 °C supply, 50% compressor duty and 3 kW AUX produce an estimated 7.66 kW thermal. The shared response applies to that heat; compressor and AUX electrical use remain separate.',
-    'The default house-response prior is 0.75 / 9.40 ≈ 0.0798 °C/kWh thermal. Neither this prior nor the source map is a heat-meter reading. DHW routing and independently scheduled recirculation remain outside this space-heating calculation.',
+    `The calibrated default house response is ${DEFAULT_HOME_MODEL.hydronicCPerKwh.toFixed(4)} °C/kWh thermal. Neither this initial estimate nor the source map is a heat-meter reading. DHW routing and independently scheduled recirculation remain outside this space-heating calculation.`,
   ], 'Performance map & electrical input'), reference: {
     label: 'Danfoss technical data · DHP-H 10, pages 107–108',
     href: 'https://assets.danfoss.com/documents/latest/29671/AN000086466221en-010701.pdf',
@@ -82,8 +83,8 @@ export function sourceCalculation() {
 export function heatBalanceCalculation(model = {}) {
   const floor = model.floor?.enabled;
   const equations = [equation('Indoor temperature', floor
-    ? 'dT_in/dt = −L_net + J + F + X + g × F_slab' : 'dT_in/dt = −L + J + F + X',
-  'Temperature rates are in °C/h. L is envelope cooling, J is solar warming, F is fireplace warming and X is release from the reserve. Their coefficient calculations define each term.')];
+    ? 'dT_in/dt = −L_net + J + I_internal + F + X + g × F_slab' : 'dT_in/dt = −L + J + I_internal + F + X',
+  'Temperature rates are in °C/h. L is envelope cooling, J is solar warming, I_internal is the configured internal gain, F is fireplace warming and X is release from the reserve. Their coefficient calculations define each term.')];
   if (floor) equations.push(
     equation('Remaining building reserve', 'dT_res/dt = [(1 − α) × H − X / g] / C_res',
       'H is hydronic thermal kW; α selects the confirmed-override or normal allocation; C_res is the fixed remaining capacity in kWh/K.'),
@@ -101,8 +102,8 @@ export function heatBalanceCalculation(model = {}) {
 
 export function preheatCalculation() {
   return calculation([
-    equation('Bounded ROOM increase', 'b = min(b_configured, max(0, ROOM_max − ROOM_baseline)); ROOM_request = ROOM_baseline + b',
-      'The default configured increase is 5 °C. ROOM_baseline is the saved normal native setting; ROOM_max is the verified writable upper bound. Repeated preheat commands do not accumulate increases.'),
+    equation('Bounded ROOM increase', 'b ≤ min(b_configured, max(0, ROOM_max − ROOM_baseline)); ROOM_request = ROOM_baseline + b',
+      'The default configured maximum increase is 5 °C. ROOM_baseline is the saved normal native setting; ROOM_max is the verified writable upper bound. When no native water ceiling bounds the forecast inside the source map, a smaller supported increase is selected. Repeated preheat commands do not accumulate increases.'),
     equation('Forecast supply temperature', 'T_water,preheat = T_water,normal + 3 × b',
       'Temperatures are in °C. This fixed forecast prior changes the source-map operating point and predicted demand; it is not a measured heating curve or a direct heat input.'),
   ], ['ROOM is a heating-demand setting. Indoor-average limits remain separate, with default maximum occupied drop and rise both 1.5 °C. Normal DHWR scheduling continues during preheat; the ROOM and valve deadlines do not depend on the circulation pulse timer.']);
@@ -140,25 +141,28 @@ export function outcomeCalculation(key) {
 
 export function dutyCalculation() {
   return calculation([
-    equation('Native-demand prior', 'd_native = clamp([k × (T_in − T_out) + 0.25 × (T_ref + b − T_in)] / [g × Q(T_water)], 0, 1)',
-      'Temperatures are in °C; b is the requested ROOM increase during preheat. The 0.25/h feedback term is fixed. The prior balances modeled loss and comfort demand against estimated compressor heat. clamp(x, 0, 1) limits x to the 0–1 duty range.'),
+    equation('Heat-balance demand', 'd_balance = [k × (T_in − T_out) − J − I_internal] / [g × Q(T_water)]',
+      'Temperatures are in °C; J is solar warming and I_internal is the configured internal-gain estimate, both in °C/h.'),
+    equation('Native-demand prior', 'd_native = clamp(d_balance + δ_weather + [0.25 × (T_ref + b − T_in) + 0.25 × a × (T_res,ref − T_res)] / [g × Q(T_water)], 0, 1)',
+      'b is the requested ROOM increase during preheat; a is reserve exchange. The weather/runtime curve can adjust duty by at most 0.02. The fixed 0.25/h feedback responds to room and reserve deviations. clamp limits duty to 0–1; latent reserve is an estimate.'),
     equation('Requested-mode response', 'd = clamp(r_phase × d_native, 0, 1)',
-      'r_phase is the episode-weighted response ratio for the matching treatment. Without an available matching ratio the prior is 1; requested reduction alone does not prove that heating stopped.'),
+      'r_phase is the episode-weighted response ratio for the matching treatment. Without an available matching ratio the configured initial response is used (default 0.25 for reduction and 1 for preheat); requested reduction does not prove that heating stopped.'),
   ], ['Fresh native demand can replace this estimate for a short step of at most one hour. Current-state thermal fitting instead uses observed routed duty whenever available.']);
 }
 
-export function economicCalculation(strategyId) {
+export function economicCalculation(strategyId,config={}) {
+  const policy=heatingEconomics(config,strategyId);
   const strategy = HEATING_STRATEGIES.find(option => option.id === strategyId);
   return calculation([
     equation('Electrical energy and cost', 'E = Σ(P_space × Δt);  C = Σ(P_space × Δt × price) + C_tail',
-      'P_space is electrical kW; Δt is hours; price is cents/kWh. E is kWh and C is cents. C_tail prices any remaining thermal deficit against the normal reference.'),
-    equation('Conservative benefit', 'B_low = B_nominal − max(5, B_nominal − min(B_nominal, B_stress−, B_stress+))',
-      'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths; a residual 5-cent allowance remains.'),
-    equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + 2 × extra_hours + 2 × start',
-      `${strategy ? `${strategy.label}: minimum_benefit = ${strategy.minimumHomeBenefitCents} ct and discomfort_weight = ${strategy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. These are decision allowances, not actual electricity charges.`),
+      'P_space is electrical kW; Δt is hours; price is cents/kWh. E is kWh and C is cents. C_tail prices remaining thermal deficit against the normal reference at the last forecast quote, bounded below by zero. This boundary estimate is identical across compared paths; it is not a quote beyond the forecast.'),
+    equation('Conservative benefit', 'B_low = B_nominal − max(cost_floor, B_nominal − min(B_nominal, B_stress−, B_stress+))',
+      'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths; the configured cost_floor (default zero) supplies an additional residual allowance.'),
+    equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + hour_weight × extra_hours + start_weight × start',
+      `${strategy ? `${strategy.label}: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These are configurable decision allowances, not actual electricity charges.`),
     equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
       `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
-  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Pause and Home automation determine whether the heating plan is applied.',
+  ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Automatic permission or explicit one-cycle approval determines whether a reviewed plan is applied.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }
 
@@ -168,7 +172,7 @@ export function comfortReferenceCalculation() {
       'Default configured room weights are Bedroom 50%, Downstairs 25% and Upstairs 25%. The one normal-temperature reference and all comfort limits use this average.'),
     equation('Continuous refinement', 'T_ref ← T_ref + (1 − exp(−h / 48)) × clamp(T_indoor − T_ref, −1, 1)',
       'h is newly supported occupied Normal observation time in hours. The 48-hour smoothing timescale and 1 °C innovation bound prevent one unusual interval dominating the reference. Reused observations earn no new movement.'),
-  ], ['A provisional reference starts after one supported hour of occupied Normal heating. Until 24 hours are supported by verified heating, occupied reduction is limited to the smaller of the configured drop and 0.5 °C. Weather-inferred heating alone cannot end this restriction. Missing measurements pause progress and never erase an established reference.',
+  ], ['A provisional reference starts after one supported hour of occupied Normal heating. The reference remains labelled provisional until 24 hours are supported by verified heating. The configured comfort limits apply from startup. Missing measurements pause progress and never erase an established reference.',
     'Verified space-heating demand includes normal compressor-off periods for up to six hours after activity. When native evidence is unavailable, outdoor temperature at most 12 °C and an indoor–outdoor difference of at least 8 °C support a provisional estimate. Preheat, reduction, recovery, Away and material logged fireplace influence do not train it. Two hours of normal settling follow a controller intervention. Estimated missing-room temperatures never train the reference or thermal model.']);
 }
 
@@ -207,13 +211,13 @@ export function validationCalculation(key) {
       'This maximum is over eligible later trajectory blocks. The comparison baseline holds each block’s initial indoor temperature constant.'),
   ], ['Each checked trajectory starts once and advances with recorded heat input. Eligible blocks need continuous coverage and sufficient earlier thermal warmup. This checks temperature response conditional on observed equipment use, separately from a forecast of future equipment use or cost.']);
   if (key === 'equipment' || / equipment response$/.test(key)) return calculation([
-    equation('Learned treatment response', 'r = [3 + Σ clamp(D_j / N_j, 0, 2)] / (3 + n_train)',
-      'D_j is observed compressor duty-hours and N_j is the native-demand prior’s duty-hours for training episode j. The three prior-equivalent episodes favor unchanged demand, r = 1.'),
+    equation('Learned treatment response', 'r = mean_j clamp(D_j / N_j, 0, 2)',
+      'D_j is observed compressor duty-hours and N_j is the native-demand prior’s duty-hours for training episode j. Covered episodes receive equal weight; the configured starting ratio is used before observed response estimates exist. Independent validation remains separate.'),
     equation('Mean episode duty error', 'MAE_d = mean_j |Σ_i(d_predicted,i − d_observed,i) × Δt_i / h_j|',
       'h_j is episode duration. Later episodes receive equal weight; intervals within each episode are duration-weighted. Multiply by 100 for percentage points.'),
     equation('Within-episode timing error', 'MAE_interval = mean_j [Σ_i |d_predicted,i − d_observed,i| × Δt_i / h_j]',
       'Taking the absolute error before summing also exposes opposing timing errors that cancel in mean episode duty.'),
-  ], ['Training and later checks use completed episodes with the matching hydraulic treatment. Supported duration must be demonstrated by at least three training and three later episodes. The check conditions on recorded temperatures and requested mode; it does not validate a forecast made before the cycle.']);
+  ], ['Training and later checks use covered closed episodes with the matching hydraulic treatment, including useful manual and interrupted treatments. Supported duration must be demonstrated by at least three training and three later episodes. Recent observations also update explicitly unchecked estimates. DHW diversion is not attributed to a space-heating treatment. The check conditions on recorded temperatures and requested mode; it does not validate a forecast made before the cycle.']);
   if (key === 'advance' || key === 'Forecast saved before the cycle') return calculation([
     equation('Frozen temperature prediction', 'MAE_T = mean_cycles [Σ_i |T_frozen,i − T_observed,i| × Δt_i / ΣΔt_i]',
       'The result is in °C. Each eligible cycle is equally weighted; its temperature error is weighted by observation duration.'),
@@ -225,7 +229,7 @@ export function validationCalculation(key) {
   if (key === 'uncertainty' || key === 'Forward uncertainty') return calculation([
     equation('Forward temperature allowance', 'U(h) = U_observed(h) + g × Q × ε_source × √h / 4 + U_floor + U_action + U_solar + r̄ × h × δf',
       'U is in °C and h is hours. g is hydronic response, Q is compressor thermal kW, ε_source is the source-map allowance, r̄ is fireplace release in kg/h and δf is its gain allowance in °C/kg. The square-root terms are fixed engineering growth rules.'),
-  ], ['The observed component uses the largest checked trajectory error plus 0.1 °C, with at least three supporting blocks and a 0.15 °C floor. Beyond supported horizons it grows by at least 0.05 °C/h. Without checked horizons it starts at 0.25 + 0.15√h °C.',
+  ], ['The observed component uses the largest checked trajectory error plus 0.1 °C, with at least three supporting blocks and a 0.15 °C floor. Beyond supported horizons it grows by at least 0.05 °C/h. Without checked horizons it uses the configured initial trajectory error scaled by √(h/6), with a 0.25 °C floor.',
     'When an explicit slab is configured, its allowance is 0.15√h °C in every valve mode: switching the override off does not remove stored heat or its uncertainty. An unsupported non-normal action without observed duty adds 0.10√h °C; missing solar adds 0.08√h °C. These allowances and the separate paired economic stress cases are engineering safeguards, not calibrated probabilities.']);
   return undefined;
 }
@@ -236,8 +240,8 @@ export function calibrationCalculation(key) {
     equation('Episode AUX correction', 'x_episode = clamp(x_frozen × E_AUX,executed / max(0.05, E_AUX,predicted), 0.2, 4)',
       'E is space-heating AUX electricity in kWh. x_frozen is the exposure scale saved with the cycle; recorded AUX output and known routing are required.'),
     equation('Updated AUX exposure scale', 'x_new = clamp(x_old + α × (x_episode − x_old), 0.2, 4)', weighting),
-    equation('Forecast AUX power', 'A_predicted = min(P_rated, P_rated × risk × x_new)',
-      'A_predicted and P_rated are electrical kW. risk combines native threshold, shortfall and recovery-demand assumptions; an applicable AUX restriction sets risk to zero.'),
+    equation('Forecast AUX power', 'A_predicted = min(P_rated, max(A_normal, P_rated × risk × x_new))',
+      'A_predicted, A_normal and P_rated are electrical kW. A_normal is the recent recorded Normal AUX mean when available and heating is forecast; it is not scaled twice by recovery calibration. risk combines native threshold, shortfall and recovery assumptions. An applicable AUX restriction sets the forecast to zero. Missing Normal AUX evidence supplies no invented baseline consumption or savings credit.'),
   ], ['This adjusts predicted AUX exposure, not the shared response per thermal kWh. Episode electricity remains estimated from observed stages unless separately metered. Paired stress scenarios also vary AUX exposure.']);
   if (['recovery', 'Recovery electricity multiplier', 'Recovery diagnostic calibration'].includes(key)) return calculation([
     equation('Recovery correction excluding AUX', 'm_episode = clamp(m_frozen × (E_executed − E_AUX,executed) / (E_predicted − E_AUX,predicted), 0.75, 4)',
@@ -251,8 +255,8 @@ export function calibrationCalculation(key) {
     equation('Updated relative allowance', 'u_new = clamp(max(1.5e, u_old + α × (1.5e − u_old)), u_floor, 1.5)',
       `u_floor is 0.4 until six measured episodes, then 0.2. ${weighting}`),
     equation('Reported path cost allowance', 'U_cost = max(5, u × [Σ|C_interval| + |C_tail|] + U_unobserved_AUX)',
-      'All costs are in cents. Without H66 availability, U_unobserved_AUX adds 0.5 × predicted AUX kWh × the nonnegative peak tariff; otherwise that term is zero.'),
-  ], ['The initial relative allowance is 0.6. Unexpected observed AUX after a near-zero AUX prediction raises it to at least 0.6. It supports reported path and cycle-assessment uncertainty; automatic economic admission uses its separate paired physical stress cases and residual 5-cent floor. It is neither meter accuracy nor a confidence level.']);
+      'All costs are in cents. Without H66 availability, U_unobserved_AUX adds 0.5 × predicted AUX kWh × the nonnegative forecast-boundary tariff; otherwise that term is zero.'),
+  ], ['The initial relative allowance is 0.6. Unexpected observed AUX after a near-zero AUX prediction raises it to at least 0.6. It supports reported path and cycle-assessment uncertainty; automatic economic admission uses its separate paired physical stress cases and configurable residual allowance, default zero. It is neither meter accuracy nor a confidence level.']);
   return undefined;
 }
 

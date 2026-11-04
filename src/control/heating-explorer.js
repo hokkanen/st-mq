@@ -1,18 +1,27 @@
 import { CONTROL_DEFAULTS } from '../app/config.js';
-import { HEATING_STRATEGIES } from '../domain/heating-strategy.js';
-import { initialAdaptiveModel } from './adaptive-learning.js';
+import { HEATING_STRATEGIES, heatingEconomics, DEFAULT_HEATING_STRATEGY } from '../domain/heating-strategy.js';
+import { initialAdaptiveModel, equipmentResponseEstimate } from './adaptive-learning.js';
+import { homePlanningState } from '../domain/home-model.js';
 import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, learningReadiness,
-  phaseAt, validatedReductionHours, cycleForecastCovered, effectiveComfortDropC, indoorUncertaintyAt, preheatRoomRequest } from './planner.js';
+  phaseAt, validatedReductionHours, cycleForecastCovered, indoorUncertaintyAt, preheatRoomRequest } from './planner.js';
 
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
 const LIMITS = Object.freeze({
-  maxReductionHours: { label: 'Maximum reduction', min: .25, max: 12, step: .25, unit: 'h' },
-  maxAwayReductionHours: { label: 'Maximum reduction while away', min: .25, max: 24, step: .25, unit: 'h' },
-  maxDropC: { label: 'Allowed average temperature drop', min: 0, max: 2, step: .25, unit: '°C' },
-  maxRiseC: { label: 'Allowed average temperature rise', min: .25, max: 2, step: .25, unit: '°C' },
-  maxPreheatHours: { label: 'Maximum preheat', min: .25, max: 6, step: .25, unit: 'h' },
+  maxReductionHours: { label: 'Maximum reduction', min: .25, max: 46, step: .25, unit: 'h' },
+  maxAwayReductionHours: { label: 'Maximum reduction while away', min: .25, max: 46, step: .25, unit: 'h' },
+  maxUnobservedReductionHours: { label: 'Maximum reduction without native telemetry', min: .25, max: 46, step: .25, unit: 'h' },
+  maxDropC: { label: 'Allowed average temperature drop', min: 0, max: 35, step: .25, unit: '°C' },
+  maxRiseC: { label: 'Allowed average temperature rise', min: .25, max: 35, step: .25, unit: '°C' },
+  maxPreheatHours: { label: 'Maximum preheat', min: .25, max: 24, step: .25, unit: 'h' },
   preheatRoomBoostC: { label: 'Preheat ROOM increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
+  maxTrialCostCents: { label: 'One-cycle experiment allowance', min: 0, max: 1_000_000_000, step: 1, unit: 'cents' },
+  minimumHomeBenefitCents: { label: 'Minimum cycle benefit (negative permits extra cost)', min: -1_000_000_000, max: 1_000_000_000, step: 1, unit: 'cents' },
+  homeDiscomfortCentsPerDegreeSquaredHour:{label:'Comfort cost within temperature limits',min:0,max:1_000_000_000,step:1,unit:'c/°C²h'},
+  cycleStartCostCents:{label:'Cycle start allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
+  cycleHourCostCents:{label:'Cycle duration allowance',min:0,max:1_000_000_000,step:1,unit:'c/h'},
+  economicUncertaintyFloorCents:{label:'Additional cost uncertainty allowance',min:0,max:1_000_000_000,step:1,unit:'cents'},
+  learningPriorityPriceCents:{label:'Price for learning priority',min:0,max:1_000_000_000,step:1,unit:'c/kWh'},
 });
 
 /** Only explicit household policy can be explored. Equipment, evidence, training
@@ -46,6 +55,11 @@ export function applyExplorerOverrides(input, overrides = {}) {
     else {
       result.config[key] = value;
       if (key === 'preheatRoomBoostC') result.settings.preheatRoomBoostC = value;
+      if (key === 'maxTrialCostCents') {
+        result.config.learningTrials = true;
+        result.trialBudgetRemainingCents = value;
+        result.equipment = { ...result.equipment, trialBudgetRemainingCents: value };
+      }
     }
   }
   return result;
@@ -55,18 +69,22 @@ function policy(input) {
   const c = { ...CONTROL_DEFAULTS, ...input.config };
   return { maxReductionHours: c.maxReductionHours, maxAwayReductionHours: c.maxAwayReductionHours,
     maxPreheatHours: c.maxPreheatHours, preheatRoomBoostC: c.preheatRoomBoostC,
+    maxUnobservedReductionHours: c.maxUnobservedReductionHours, maxTrialCostCents: c.maxTrialCostCents,
+    learningPriorityPriceCents:c.learningPriorityPriceCents,
+    ...heatingEconomics(c,input.settings.savingsStrategy),
     maxDropC: input.settings.comfort.maxDropC, maxRiseC: input.settings.comfort.maxRiseC ?? 1.5,
-    savingsStrategy: input.settings.savingsStrategy ?? 'balanced' };
+    savingsStrategy: input.settings.savingsStrategy ?? DEFAULT_HEATING_STRATEGY };
 }
 
 function evaluationArgs(input) {
-  const indoor = input.observations?.indoor, targetC = input.settings.comfort.targetC ?? input.checkpoint?.baselineC;
+  const indoor = input.observations?.indoor, targetC = input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? indoor?.value;
   const intervals = forecastIntervals(input.prices, input.forecast, input.now);
   if (!finite(indoor?.value) || indoor.stale || !finite(indoor.observedAt) || indoor.observedAt > input.now
     || !finite(targetC) || !intervals.length) return null;
-  return { intervals, model: input.checkpoint?.model ?? initialAdaptiveModel(input.config),
-    initialState: { indoorC: indoor.value, reserveC: input.thermalState?.reserveC ?? indoor.value,
-      slabC: input.thermalState?.slabC ?? null, integral: input.equipment?.integral }, targetC,
+  const model = input.checkpoint?.model ?? initialAdaptiveModel(input.config);
+  return { intervals, model,
+    initialState: { ...homePlanningState(model,indoor.value,intervals[0].outdoorC,intervals[0].solarRadiationWm2,input.thermalState),
+      integral: input.equipment?.integral }, targetC,
     occupancy: input.settings.occupancy, maxDropC: input.settings.comfort.maxDropC,
     maxRiseC: input.settings.comfort.maxRiseC ?? 1.5, savingsStrategy: input.settings.savingsStrategy,
     config: input.config, equipment: input.equipment ?? {} };
@@ -168,8 +186,8 @@ function constraints(input, decision, evidence, selected) {
         ? 'reached' : selected.search?.preheatExpansions > 0 ? 'available' : 'unknown',
       detail: 'The bounded preheat search considers permitted durations through this ceiling; treatment evidence and conservative average-temperature checks still apply.' },
     { key: 'validatedReductionHours', label: 'Demonstrated reduction duration', kind: 'evidence', value: evidence.validatedReductionHours, unit: 'h',
-      status: !evidence.actionValidated || evidence.validatedReductionHours < p[durationKey] ? 'blocking' : 'available',
-      detail: 'Normal economic planning needs thermal, equipment-response and frozen advance-forecast evidence for the duration and treatment. Simulations add no evidence.' },
+      status: evidence.initialReady || evidence.actionValidated && evidence.validatedReductionHours >= p[durationKey] ? 'available' : 'blocking',
+      detail: 'Initial estimates permit economic planning within configured limits. Demonstrated duration describes independently observed support; simulations add no evidence.' },
     { key: 'forecastCoverage', label: 'Price and weather coverage', kind: 'forecast', value: null, unit: null,
       status: !forecastCovered || d?.forecastRejected ? 'blocking' : 'available',
       detail: !forecastCovered ? 'Fewer than four contiguous hours of fresh price and weather evidence are available.'
@@ -181,23 +199,27 @@ function constraints(input, decision, evidence, selected) {
         : 'No normally eligible shortlist was assessed. Lower electricity purchase cost alone is insufficient.' },
   ];
   if (input.equipment?.comfortReferenceProvisional === true) result.push({ key: 'provisionalReference',
-    label: 'Provisional normal temperature', kind: 'safety', status: 'limiting',
-    value: effectiveComfortDropC(p.maxDropC, input.equipment), unit: '°C',
-    detail: 'Until enough normal heating evidence is available, the occupied average drop is capped at 0.5 °C.' });
+    label: 'Provisional normal temperature', kind: 'evidence', status: 'available',
+    value: p.maxDropC, unit: '°C',
+    detail: 'The reference is still learning. The configured comfort allowance applies from startup.' });
   if (!input.equipment?.h66Available) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
-    detail: 'Without native readback the separate conservative duration ceiling remains in force; this explorer cannot relax it.' });
+    detail: 'The separate duration policy for unavailable native telemetry applies; an explicit one-cycle override can change it. Device authority and restoration remain required.' });
   if (!input.equipment?.preheatAvailable || violations.some(row => row.code === 'preheat-source-range'))
     result.push({ key: 'preheatAvailability', label: 'Preheat readiness', kind: 'safety', status: 'blocking', value: null, unit: null,
       detail: 'Preheat requires equipment authority, native ROOM headroom, supported supply temperatures and applicable treatment evidence.' });
   if (input.equipment?.preheatAvailable) {
-    const validated = input.checkpoint?.model?.equipmentResponse?.validation?.phases?.preheat;
+    const treatmentKey=selected.schedule?.roomBoostC>0?selected.schedule.treatmentKey
+      :input.equipment.floorOverrideAvailable?'room-boost-floor-v1':'room-boost-v1';
+    const response=equipmentResponseEstimate(input.checkpoint?.model,'preheat',treatmentKey);
+    const summary=input.checkpoint?.model?.equipmentResponse?.validation?.phases?.preheat;
+    const validated = response?.validation??(summary?.treatmentKey===treatmentKey?summary:null);
     const maxBoost = validated?.accepted === true && finite(validated.maxRoomBoostC) ? validated.maxRoomBoostC : null;
     const requestedBoost = preheatRoomRequest(input.equipment, input.config).roomBoostC;
     result.push({ key: 'validatedPreheatBoostC', label: 'Demonstrated preheat ROOM increase', kind: 'evidence',
-      status: !finite(requestedBoost) ? 'unknown' : maxBoost !== null && requestedBoost <= maxBoost ? 'available' : 'blocking',
+      status: !finite(requestedBoost) ? 'unknown' : evidence.initialReady || maxBoost !== null && requestedBoost <= maxBoost ? 'available' : 'blocking',
       value: maxBoost, unit: '°C',
-      detail: 'Economic preheat needs response evidence for both its duration and actual ROOM increase. Only independently eligible bounded learning trials may explore an unsupported increase; simulations add no evidence.' });
+      detail: 'Initial estimates permit preheat with native ROOM headroom and conservative temperature checks. Demonstrated increases describe observed support; simulations add no evidence.' });
   }
   if (!evidence.trialReady || !(input.trialBudgetRemainingCents > 0)) result.push({ key: 'trialReadiness',
     label: 'Learning trial allowance', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
@@ -278,9 +300,9 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   let plannerRuns = changedKeys.length ? 2 : 1;
   // One duration probe, one comfort probe and only then a combined probe if
   // necessary. Slider requests do not repeat this automatic scan.
-  if (options.includeOpportunities !== false && !Object.keys(changes).length && args && evidence.actionValidated) {
+  if (options.includeOpportunities !== false && !Object.keys(changes).length && args && (evidence.initialReady || evidence.actionValidated)) {
     const durationKey = frozen.settings.occupancy.mode === 'away' ? 'maxAwayReductionHours' : 'maxReductionHours';
-    const maxDuration = Math.min(LIMITS[durationKey].max, evidence.validatedReductionHours, currentPolicy[durationKey] * 2);
+    const maxDuration = Math.min(LIMITS[durationKey].max, evidence.initialReady ? Infinity : evidence.validatedReductionHours, currentPolicy[durationKey] * 2);
     const durationChanges = maxDuration > currentPolicy[durationKey] ? { [durationKey]: maxDuration } : {};
     const comfortChanges = currentPolicy.maxDropC < 2 ? { maxDropC: Math.min(2, currentPolicy.maxDropC + .5) } : {};
     const probe = proposal => {
@@ -296,7 +318,7 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
       opportunities.push({ key: Object.keys(proposal).join('+'), title: 'Opportunity to review', overrides: proposal,
         additionalBenefitCents: actualImprovement.additionalBenefitCents,
         detail: 'The tested limits admit a different plan with a greater estimated full-cycle benefit. Household reasons for the existing limits remain your choice.',
-        evidence: 'One frozen comparison with existing validated evidence; this is not new learning or a recommendation to change defaults.',
+        evidence: 'One frozen comparison using current model estimates; this is not new learning or a recommendation to change defaults.',
         comparison: actualImprovement, scenario: result });
       for (const boundary of boundaries) if (Object.hasOwn(proposal, boundary.key)) {
         boundary.status = 'blocking'; boundary.detail = 'A tested relaxation produces an eligible alternative with at least 10 cents more estimated benefit. Compare its comfort and recovery consequences.';

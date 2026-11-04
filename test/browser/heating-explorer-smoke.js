@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
+import { exploreHeatingPlan } from '../../src/control/heating-explorer.js';
+import { heatingExplorerFixture } from '../helpers/heating-explorer-fixture.js';
 import { build, preview } from 'vite';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-explorer-browser-'));
@@ -125,6 +127,9 @@ try {
     limitations: ['Space-heating cost includes recovery and remaining heat debt; electricity totals exclude that tail. Hot-water service and whole-house savings are not established.'],
     application: { allowed: true, latestStartAt: now + hour, expiresAt: now + 12 * hour },
   };
+  const allControls=exploreHeatingPlan(heatingExplorerFixture()).controls;
+  fixture.controls=allControls.map(control=>({...control,
+    value:fixture.controls.find(existing=>existing.key===control.key)?.value??control.value}));
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.explorerFixture = { value: ${JSON.stringify(fixture)}, requests: [], role: 'admin', generation: 0, stale: false };
     const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -281,14 +286,14 @@ try {
       assert(layout.width <= width && layout.scroll <= layout.client + 1 && layout.page <= width,
         `${label} has no horizontal overflow: ${JSON.stringify(layout)}`);
       assert.equal(layout.extraControls, false, `${label}: all controls live in one grid without duration presets or an extra fold`);
-      assert.equal(layout.controls.length, 6, `${label}: all six planning controls are present`);
+      assert.equal(layout.controls.length, allControls.length, `${label}: every planning control is present`);
+      assert.deepEqual(layout.controls.map(control=>control.key).sort(),allControls.map(control=>control.key).sort());
       assert(layout.controls.every(control => control.visible && !control.overflow && control.width > 0
         && control.left >= layout.grid.left - 1 && control.right <= layout.grid.right + 1
         && control.top >= layout.grid.top - 1 && control.bottom <= layout.grid.bottom + 1),
-      `${label}: all six controls stay visible and fit their grid: ${JSON.stringify(layout.controls)}`);
-      const expectedRows = width <= 650
-        ? [['savingsStrategy', 'preheatRoomBoostC'], ['maxDropC', 'maxRiseC'], ['maxReductionHours', 'maxPreheatHours']]
-        : [['savingsStrategy', 'maxDropC', 'maxReductionHours'], ['preheatRoomBoostC', 'maxRiseC', 'maxPreheatHours']];
+      `${label}: all controls stay visible and fit their grid: ${JSON.stringify(layout.controls)}`);
+      const columns=width<=650?2:3,expectedRows=[];
+      for(let i=0;i<layout.controls.length;i+=columns)expectedRows.push(layout.controls.slice(i,i+columns).map(control=>control.key));
       const controls = new Map(layout.controls.map(control => [control.key, control]));
       for (const [rowIndex, keys] of expectedRows.entries()) {
         for (const [columnIndex, key] of keys.entries()) {
@@ -328,7 +333,7 @@ try {
     'Unknown model uncertainty never creates a zero-width confidence band');
   assert.match(await evaluate(`document.querySelector('#heating-explorer-chart svg').getAttribute('aria-label')`), /allowance unavailable/);
   await evaluate(`explorerFixture.value.scenario.trajectory = originalHeatingTrajectory.map((point,index) => ({...point,uncertaintyC:index===10?null:point.uncertaintyC}));
-    explorerFixture.value.constraints.push({key:'provisionalReference',label:'Provisional normal temperature',status:'limiting',value:.5,unit:'°C',detail:'The provisional reference limits the allowed drop.'});
+    explorerFixture.value.constraints.push({key:'maxDropC',label:'Configured temperature allowance',status:'limiting',value:1,unit:'°C',detail:'The configured comfort allowance limits this scenario.'});
     document.getElementById('heating-explorer-form').requestSubmit()`);
   await until(`document.getElementById('heating-explorer-chart-uncertainty').textContent.includes('gaps are unknown')`);
   assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart polygon').length`), 2,

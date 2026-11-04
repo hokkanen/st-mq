@@ -11,10 +11,10 @@ import { Engine } from '../src/app/engine.js';
 import { floorOverrideConfiguration } from '../src/control/floor-override.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
-test('Home defaults to Balanced and Garage rejects every automatic savings strategy', () => {
-  assert.equal(validateSettings().savingsStrategy, 'balanced');
+test('Home defaults to More savings and Garage rejects every automatic savings strategy', () => {
+  assert.equal(validateSettings().savingsStrategy, 'savings');
   assert.equal(Object.hasOwn(garageSettings(), 'savingsStrategy'), false);
-  assert.equal(heatingStrategy().id, 'balanced');
+  assert.equal(heatingStrategy().id, 'savings');
   for (const { id } of HEATING_STRATEGIES) assert.throws(() => garageSettings({ savingsStrategy: id }), /Unknown garage setting/);
   for (const value of [0, 50, 100, 'conservative', 'Balanced', '', null, false, {}]) {
     assert.throws(() => garageSettings({ savingsStrategy: value }));
@@ -114,12 +114,12 @@ test('public defaults expose floor thermal priors while physical overrides stay 
   assert.deepEqual(publicConfig.options.controller.floor_thermal_priors, {
     capacity_kwh_per_c: 3.2, exchange_kw_per_c: 0.266667, ground_loss_kw_per_c: 0.013596,
     ground_c: 10, open_allocation_fraction: 0.4, closed_allocation_fraction: 0.05,
-    native_capacity_kwh_per_c: 8.832,
   });
   const model = initialAdaptiveModel(controlConfiguration(publicConfig.options.controller));
   assert.equal(model.floor.enabled, true);
   assert.equal(model.floor.capacityKwhPerC, 3.2);
-  assert.equal(model.floor.nativeCapacityKwhPerC, 8.832);
+  assert.equal(model.floor.nativeCapacityKwhPerC,
+    model.parameters.memoryExchangePerHour * model.parameters.reserveTimeHours / model.parameters.hydronicCPerKwh - model.floor.capacityKwhPerC);
   assert.equal(publicConfig.options.controller.floor_preheat.enabled, false);
   assert.equal(publicConfig.options.controller.floor_preheat.commissioned, false);
   assert.deepEqual(Object.keys(publicConfig.options.controller.floor_preheat), ['device_mac', 'enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);

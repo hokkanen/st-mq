@@ -100,6 +100,11 @@ state and restoration duties have distinct owners and lifetimes. Restart does no
 turn a session edit into a default, and new equipment inherits no old authority.
 Shared defaults use sparse installation overrides. Home, Garage, charging and
 Caravan permissions remain independent; environment scope is not permission.
+Under the owner-approved 2026-11-04 amendment, explicit admin approval authorizes
+one reviewed Home cycle while automatic Home control is paused or disabled,
+without changing those saved choices. Approved cycle limits may relax heating
+policy; native protection, equipment identity, independent manual holds and
+restoration duties retain their authority.
 Details: [configuration ownership](docs/configuration.md#where-a-setting-belongs),
 [Home controls](docs/automation-and-manual-control.md),
 [charging policies](docs/charging/policies.md), [Garage](docs/garage.md) and
@@ -148,6 +153,8 @@ operation available; cheap timing or reduced service is not proof of savings.
 Do not create unsafe conditions to obtain training evidence. Home uses one learned
 occupied reference and a fixed weighted indoor average, bounded control-only room
 estimates and native Away protection under the owner-approved 2026-10-07 policies.
+The owner-approved 2026-11-04 amendment applies configured comfort limits from
+startup without a separate provisional-reference drop cap or learning cooldown.
 Details:
 [learning/control](docs/learning-and-control.md#planning-and-recovery),
 [temperature policy](docs/temperature-sensors.md#normal-temperature-reference) and
@@ -170,7 +177,9 @@ responsive; resource targets do not waive F2/F4 evidence. Details:
 
 Keep secrets and household data outside Git and diagnostic output; use invented
 fixtures. Private configuration stays outside the checkout with private file
-permissions. Repository encryption is retired; existing encrypted history stays
+permissions. The owner-approved 2026-11-04 exception permits reviewed aggregate
+calibration coefficients as shared model defaults; source records, identifiers
+and private provenance remain excluded. Repository encryption is retired; existing encrypted history stays
 opaque, and its fixed inventory admits no new private data or keys. Exposure stops
 publication of affected history and requires coordinated repair and credential
 rotation where applicable. Exact storage, handling and incident policy:

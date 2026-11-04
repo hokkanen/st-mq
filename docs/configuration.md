@@ -683,25 +683,37 @@ configuration defaults.
 ## Heating strategies and limits
 
 Home `controller.savings_strategy` selects Gentle, Balanced or More savings;
-Balanced is the default. The minimum benefit before other burdens is respectively
-50, 30 or 10 cents. These are decision rules, not annual savings predictions.
-Home's Heating strategy & comfort panel explains the policy and independent limits.
+More savings is the default. The minimum benefit before other burdens is respectively
+2, 0 or 0 cents. These are decision rules, not annual savings predictions.
+Optional nonnegative overrides make each monetary policy explicit:
+`controller.minimum_home_benefit_cents`,
+`controller.home_discomfort_cents_per_degree_squared_hour`,
+`controller.cycle_start_cost_cents`, `controller.cycle_hour_cost_cents` and
+`controller.economic_uncertainty_floor_cents`. Omitted values retain the strategy
+minimum/comfort cost and zero extra start, duration and residual cost allowances. Zero removes that monetary allowance; it does not
+remove configured temperature bounds, physical stress cases or restoration.
+These are preferences and engineering margins, not measured electricity charges.
+The manual planner can override them for one explicitly reviewed cycle, including
+a negative minimum benefit when deliberately accepting estimated extra cost.
+Home's Heating strategy & comfort panel explains the effective policy and independent limits.
 Garage has no savings strategy or economic temperature changes.
 
 `controller.learning_trials` enables bounded learning experiments.
-`controller.learning_trial_target_per_day` selects 1–4 useful daily opportunities
-(default 2), using Finnish calendar days. Before the target, admissible trials
-take priority over ordinary economic choices. Current evidence, comfort,
-equipment readiness, forecast coverage, recovery and cooldown still govern each
+`controller.learning_trial_target_per_day` selects 1–4 priority daily opportunities
+(default 4), using Finnish calendar days. At cheap prices, informative admitted trials can take priority within the
+allowance, including foregone estimated economic benefit. At higher prices,
+profitable operation takes priority. `controller.learning_priority_price_cents`
+(default 15 cents/kWh all-in) controls this priority, not experiment eligibility. Current evidence, comfort,
+equipment readiness, forecast coverage and completed recovery still govern each
 attempt. Trial duration follows recorded space-heating cycles and forecast demand
 within the configured reduction ceiling; increasing the ceiling does not force
-a longer trial. The target controls planning, not thermal fitting or model resets.
+a longer trial. The target prioritizes planning; it does not cap cheap useful opportunities or change thermal fitting or model state.
 
 `controller.trial_budget_cents_per_day` and `controller.max_trial_cost_cents`
 bound screened incremental exposure, not total electricity used during recovery
-or predicted spending. Shared defaults remain 100 cents/day and 50 cents/trial.
-A more active installation can explicitly configure 300 and 150 respectively;
-these are exposure allowances, not guaranteed bill limits. Apply installation
+or predicted spending. Shared defaults are 300 cents/day and 150 cents/trial;
+these are exposure allowances, not guaranteed bill limits. Adjust them in either
+direction through installation
 overrides through the normal configuration workflow. Changing these planning
 preferences does not change equipment assumptions or reset the learned reference.
 
@@ -917,3 +929,32 @@ changes while retaining coverage for fresh-installation defaults and sparse
 installation overrides. The shared Garage default remains disabled and
 unapproved; a separate override test verifies that an owner's explicit choices
 work while inheriting public topics and protection parameters.
+
+## Initial Home model
+
+`controller.home_model` supplies the shared starting coefficients. The defaults
+are fitted using data from a real installation and adapt to each installation
+as new observations arrive. Sparse overrides adjust the initial model in either
+direction. The profile accepts
+`loss_per_hour`, `hydronic_c_per_kwh`, `solar_c_per_hour_per_kwm2`,
+`memory_exchange_per_hour`, `reserve_time_hours`, `internal_c_per_hour`,
+`duty_per_degree`, `balance_temperature_c`, `reduction_ratio`, `preheat_ratio` and
+`trajectory_error_c`. Values are finite bounded estimates, not observations.
+`calibration_id` names the initial coefficient set. Optional `training_sha256`
+and integer `training_samples` must be supplied together when recording private
+training provenance. Optional `training_through` is a canonical UTC timestamp
+after all observations used to fit or select a supplied profile. Independent
+checks use observations after that cutoff; planning and trials remain available
+from the initial estimates. Corrections can still revoke an earlier qualification.
+These provenance fields do not grant thermal, equipment-response or
+advance-forecast validation. Raw training data and installation-specific
+provenance belong outside Git. An omitted or empty profile uses the shared
+calibrated defaults.
+
+The profile initializes a fresh model and is included in resolved journal
+configuration for deterministic reconstruction. Restart resumes saved learning;
+changing a configuration profile does not silently overwrite fitted parameters.
+Native capability, automation permission, source freshness and restoration remain
+independent of the seed. Current observation, source-map and phase assumptions
+remain explicit. Initial thermal coefficients do not establish a learned occupied
+comfort reference or measured heat-pump COP.

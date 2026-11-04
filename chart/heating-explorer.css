@@ -43,7 +43,7 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-constraint p { font-size: 11px; color: var(--muted); margin-bottom: 0; overflow-wrap: anywhere; }
 .heating-explorer-opportunity { margin-top: 12px; padding: 14px var(--ui-inset); border: 1px solid var(--notice-border); background: var(--notice); border-radius: 8px; }
 .heating-explorer-opportunity button { margin-top: 7px; font-size: 11px; }
-.heating-explorer-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, auto); grid-auto-flow: column; gap: 16px; margin: 18px 0; }
+.heating-explorer-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row; gap: 16px; margin: 18px 0; }
 .heating-explorer-control { min-width: 0; }
 .heating-explorer-control label { display: block; margin: 0 0 8px; font-size: 11px; color: var(--text); }
 .heating-explorer-control-input { display: flex; align-items: center; gap: 8px; }

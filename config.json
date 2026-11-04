@@ -44,7 +44,7 @@
       "web_family_token": "",
       "max_drop_c": 1.5,
       "max_rise_c": 1.5,
-      "savings_strategy": "balanced",
+      "savings_strategy": "savings",
       "preheat_room_boost_c": 5,
       "indoor_sensor_weights": {},
       "h66_device": "",
@@ -65,16 +65,15 @@
       "max_unobserved_reduction_hours": 0.5,
       "max_preheat_hours": 2,
       "learning_trials": true,
-      "learning_trial_target_per_day": 2,
-      "trial_budget_cents_per_day": 100,
-      "max_trial_cost_cents": 50,
+      "learning_trial_target_per_day": 4,
+      "trial_budget_cents_per_day": 300,
+      "max_trial_cost_cents": 150,
       "recovery_timeout_hours": 48,
       "recovery_compressor_only": true,
       "recovery_hold_minutes": 60,
       "recovery_comfort_margin_c": 0.5,
       "floor_thermal_priors": {
         "capacity_kwh_per_c": 3.2,
-        "native_capacity_kwh_per_c": 8.832,
         "exchange_kw_per_c": 0.266667,
         "ground_loss_kw_per_c": 0.013596,
         "ground_c": 10,
@@ -87,7 +86,25 @@
         "commissioned": false,
         "renew_seconds": 300,
         "lease_seconds": 900
-      }
+      },
+      "home_model": {
+        "loss_per_hour": 0.0102018,
+        "hydronic_c_per_kwh": 0.0627563,
+        "solar_c_per_hour_per_kwm2": 0.391393,
+        "internal_c_per_hour": 0,
+        "memory_exchange_per_hour": 0.0875005,
+        "reserve_time_hours": 19.9141,
+        "duty_per_degree": 0.0174452,
+        "balance_temperature_c": 17.1444,
+        "reduction_ratio": 0.25,
+        "preheat_ratio": 1.0,
+        "trajectory_error_c": 0.413464,
+        "calibration_id": "thermal-initial-v1"
+      },
+      "learning_priority_price_cents": 15,
+      "cycle_start_cost_cents": 0,
+      "cycle_hour_cost_cents": 0,
+      "economic_uncertainty_floor_cents": 0
     },
     "web": {
       "https_host": "0.0.0.0",
@@ -582,7 +599,30 @@
         "commissioned": "bool",
         "renew_seconds": "int(30,450)",
         "lease_seconds": "int(60,900)"
-      }
+      },
+      "home_model": {
+        "loss_per_hour": "float(0.001,0.12)?",
+        "hydronic_c_per_kwh": "float(0.005,0.6)?",
+        "solar_c_per_hour_per_kwm2": "float(0,2.5)?",
+        "memory_exchange_per_hour": "float(0.005,0.4)?",
+        "reserve_time_hours": "float(2,72)?",
+        "internal_c_per_hour": "float(0,0.5)?",
+        "duty_per_degree": "float(0,0.15)?",
+        "balance_temperature_c": "float(5,25)?",
+        "reduction_ratio": "float(0,1)?",
+        "preheat_ratio": "float(0,2)?",
+        "trajectory_error_c": "float(0.1,2)?",
+        "training_samples": "int(1,10000000)?",
+        "training_sha256": "str?",
+        "training_through": "str?",
+        "calibration_id": "str?"
+      },
+      "minimum_home_benefit_cents": "float(0,1000000000)?",
+      "home_discomfort_cents_per_degree_squared_hour": "float(0,1000000000)?",
+      "cycle_start_cost_cents": "float(0,1000000000)?",
+      "cycle_hour_cost_cents": "float(0,1000000000)?",
+      "economic_uncertainty_floor_cents": "float(0,1000000000)?",
+      "learning_priority_price_cents": "float(0,1000000000)"
     },
     "web": {
       "https_host": "str",

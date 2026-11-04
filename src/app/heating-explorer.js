@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import { applyExplorerOverrides, validateExplorerOverrides } from '../control/heating-explorer.js';
+import { validateExplorerOverrides } from '../control/heating-explorer.js';
 
 const PREVIEW_MS = 5 * 60_000;
 const INPUT_MAX_AGE_MS = 2 * 60_000;
@@ -17,7 +17,7 @@ function validTrial(trial) {
     || !Number.isSafeInteger(trial.approvedAt) || !Number.isSafeInteger(trial.snapshotAt)
     || trial.basis !== 'admin-approved-one-cycle-scenario' || !Number.isFinite(trial.latestStartAt)
     || !Number.isFinite(trial.expiresAt) || trial.latestStartAt < trial.approvedAt - INPUT_MAX_AGE_MS
-    || trial.expiresAt <= trial.latestStartAt || trial.expiresAt - trial.approvedAt > 200 * 3_600_000
+    || trial.expiresAt <= trial.latestStartAt || trial.expiresAt - trial.approvedAt > (48 + 168) * 3_600_000
     || !/^[a-f0-9]{64}$/.test(trial.binding) || !/^[a-f0-9]{64}$/.test(trial.scopeBinding)) return false;
   try { validateExplorerOverrides(trial.limits); } catch { return false; }
   if (ACTIVE.has(trial.status) && (!trial.plan?.schedule || trial.plan.userTrial?.id !== trial.id
@@ -117,11 +117,10 @@ export class HeatingExplorer {
   availableReason() {
     const e = this.engine;
     if (!e.canControl() || e.suspended || e.config.input === 'offline') return 'The active controller is required to apply a trial.';
-    if (!e.automationEnabled('home')) return 'Enable Home automation before applying a trial.';
     if (e.cycles.active()) return 'Wait for the current cycle and recovery to finish.';
     if (ACTIVE.has(this.trial()?.status)) return 'A one-cycle scenario is already approved. Cancel it before selecting another.';
     if (e.dispatchPending || e.heatingTestBusy || e.automationChangePending) return 'Wait for the current heating operation to finish.';
-    if (this.input?.blockedReason) return `Current heating is held: ${this.input.blockedReason}.`;
+    if (this.input?.blockedReason && this.input.blockedReason !== 'heating-paused') return `Current heating is held: ${this.input.blockedReason}.`;
     const executor = e.executor.status();
     if (executor.restorationPending || executor.manualRequested || executor.manualPause)
       return 'Finish manual heating and pending restoration before applying a trial.';
@@ -161,11 +160,8 @@ export class HeatingExplorer {
     const result = await task;
     const { executablePlan, ...visible } = result;
     const scope = this.approvalScope(executablePlan);
-    const changed = Object.keys(normalized).length > 0 && JSON.stringify(applyExplorerOverrides(snapshot.input, normalized).settings) !== JSON.stringify(snapshot.input.settings)
-      || Object.keys(normalized).some(key => normalized[key] !== snapshot.input.config?.[key] && !['maxDropC', 'maxRiseC', 'savingsStrategy'].includes(key));
     const reason = this.availableReason() ?? (snapshot.binding !== this.binding() ? 'Configuration or source evidence changed. Refresh the plan.' : null)
       ?? (!preview ? 'Compare a scenario before applying it.' : null)
-      ?? (!changed ? 'Choose at least one different limit before applying a scenario.' : null)
       ?? (!executablePlan ? 'This comparison has no executable cycle within current safety and evidence limits.' : null)
       ?? scope.reason
       ?? (snapshot.expiresAt <= this.engine.clock() ? 'This preview expired. Refresh the plan.' : null);
@@ -183,7 +179,7 @@ export class HeatingExplorer {
     const now = this.engine.clock(), firstActionAt = Math.min(plan.schedule.preheatStart, plan.schedule.reductionStart);
     return { latestStartAt: firstActionAt + PREVIEW_MS,
       expiresAt: plan.schedule.reductionEnd + this.engine.control.recoveryTimeoutHours * 3_600_000,
-      reason: firstActionAt < now - INPUT_MAX_AGE_MS || firstActionAt > now + 6 * 3_600_000
+      reason: firstActionAt < now - INPUT_MAX_AGE_MS
         ? 'The proposed start is outside the approval window. Refresh the plan.' : null };
   }
   apply(payload) {
@@ -250,7 +246,7 @@ export class HeatingExplorer {
       : trial.status === 'pending' && now > trial.latestStartAt ? 'The approved start window expired.'
         : this.scopeBinding() !== trial.scopeBinding ? 'Configuration or source evidence changed.'
           : !this.engine.canControl() || this.engine.suspended || this.engine.config.input === 'offline'
-            || !this.engine.automationEnabled('home') ? 'Home automation or control authority is unavailable.' : null;
+            ? 'Control authority is unavailable.' : null;
     if (reason) {
       if (active?.plan.userTrial?.id === trial.id) this.engine.cycles.shorten(now, 'scenario-scope-ended');
       this.finish(reason.includes('expired') ? 'expired' : 'interrupted', reason); return null;
@@ -265,6 +261,16 @@ export class HeatingExplorer {
       measurementEpochAt: checkpoint?.measurementEpochAt ?? null, sensorEpochs: checkpoint?.sensorEpochs ?? {},
       fireplaceRevision: checkpoint?.fireplaceRevision ?? 0, sensorRevision: checkpoint?.sensorRevision ?? 0,
       rebuild: e.store.getState(`fireplace:rebuild:${e.config.input}`)?.status });
+  }
+  authorizes(plan) {
+    const trial=this.trial(),now=this.engine.clock();
+    return Boolean(plan?.userTrial?.id && trial?.id===plan.userTrial.id && ACTIVE.has(trial.status)
+      && plan.schedule && trial.plan?.schedule
+      && digest(plan.schedule)===digest(trial.plan?.schedule)
+      && digest(plan.userTrial)===digest(trial.plan?.userTrial)
+      && now<trial.expiresAt && (trial.status==='running'||now<=trial.latestStartAt)
+      && this.engine.canControl() && !this.engine.suspended && this.engine.config.input!=='offline'
+      && this.scopeBinding()===trial.scopeBinding);
   }
   started(cycle) {
     if (!cycle.plan.userTrial) return;

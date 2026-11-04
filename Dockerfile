@@ -6,7 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY chart/ ./chart/
 COPY src/ ./src/
-COPY vite.config.js icon.png ./
+COPY vite.config.js icon.png config.json ./
 RUN npm run build
 
 FROM node:${NODE_VERSION}-alpine AS sqlite-tools

@@ -11,6 +11,23 @@ const row = (i, changes = {}) => ({ timestamp: start + i * HOUR / 4, indoorC: 21
   solarRadiationWm2: 0, phase: 'normal', action: 'normal', targetC: 21, roomBoostC: 0,
   regime: 'occupied', quality: [], compressorDuty: 0, auxKw: 0, ...changes });
 
+test('a supplied calibration cannot validate itself on its contributing targets',()=>{
+  const samples=Array.from({length:513},(_,i)=>row(i)),through=new Date(samples.at(-1).timestamp).toISOString();
+  const model=initialAdaptiveModel({homeModel:{trainingThrough:through}});
+  const result=fitAdaptiveModel({samples,model,baselineC:21,episodeArchive:[]});
+  assert.equal(result.accepted,false);
+  assert.equal(result.reason,'collecting-later-validation');
+  assert.equal(result.incumbent,undefined);
+});
+
+test('independent trajectory checks exclude the calibration prefix and use genuinely later targets',()=>{
+  const cutoff=start+192*HOUR,model=initialAdaptiveModel({homeModel:{trainingThrough:new Date(cutoff).toISOString()}});
+  const result=fitAdaptiveModel({samples:Array.from({length:1025},(_,i)=>row(i)),model,baselineC:21,episodeArchive:[]});
+  assert.equal(result.incumbent.validation.accepted,true);
+  assert.ok(result.incumbent.validation.checkedFrom>cutoff);
+  assert.ok(result.incumbent.validation.samples>=3);
+});
+
 test('trajectory validation sees a cold excursion even when every day ends at the correct temperature', () => {
   const samples = Array.from({ length: 193 }, (_, i) => row(i, {
     indoorC: 21 - 2.5 * (1 - Math.abs(i / 4 % 24 - 12) / 12) }));
@@ -189,15 +206,15 @@ test('empirical action response uses distinct complete held-out episodes and exp
   assert.deepEqual(changed.model.equipmentResponse.phases, {});
 });
 
-test('reduction allows sustained compressor operation and unknown tariff response cannot promise savings', () => {
+test('initial reduction estimates retain uncertainty and actual native demand can still run at full duty', () => {
   const model = initialAdaptiveModel(), state = { indoorC: 21, reserveC: 21 };
   const inputs = { outdoorC: -30, targetC: 21, phase: 'reduction', solarRadiationWm2: 0 };
-  assert.equal(predictEquipmentDuty(model, state, inputs).compressorDuty, 1);
+  assert.equal(predictEquipmentDuty(model, state, inputs).compressorDuty, .25);
   assert.equal(predictEquipmentDuty(model, state, { ...inputs, nativeCompressorDemand: true }).compressorDuty, 1);
   assert.equal(predictEquipmentDuty(model, state, { ...inputs, nativeCompressorDemand: false }).compressorDuty, 0);
   const mild = { ...inputs, outdoorC: 10 };
   assert.equal(predictEquipmentDuty(model, state, mild).compressorDuty,
-    predictEquipmentDuty(model, state, { ...mild, phase: 'normal' }).compressorDuty);
+    predictEquipmentDuty(model, state, { ...mild, phase: 'normal' }).compressorDuty * .25);
   assert.equal(predictEquipmentDuty(model, state, mild).uncertaintyDuty, 1);
 });
 
@@ -221,10 +238,13 @@ test('one long or high-boost action cannot license durations or boosts without t
 });
 
 test('recorded compressor heat charges the slow state before a measured room plateau warms', () => {
-  let cp = null;
-  for (let i = 0; i <= 4; i++) cp = updateAdaptiveLearning(cp, row(i, { compressorDuty: 1 }), { now: start + i * HOUR / 4 });
+  let cp = null, unheated = null;
+  for (let i = 0; i <= 4; i++) {
+    cp = updateAdaptiveLearning(cp, row(i, { compressorDuty: 1 }), { now: start + i * HOUR / 4 });
+    unheated = updateAdaptiveLearning(unheated, row(i, { compressorDuty: 0 }), { now: start + i * HOUR / 4 });
+  }
   assert.equal(cp.state.indoorC, 21);
-  assert.ok(cp.state.reserveC > 21.5);
+  assert.ok(cp.state.reserveC > unheated.state.reserveC);
   const restored = restoreAdaptiveCheckpoint({ ...cp, state: { ...cp.state, reserveC: 500 } });
   assert.equal(restored.state, null);
 });

@@ -74,6 +74,40 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
       commands: phase === 'reduction' ? ['reduction'] : ['normal'], roomBoostC: 5, expiresAt: now + duration, ...extra }, { automationEnabled: true, now }); } };
 }
 
+test('explicit cycle authority permits paused execution and revocation cannot block restoration',async t=>{
+  const r=rig(t,{native:false});let allowed=true;
+  const decision={phase:'reduction',commands:['reduction'],expiresAt:r.now+60_000};
+  await r.executor.execute(decision,{automationEnabled:false,authorizeCycle:()=>allowed,now:r.now});
+  assert.equal(r.executor.status().phase,'reduction');
+  allowed=false;
+  assert.equal(r.executor.execute(decision,{automationEnabled:true,authorizeCycle:()=>allowed}).sent,false,
+    'Automatic permission cannot revive a revoked reviewed cycle');
+  await r.executor.restore({now:r.now,reason:'reviewed-cycle-ended'});
+  assert.deepEqual(r.log.filter(row=>row.commands).map(row=>row.commands),[['reduction'],['normal']]);
+  assert.equal(r.executor.status().legacyOutstanding,false);
+});
+
+test('revocation during durable intent prevents a queued manual cycle from reaching the tariff relay',async t=>{
+  const r=rig(t,{native:false});let allowed=true;
+  r.store.runWrite=async operation=>{const value=operation();if(r.executor.state.tariffRequested?.mode==='reduction')allowed=false;return value;};
+  await assert.rejects(r.executor.execute({phase:'reduction',commands:['reduction'],expiresAt:r.now+60_000},
+    {automationEnabled:false,authorizeCycle:()=>allowed,now:r.now}),{code:'EXECUTOR_CYCLE_AUTHORITY'});
+  assert.equal(r.log.some(row=>row.commands?.includes('reduction')),false);
+  await r.executor.restore({now:r.now,reason:'revoked-cycle'});
+  assert.equal(r.executor.status().legacyOutstanding,false);
+});
+
+test('a reviewed schedule longer than a day renews bounded native leases',async t=>{
+  const r=rig(t);
+  await r.run('reduction',46*3_600_000);
+  assert.equal(r.executor.status().expiresAt,r.now+86_400_000);
+  assert.ok(r.h66.status(r.now).expiresAt<=r.now+86_400_000);
+  r.advance(3_600_000);await r.run('reduction',45*3_600_000);
+  assert.equal(r.executor.status().expiresAt,r.now+86_400_000);
+  await r.executor.restore({now:r.now,reason:'finished-reviewed-cycle'});
+  assert.equal(r.executor.status().legacyOutstanding,false);
+});
+
 test('active base control works without H66 and refreshes idempotently', async t => {
   const r = rig(t, { native: false });
   const first = await r.run('reduction');

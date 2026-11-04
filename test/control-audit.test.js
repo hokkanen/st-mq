@@ -65,7 +65,7 @@ test('incomplete attempts retain covered cost and remain visible outside complet
   const o=tracker.outcomes();
   assert.equal(o.attempted,1);assert.equal(o.incomplete,1);assert.equal(o.assessed,0);
   assert.equal(o.observedCostCents,.5);assert.equal(tracker.metrics(21).profit.count,0);
-  assert.ok(tracker.controlHold(now+2*H));assert.equal(tracker.controlHold(now+25*H),null);
+  assert.equal(tracker.budget(now+60000),300,'An interrupted assessment adds no cooldown');
 });
 
 test('native compressor demand can run at full duty in the observed reduction phase',()=>{
@@ -93,7 +93,7 @@ test('a stale stored promise cannot bypass current evidence at dispatch',()=>{
   const result=revalidatePlan({plan:{schedule,model,trial:false},now,
     observations:{indoor:{value:21,observedAt:now}},checkpoint:{model,baselineC:21},
     settings:{comfort:{targetC:21,maxDropC:1},occupancy:{mode:'occupied'}},equipment:{h66Available:true}});
-  assert.equal(result.valid,false);assert.equal(result.reason,'scheduled-cycle-response-evidence-unavailable');
+  assert.equal(result.valid,false);assert.equal(result.reason,'scheduled-cycle-forecast-coverage-lost');
 });
 
 test('an admitted trial retains its bounded safety rule on the following engine tick',async t=>{
@@ -111,11 +111,11 @@ test('an admitted trial retains its bounded safety rule on the following engine 
   await engine.heatingPlanning.pending.promise;
   const first=engine.tick();
   assert.equal(first.decision.plan?.trial,true);
-  assert.equal(first.decision.phase,'reduction');
+  assert.ok(['preheat','reduction'].includes(first.decision.phase));
   assert.ok(engine.cycles.active());
   clock+=60000;
   const next=engine.tick();
-  assert.equal(next.decision.phase,'reduction');
+  assert.equal(next.decision.phase,first.decision.phase);
   assert.equal(engine.cycles.active().adjustments,undefined);
 });
 
@@ -137,4 +137,18 @@ test('unfinished recovery prices the same slow-node capacity used by the thermal
     +p.memoryExchangePerHour*p.reserveTimeHours*Math.max(0,r.nativeEndState.reserveC-r.endState.reserveC);
   assert.ok(r.terminalKwh>0);
   assert.ok(Math.abs(r.terminalKwh-deficit/p.hydronicCPerKwh/4.24)<1e-10);
+});
+
+test('remaining heat debt uses the forecast boundary price rather than an earlier peak',()=>{
+  const model=initialAdaptiveModel(),schedule={preheatStart:now,preheatEnd:now,
+    reductionStart:now,reductionEnd:now+H,roomBoostC:0};
+  const args={model,schedule,initialState:{indoorC:21,reserveC:21},targetC:21};
+  const path=peak=>evaluateCycle({...args,intervals:[
+    {start:now,end:now+H/2,outdoorC:0,solarRadiationWm2:0,price:peak},
+    {start:now+H/2,end:now+H,outdoorC:0,solarRadiationWm2:0,price:2}]});
+  const ordinary=path(10),extreme=path(2000);
+  assert.ok(extreme.terminalKwh>0);
+  assert.equal(extreme.terminalKwh,ordinary.terminalKwh);
+  assert.equal(extreme.terminalCostCents,extreme.terminalKwh*2);
+  assert.equal(extreme.terminalCostCents,ordinary.terminalCostCents);
 });

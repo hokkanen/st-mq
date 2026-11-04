@@ -16,6 +16,8 @@ Home starts paused without a resume time. This single durable choice is bound to
 the current equipment. Selecting Pause restores automatic changes to Normal;
 subsequent manual choices use the pause scope. Selecting Automatic clears the
 pause and restores owned manual changes before reassessing the plan.
+An explicitly approved manual-planner cycle has its own permission and cancellation;
+changing Automatic / Paused preserves that independent cycle.
 `POST /api/automation` accepts Home only (`enabled: true` for Automatic, `false`
 for indefinite Pause). `POST /api/temporary` sets an optional `pauseUntil` or
 `pauseUntilLocal`; clearing it keeps Pause without an end. A scheduled deadline

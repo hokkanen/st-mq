@@ -83,7 +83,7 @@ test('a steady fireplace plateau cannot establish or raise the normal comfort re
     inputSegments: [{ fireplaceKgPerHour: 0.04 }] }))), null);
 });
 
-test('planner includes the same fireplace release in both paths and unvalidated fires cannot authorize trials', () => {
+test('planner includes the same fireplace release in both paths and still requires complete forecasts', () => {
   const model = initialAdaptiveModel(), intervals = Array.from({ length: 24 }, (_, i) => ({
     start: start + i * HOUR, end: start + (i + 1) * HOUR, outdoorC: 10, solarRadiationWm2: 0, price: 10 }));
   const args = { intervals, model, initialState: { indoorC: 21, reserveC: 21 }, targetC: 21 };
@@ -97,10 +97,10 @@ test('planner includes the same fireplace release in both paths and unvalidated 
     config: { learningTrials: true }, trialBudgetRemainingCents: 100,
     equipment: { fireplaceEvents: [event('first')], compressorOn: 1, dhwRouting: 0 } });
   assert.equal(choice.phase, 'normal');
-  assert.equal(choice.reasons[0], 'awaiting-fireplace-response-evidence');
+  assert.equal(choice.reasons[0], 'missing-or-incomplete-price-weather-horizon');
 });
 
-test('negligible residuals stop blocking planner readiness and revalidation while aggregate uncertainty still blocks', () => {
+test('fireplace uncertainty stays in predictions without becoming a separate readiness veto', () => {
   const now = start + 60 * HOUR, model = initialAdaptiveModel();
   const args = { now, observations: { indoor: { value: 21, observedAt: now } },
     checkpoint: { model, baselineC: 21, health: { usableSamples: 100 } }, prices: [], forecast: [],
@@ -109,14 +109,14 @@ test('negligible residuals stop blocking planner readiness and revalidation whil
     equipment: { fireplaceEvents: [event('first')], fireplaceActive: true, compressorOn: 1, dhwRouting: 0 } };
   assert.equal(chooseCycle(args).reasons[0], 'missing-or-incomplete-price-weather-horizon');
   assert.equal(chooseCycle({ ...args, equipment: { ...args.equipment,
-    fireplaceEvents: [event('first'), event('second')] } }).reasons[0], 'awaiting-fireplace-response-evidence');
+    fireplaceEvents: [event('first'), event('second')] } }).reasons[0], 'missing-or-incomplete-price-weather-horizon');
   assert.equal(learningReadiness(args.checkpoint, args.config,
     { ...args.equipment, fireplaceRelevant: false }).trialReady, true);
   const plan = { schedule: { preheatStart: now, preheatEnd: now, reductionStart: now,
     reductionEnd: now + HOUR, roomBoostC: 0 } };
   assert.notEqual(revalidatePlan({ ...args, plan }).reason, 'awaiting-fireplace-response-evidence');
   assert.equal(revalidatePlan({ ...args, plan, equipment: { ...args.equipment,
-    fireplaceEvents: [event('first'), event('second')] } }).reason, 'awaiting-fireplace-response-evidence');
+    fireplaceEvents: [event('first'), event('second')] } }).reason, 'scheduled-cycle-outside-current-limits');
 });
 
 function burnFixture({ confounded = false, repeated = false, daily = false, unknown = false, noFire = false } = {}) {

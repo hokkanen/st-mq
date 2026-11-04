@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
+import {controlConfiguration,validateSettings} from '../src/app/config.js';
+import publicConfiguration from '../config.json' with {type:'json'};
 import { LiveLearning } from '../src/app/live-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { committedLearningSample, replayLearningJournal, LEARNING_WINDOW_MS as WINDOW }
@@ -13,14 +15,13 @@ import { committedLearningSample, replayLearningJournal, LEARNING_WINDOW_MS as W
 const START = Date.parse('2026-10-01T12:00:00Z');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
-async function fixture(t) {
+async function fixture(t,{input='mqtt',control={indoorSensorWeights:{indoor_temperature:1}},settings={}}={}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-live-learning-'));
   const store = new Store(join(directory, 'synthetic.sqlite'));
   let now = START;
   await store.startWriter();
   let engine;
-  await store.runWrite(() => { engine = new Engine({ store, config: { input: 'mqtt', settings: {},
-    control: { indoorSensorWeights: { indoor_temperature: 1 } } }, clock: () => now }); });
+  await store.runWrite(() => { engine = new Engine({ store, config: {input,settings,control}, clock: () => now }); });
   t.after(async () => {
     engine.beginShutdown({ restore: false });
     await Promise.all([engine.closeFireplace(), engine.charging.close(), engine.garage.close({ restore: false }),
@@ -29,6 +30,41 @@ async function fixture(t) {
   });
   return { store, engine, advance: (milliseconds = WINDOW) => { now += milliseconds; } };
 }
+
+test('an empty persistent installation reaches economic control using shipped coefficients without new training',async t=>{
+  const control={...controlConfiguration(publicConfiguration.options.controller),learningTrials:false,
+    indoorSensorWeights:{indoor_temperature:1}};
+  const {store,engine}=await fixture(t,{input:'providers',control,settings:validateSettings()});
+  const commands=[],circulation=[];
+  engine.executor.commandTransport={targetIdentity:{tariff:'a'.repeat(64),dhwr:'b'.repeat(64)},
+    async publish(batch){commands.push([...batch]);return {status:'mqtt',sent:true,actual:null};},
+    async publishDhwr(on){circulation.push(on);return {status:'mqtt',sent:true,actual:null};},async close(){}};
+  await store.runWrite(()=>{
+    const intervals=Array.from({length:96},(_,i)=>({start:START+i*WINDOW,end:START+(i+1)*WINDOW,
+      spotCtPerKwh:i===0?2000:1,unit:'c/kWh',vatIncluded:false}));
+    store.setState('provider:market',{fetchedAt:START,intervals});
+    store.setState('provider:weather',{issuedAt:START,fetchedAt:START,forecast:[{start:START,end:START+24*3_600_000,
+      outdoorC:0,solarRadiationWm2:0,issuedAt:START,fetchedAt:START,source:'synthetic'}]});
+    store.setState('contract:providers',{mode:'billing',periods:[{from:0,to:null,marginCtPerKwh:0,taxCtPerKwh:0,
+      vatRate:0,tariff:'day-night',transferRates:{vatIncluded:false,dayCtPerKwh:0,nightCtPerKwh:0,winterDayCtPerKwh:0,otherCtPerKwh:0}}]});
+    for(const [signal,value]of [['indoor_temperature',21],['outdoor_temperature',0]])engine.ingest({
+      source:signal==='outdoor_temperature'?'fmi':'mqtt-temperature',device:'synthetic-room',signal,value,
+      unit:'degC',sourceTime:START,receivedAt:START,quality:[],raw:null});
+  });
+  await engine.update();await engine.initializeCommittedStatus();
+  await engine.setAutomation({feature:'home',enabled:true});
+  for(let i=0;i<4&&!commands.some(batch=>batch.includes('reduction'));i++){
+    await engine.update();
+    await engine.heatingPlanning.pending?.promise;
+    await engine.update();await engine.dispatchPending;
+  }
+  assert.ok(commands.some(batch=>batch.includes('reduction')),'Useful execution cannot wait for completed experiments or fitted native samples');
+  assert.deepEqual(circulation,[],'A circulation pulse cannot preempt the pending peak-price decision');
+  assert.equal(engine.cycles.active()?.plan.trial,false);
+  assert.equal(engine.checkpoint.model.trainedAt,null);
+  assert.equal(engine.checkpoint.model.validation,null);
+  assert.equal(engine.checkpoint.model.initialModel.calibrationId,'thermal-initial-v1');
+});
 
 async function rebuildingFixture(t) {
   const f = await fixture(t), { engine } = f;

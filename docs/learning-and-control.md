@@ -38,8 +38,8 @@ Space-heating input = routed compressor duty × Q(T) + routed AUX kW
 ```
 
 At 40 °C water, 50% compressor duty and 3 kW average AUX give about **7.66 kW
-thermal**. Initial `hydronicCPerKwh` is `0.75/9.40 ≈ 0.0798`; this is a prior,
-not a measurement. A shared
+thermal**. Initial `hydronicCPerKwh` is supplied by the shared calibrated
+`controller.home_model` defaults; this is an estimate, not a measurement. A shared
 coefficient is conditional on this source estimate: a wrong compressor-output map
 can bias predictions during AUX operation.
 
@@ -189,12 +189,19 @@ Three kinds of evidence remain distinct:
    temperature and attributable space-heating energy. It never substitutes actual
    future compressor duty into an advance forecast.
 
-Economic dispatch requires all three checks, within a duration supported by at
-least three training/held-out response and advance forecast episodes. Counterfactual
-savings still remain estimates. See [model design and limits](learning-model-design.md).
-Preheat evidence also bounds the native ROOM increase: evidence from a smaller
-increase cannot authorize a larger economic preheat. A pending plan is checked
-against the currently configured preheat duration before dispatch.
+These three checks qualify learned accuracy; they are not prerequisites for
+all operation. A fresh database starts with explicit initial thermal and native
+response estimates. It may plan preheating, reduction and recovery when the
+paired complete-cycle cost scenarios and current comfort/equipment limits permit.
+The estimates never create passed trials, measured heat or validated forecasts.
+Current configuration bounds every action; pending plans are rechecked before
+execution. Missing preheat evidence does not prohibit a bounded preheat trial.
+
+Before the learned reference exists, a measured occupied Normal average can
+supply a separately labelled startup planning reference. Its scope includes the
+equipment and sensor configuration. It remains fixed during an intervention and
+does not train or replace the learned comfort reference. Configured comfort
+limits apply from startup. Manual, Away and material fireplace periods cannot seed it.
 
 The normal indoor reference starts after one supported hour of occupied Normal
 heating and refines continuously with a 48-hour smoothing timescale and a 1°C
@@ -208,8 +215,8 @@ influence do not update the reference. Two Normal hours after an intervention le
 its effects settle. Persistent household thermostat changes can move the reference
 both down and up. Original report support and last adjustment have separate clocks;
 repeated polling earns no learning. Missing-room estimates remain control-only and
-never train the model/reference or fill history. Initial provisional references
-cap automatic drop at 0.5°C, independently of equipment and model readiness.
+never train the model/reference or fill history. Provisional reference quality
+is disclosed without imposing a separate startup drop cap.
 See the [reference policy](temperature-sensors.md#normal-temperature-reference).
 
 ## Model reconstruction
@@ -322,19 +329,25 @@ readback does not prove relay-contact operation, valve movement or water flow. S
 control behavior.
 
 Home's **Heating strategy & comfort** separates the decision policy from the
-**Home heat model**. **Savings strategy** offers **Gentle**, **Balanced** (default)
-and **More savings**. These choices change the economic hurdle and continuous
+**Home heat model**. **Savings strategy** offers **Gentle**, **Balanced**
+and **More savings** (default). These choices change the economic hurdle and continuous
 comfort cost, including duration within an allowed band. They do not relax hard
-occupied-average upper/lower bounds. The planner uses the same weighted indoor
+occupied-average upper/lower bounds for ordinary automation. An explicitly
+reviewed manual cycle may override those policy limits without changing defaults;
+see the [manual planner](heating-plan-explorer.md#use-a-scenario-for-one-cycle).
+The planner uses the same weighted indoor
 average for prediction, limits and discomfort in every path, including bounded
 trials and recovery. Individual rooms have no automatic veto. An admitted
 one-room estimate adds its uncertainty to control and forecasts, and cannot start
 a new learning trial. Configuration changes use **Apply
 configuration**. No strategy promises an annual savings percentage.
 
-A new cycle's conservative benefit must exceed the strategy's minimum of 50,
-30 or 10 cents respectively, plus 30, 17.5 or 5 cents per hot/cold
-°C²-hour of the weighted indoor average, 2 cents per extra active hour and 2 cents to start. Continuation excludes
+A new cycle's conservative benefit must exceed the strategy's minimum of 2,
+0 or 0 cents respectively, plus 5, 0 or 0 cents per hot/cold
+°C²-hour of the weighted indoor average, zero additional start and duration allowances by default.
+These defaults are explicitly overridable through the monetary policy fields in
+[configuration](configuration.md#heating-strategies-and-limits), including zero;
+configured comfort limits and physical stress checks still apply. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected.
 Gentle can still start a sufficiently worthwhile cycle. Use **Paused** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
@@ -361,19 +374,24 @@ and restoration checks independently of the search worker.
 Selection, dispatch and continuation share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor
 duty ±0.08, source electrical input within its operating-point allowance, and AUX
-exposure ±50%. A residual 5-cent uncertainty floor remains. These cases are not
+exposure ±50%. An additional residual cost allowance is configurable and defaults
+to zero. These cases are not
 statistical confidence bounds. Forward temperature bounds begin with conditional
 trajectory error and add engineering allowances for the source estimate, unknown
 action, missing solar, fireplace response and optional slab. The separately
 calculated duty-response error does not make those bounds calibrated probabilities;
-frozen forecasts still need independent later-outcome checks. The bounded search checks the best 16 nominal
-candidates independently of the preference; it does not establish a global optimum.
+frozen forecasts still need independent later-outcome checks. The bounded search
+retains large price windows alongside shorter peaks and recovery-price contrasts,
+and explores different preheat/reduction combinations. It checks up to 16 nominal
+reduction-only candidates and 16 coupled preheat candidates independently of the
+preference, so either family can win the full-cycle comparison. It does not
+establish a global optimum.
 Equipment duty ratios and AUX exposure calibration remain separate adaptive
 quantities. Saved nominal compressor kW and recovery multipliers remain reporting
 diagnostics; they do not replace the fixed source electrical-input map.
 
 The floor integration must provide a **device-local 15-minute lease**, renewed
-every **5 minutes** while automatic preheat remains authorized and capped at the
+every **5 minutes** while the heating cycle remains authorized and capped at the
 planned end. It must release the override after a controller crash or lost
 connection without depending on a later host command. This capability is a
 requirement for the planned device, not verified behavior. Commissioned OFF
@@ -385,9 +403,10 @@ H66 ROOM has no device-side lease and relies on durable application restoration
 and retries after communication returns. All four ground-floor circuits form one
 treatment and one selected-slab state for learning.
 
-With little evidence, automatic action requires enabled learning trials, usable
-recorded temperature/equipment evidence and remaining allowance. The controller
-seeks two useful trial opportunities per Finnish day by default, prioritizing
+Initial or learned estimates support ordinary economic action before new trials
+exist. Additional learning experiments require usable temperature/equipment
+evidence, enabled trials and remaining allowance. The controller
+seeks four useful trial opportunities per Finnish day by default, prioritizing
 learning before that target. This is an objective, not a promise to act through a
 blocked condition. Configured reduction ceilings also bound initial trials;
 there is no fixed half-hour bootstrap ceiling. A bounded summary of the last
@@ -409,11 +428,37 @@ heat debt, rather than charging the entire rated-power recovery as extra spendin
 Native AUX restrictions and included circulation are respected. A nominal zero
 does not remove scenario uncertainty, but alternatives consuming nothing in every
 scenario have no arbitrary minimum charge. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Weighted-average upper limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
-guarantees that fallback costs cannot exceed the allowance. Disabled trials cannot
-be bypassed by an unvalidated economic action. Trials pause for six hours after
-completion or 24 hours after an incomplete attempt; new automatic cycles also wait
-24 hours after an incomplete attempt. Small preheat trials require thermal and reduction-response
-evidence. Unexecuted promises are not counted as learning episodes.
+guarantees that fallback costs cannot exceed the allowance. Disabling learning
+trials disables additional experimentation; ordinary economic plans still use
+the initial or learned model. The daily target prioritizes informative learning
+and is not a cap: cheap useful opportunities may continue within the allowance.
+Completed recovery permits a new independent cycle without a fixed six-hour wait.
+Incomplete attempts impose no fixed learning cooldown; actual adapter restoration
+and current readiness remain separate requirements.
+Preheat trials are eligible from startup through the configured preheat ceiling;
+there is no separate initial-duration cap. Selection prioritizes treatment types
+with less response evidence, then predicted thermal/compressor contrast and cost.
+Unexecuted promises are not counted as learning episodes.
+
+Starting response estimates are replaced by equally weighted covered-episode
+estimates as observations arrive; fixed seed weight does not preserve an
+optimistic reduction effect against observed unchanged demand. Independent
+validation remains separate from this immediate adaptation.
+
+Immediate response adaptation uses all covered treatments, including closed
+manual and interrupted episodes, without labelling recently seen temperatures as
+an independent holdout. A new preheat does not disappear from learning because
+earlier reduction episodes filled a global validation quota. Independent response
+checks use the thermal fitter's chronological training/validation split. Existing
+checks remain applicable when the response estimate is unchanged; a changed
+estimate adapts immediately and does not borrow the earlier check.
+DHW-diverted intervals remain in the thermal history; their zero space-heating
+input cannot demonstrate suppression caused by a reduction request.
+
+Normal AUX forecasting uses recent recorded Normal space-heating AUX use when
+available, alongside native-threshold and recovery-risk estimates. Missing
+Normal AUX evidence creates no assumed continuous consumption or savings credit.
+The observed Normal mean is not multiplied again by recovery-risk calibration.
 
 Trial cost screening also includes the income that may be lost by reducing
 scenario consumption during negative all-in prices. Negative prices cannot make
@@ -421,7 +466,7 @@ that exposure disappear from the trial allowance. Daily attempts, completions,
 comparable space-heating assessments and accepted model updates remain separate;
 compressor runtime across an attempt includes recovery and does not prove how
 much heating was displaced. Daily counts come from recorded actual cycles and
-survive restart. These planning changes do not reinterpret the learning journal.
+survive restart. Initial-model and continuous-learning interpretation uses the current versioned learning journal.
 
 Recovery restores normal ROOM and tariff operation while applying one shared
 **60-minute hold** (`controller.recovery_hold_minutes`). Until its fixed deadline,
@@ -671,7 +716,9 @@ Normal DHWR service is independent of floor preheating and its ROOM lease. The
 default schedule allows starts from 05:45 through 19:45 Finnish time, at least
 52.5 minutes apart. An existing pulse finishes before automatic tariff reduction
 starts. New automatic pulses stay suppressed through reduction and the bounded
-recovery hold; eligibility resumes at the hold deadline. An explicit manual
+recovery hold; eligibility resumes at the hold deadline. New automatic pulses
+also wait for a pending price-plan calculation, so circulation cannot preempt
+the reduction it is assessing. An explicit manual
 circulation request retains its own complete timer.
 The thermal model assigns zero room heat to tank and circulation losses. Tank
 service remains outside the space-heating benefit assessment; pump electricity
@@ -749,3 +796,15 @@ Manual phase behavior and Pause duration follow the single current contract in
 Reduced applies the complete available automatic reduction actions, indefinite
 Pause holds Normal/Reduced, and manual Preheat uses one fixed floor lease with
 independent ROOM restoration and a 24-hour outcome report.
+
+### Manual and paused learning
+
+Pause suspends automatic commands, not recording or learning. Confirmed manual
+Normal, Reduced and Preheat choices retain their original context and source
+clocks. A distinct manual treatment gets a stable journal episode identity;
+repeating the same request does not create another experiment. Ending or changing
+the treatment publishes response-only evidence. Its observed input windows can
+refine equipment response without claiming complete recovery, an advance forecast
+or savings. Full tracked cycles retain their independent complete-cycle assessment.
+Useful thermal observations during pauses and incomplete trials remain eligible;
+only conclusions lacking their required evidence are unavailable.

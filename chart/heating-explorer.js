@@ -118,7 +118,7 @@ export function heatingComparisonMetrics(result) {
       detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
       ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
-      detail: scenario.trial ? 'Bounded learning trial; evidence gates still apply.' : 'A maximum is permission, not a requested duration.' },
+      detail: scenario.trial ? 'Learning trial within the reviewed allowance and temperature limits.' : 'A maximum is permission, not a requested duration.' },
   ];
 }
 
@@ -166,7 +166,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderControls(result) {
     controls.clear(); $('heating-explorer-controls').replaceChildren();
-    const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours'];
+    const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours', 'maxUnobservedReductionHours', 'maxTrialCostCents', 'learningPriorityPriceCents', 'minimumHomeBenefitCents', 'homeDiscomfortCentsPerDegreeSquaredHour', 'cycleStartCostCents', 'cycleHourCostCents', 'economicUncertaintyFloorCents'];
     const orderedControls = [...(result.controls ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     for (const control of orderedControls) {
       const row = element('div', null, 'heating-explorer-control');
@@ -326,7 +326,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     }
     timeline('heating-explorer-scenario-timeline', result.scenario);
     const evidence = result.evidence ?? {};
-    $('heating-explorer-scenario-evidence').textContent = [evidence.actionValidated ? 'Execution evidence is available for this comparison.' : 'Evidence limits still apply to execution.',
+    $('heating-explorer-scenario-evidence').textContent = [evidence.actionValidated ? 'Independent action validation is available for this comparison.' : 'Initial and observed estimates support operation within the reviewed limits; independent action validation is still accumulating.',
       Number.isFinite(evidence.validatedReductionHours) ? `Demonstrated reduction duration: ${decimal(evidence.validatedReductionHours)} h.` : '',
       reasonsText(evidence.reasons), 'The best evaluated alternative is not a guarantee of the global optimum.'].filter(Boolean).join(' ');
     renderChart(result); renderBreakdown(result);

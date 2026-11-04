@@ -468,6 +468,17 @@ remain required.
   physical-file accounting through current publication helpers; preserve its
   accepted checkpoint. Journaled layout 31 and numerical learning remain unchanged.
 
+- **2026-11-04 — initialized Home model and continuous learning, algorithm 17 → 18.**
+  One external offline adoption of the existing paired installation, with rollback
+  rehearsal and verified backups before coordinated activation. SQLite schema 36
+  and journaled layout 31 stay unchanged. Preserve observations, original learning
+  values, forecasts, source clocks, database/pair identity and control intent.
+  Resolved learning configurations may adopt the explicit historical starting
+  profile; old derived checkpoints and coefficient projections are rebuilt under
+  the new algorithm. The operational replication journal may be reanchored with
+  its original chain retained in verified backups. This grants no runtime
+  converter, mixed-version reader or lasting historical-format support.
+
 ## Version discipline
 
 [F9](../AGENTS.md#f9) and [production upgrades](pairing.md#software-upgrades)
@@ -476,7 +487,7 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v17-time-evidence-admission`, with
+The Home learning algorithm is `committed-house-v18-initial-model-continuous-learning`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -500,9 +511,15 @@ forecast uncertainty. No slab coefficient is fitted automatically.
 Fitting requires independent input evidence. Genuine temperature endpoints,
 complete source-report coverage and causal thermal warmup are preserved in replay.
 Repeated held readings do not add independent fitting targets; the original heat
-input windows continue to integrate between reports. Warmup is at least 48 hours
-(four reserve time constants, capped at 288 hours). The bounded episode cache
-retains that prefix; unsupported initial storage cannot establish fit acceptance.
+input windows continue to integrate between reports. The initial reserve is estimated over a preceding six-hour prefix using bounded
+reserve hypotheses and the recorded heat inputs. That prefix is excluded from
+fitting and validation scores. Initial state selection never uses the endpoint
+it is predicting or any later observation. The bounded episode cache retains the
+prefix. A new aggregate endpoint requires a genuine source update; partial room
+updates receive only their newly observed weight, while all-held values earn no
+independent target. Complete retained heat segments can span a sparse genuine
+endpoint interval up to 24 hours (at most 2,048 segments); raw acquisition/reporting
+gaps still split the evidence.
 The recent sample cache and retained episode count remain bounded, with up to two
 additional hours of input windows for a delayed genuine endpoint. These are
 checkpoint fitting caches, not duplicate source journals.

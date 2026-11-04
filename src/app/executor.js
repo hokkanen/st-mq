@@ -127,8 +127,10 @@ export class Executor {
   status() { return { ...copy(this.state), restartManualPause: this.restartManualPause, manualPreheatReport: this.state.manualPreheatReport?.expiresAt > this.clock() ? copy(this.state.manualPreheatReport) : null, busy: Boolean(this.pending), restorationPending: this.restartRestore || this.dhwrRecoveryPending }; }
   requireActivation() {
     if (this.closed || this.closing) throw failure('EXECUTOR_CLOSED', 'Heating control is closing.');
+    if (this.cycleAuthorization && !this.cycleAuthorization())
+      throw failure('EXECUTOR_CYCLE_AUTHORITY', 'The reviewed heating cycle is no longer authorized.');
   }
-  execute(decision, { automationEnabled = false, now = this.clock(), manualTest = false, pause = null }) {
+  execute(decision, { automationEnabled = false, now = this.clock(), manualTest = false, pause = null, authorizeCycle = null }) {
     this.requireActivation();
     if (typeof automationEnabled !== 'boolean') throw new Error('Invalid heating automation permission');
     if (manualTest) {
@@ -136,7 +138,8 @@ export class Executor {
       this.validateCommands(decision.commands);
       return this.exclusive(() => this.manual(decision.commands, now, pause, decision));
     }
-    if (!automationEnabled) return { status: 'paused', sent: false, actual: null };
+    if (authorizeCycle !== null && typeof authorizeCycle !== 'function') throw new Error('Invalid heating cycle permission');
+    if (authorizeCycle ? !authorizeCycle() : !automationEnabled) return { status: 'paused', sent: false, actual: null };
     if (this.input === 'simulated') {
       this.plant.state.phase = decision.phase ?? decision.action;
       this.plant.state.roomBoostC = decision.roomBoostC ?? 0;
@@ -147,7 +150,11 @@ export class Executor {
     if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport)
       throw failure('EXECUTOR_UNAVAILABLE', 'Automatic heating requires live input and a configured heating-command transport.');
     this.validateCommands(decision.commands);
-    return this.exclusive(() => this.executePhysical(decision, now));
+    return this.exclusive(async () => {
+      this.cycleAuthorization=authorizeCycle;
+      try { this.requireActivation();return await this.executePhysical(decision, now); }
+      finally { this.cycleAuthorization=null; }
+    });
   }
   validateCommands(commands) {
     if (!Array.isArray(commands) || !commands.length || commands.some(command => !HEATING_COMMANDS.includes(command))) throw new Error('Invalid heating command');
@@ -267,6 +274,7 @@ export class Executor {
           await this.h66?.captureTariffReduction({ identity });
         }
         this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; await this.persistAsync();
+        if (heating.includes('reduction')) this.requireActivation();
         result = await this.commandTransport.publish(heating, { validUntil, clock: this.clock, expectedTarget: identity });
         acknowledgedAt = this.clock();
         // Keep an outstanding episode bound through every durable transition.
@@ -551,9 +559,12 @@ export class Executor {
     if (!Number.isFinite(now)) throw new Error('A valid execution timestamp is required');
     const phase = decision.phase ?? decision.action ?? (decision.commands.includes('reduction') ? 'reduction' : 'normal');
     if (!['normal', 'recovery', 'preheat', 'reduction'].includes(phase)) throw new Error('Invalid heating phase');
-    const expiresAt = decision.expiresAt == null ? now + 1_800_000 : time(decision.expiresAt);
-    if (!Number.isFinite(expiresAt) || expiresAt <= now || expiresAt - now > 86_400_000)
+    const requestedExpiry = decision.expiresAt == null ? now + 1_800_000 : time(decision.expiresAt);
+    if (!Number.isFinite(requestedExpiry) || requestedExpiry <= now || requestedExpiry - now > 48 * 3_600_000)
       throw failure('EXECUTOR_EXPIRY', 'Automatic heating actions require a future bounded expiry.');
+    // Longer reviewed schedules use the existing one-day native lease and
+    // renew it only while current control authority and the plan remain valid.
+    const expiresAt=Math.min(requestedExpiry,now+86_400_000);
     const actionElapsedEnd = this.monotonicClock() + Math.max(0, expiresAt - Math.max(now, this.clock()));
     const actionExpired = () => this.clock() >= expiresAt || this.monotonicClock() >= actionElapsedEnd;
     if (this.restartRestore || this.h66?.status(now).restorationPending) {
@@ -671,6 +682,7 @@ export class Executor {
       // The tariff timer ends reduction; native DHW/AUX obligations continue
       // through the bounded recovery hold without a restore/reapply gap.
       try { native = await this.h66.setPhase({ phase, now: this.clock(), activationExpiresAt: expiresAt,
+        validateActivation:()=>this.requireActivation(),
         expiresAt: Math.min(expiresAt + this.recoveryHoldMinutes * 60_000, now + 86_400_000) }); }
       catch (error) {
         if (error.code === 'H66_EXPIRED') return this.restoreInternal({ now: this.clock(), reason: 'expired-during-native-reduction' });

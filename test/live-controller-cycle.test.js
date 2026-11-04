@@ -41,6 +41,7 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
       model.uncertainty={points:[{hours:.25,errorC:.1},{hours:24,errorC:.1}],extrapolationCPerHour:.05};
       model.forecastValidation={accepted:true,episodes:3,maxReductionHours:.5};
       engine.checkpoint=restoreAdaptiveCheckpoint(null);engine.checkpoint.model=model;
+      appendLearningRecord(store,'mqtt','context',{timestamp:now},{config:config.control,seed:engine.checkpoint});
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};
       engine.pendingPlan={schedule,model,initialState:args.initialState,targetC:21,intervals,reference:null,referenceLabel:'continuous normal operation',
         prediction:evaluateCycle({...args,schedule}),referencePrediction:evaluateCycle(args),trial:false}; return engine.pendingPlan; },
@@ -272,7 +273,7 @@ test('admin scenario consent uses effective limits for exactly the reviewed cycl
   assert.equal(explorer.input.currentConfig.maxReductionHours, r.engine.control.maxReductionHours);
 });
 
-test('an approved scenario cannot bypass current response evidence', async t => {
+test('an approved scenario uses the initial response when learned response is unavailable', async t => {
   const r = setup(t), plan = r.plan();
   const explorer = r.engine.heatingExplorer;
   explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
@@ -284,10 +285,10 @@ test('an approved scenario cannot bypass current response evidence', async t => 
   // Evidence changes after approval but before the next ordinary control tick.
   r.engine.checkpoint.model.equipmentResponse = null;
   const decision = r.engine.tick(); await r.settle();
-  assert.notEqual(decision.decision.phase, 'reduction');
-  assert.equal(explorer.publicTrial().status, 'rejected');
-  assert.equal(r.engine.cycles.active(), null);
-  assert.equal(r.commands.some(commands => commands.includes('reduction')), false);
+  assert.equal(decision.decision.phase, 'reduction');
+  assert.ok(r.engine.cycles.active());
+  assert.equal(r.engine.checkpoint.model.equipmentResponse, null, 'Approval creates no response validation');
+  assert.equal(r.commands.some(commands => commands.includes('reduction')), true);
 });
 
 test('one-cycle preferred limits cannot suppress the absolute two-degree occupied comfort guard', async t => {
@@ -315,4 +316,46 @@ test('a copied pending scenario plan cannot act as its own approval', async t =>
   assert.equal(r.engine.pendingPlan?.userTrial, undefined);
   assert.equal(r.engine.cycles.active()?.plan.userTrial, undefined,
     'ordinary automation may choose its own admissible plan, but never inherit orphan scenario consent');
+});
+
+test('a reviewed cycle runs while Home is paused and disabled, then cancellation restores without changing that choice',async t=>{
+  const r=setup(t,{automationEnabled:false}),plan=r.plan(),explorer=r.engine.heatingExplorer;
+  const saved=structuredClone(r.store.getState('automation:mqtt'));
+  explorer.capture({now:r.now,settings:r.engine.settings,config:r.engine.control,
+    checkpoint:r.engine.checkpoint,observations:{},equipment:{}},{phase:'normal',reasons:['heating-paused'],plan:null},'heating-paused');
+  r.engine.pendingPlan=null;
+  explorer.worker={async run(){return {version:1,executablePlan:plan};},async close(){}};
+  const view=await explorer.view(),preview=await explorer.simulate({snapshotId:view.snapshotId,
+    limits:{maxReductionHours:8,minimumHomeBenefitCents:-1000}});
+  assert.equal(preview.application.allowed,true);explorer.apply({previewId:preview.previewId});
+  r.engine.tick();await r.settle();
+  assert.equal(r.engine.cycles.active()?.plan.userTrial.id,explorer.publicTrial().id);
+  assert.ok(r.commands.some(commands=>commands.includes('reduction')));
+  assert.deepEqual(r.store.getState('automation:mqtt'),saved);
+  r.advance(60_000);r.engine.tick();await r.settle();
+  assert.equal(r.engine.status().decision.phase,'reduction',JSON.stringify(r.engine.status().decision));
+  explorer.cancel({});r.engine.tick();await r.settle();
+  assert.equal(r.engine.executor.status().legacyOutstanding,false);
+  assert.ok(r.commands.some(commands=>commands.includes('normal')));
+  assert.deepEqual(r.store.getState('automation:mqtt'),saved);
+});
+
+test('changing Automatic to Pause preserves an independently approved running cycle until its cancellation',async t=>{
+  const r=setup(t),plan=r.plan(),explorer=r.engine.heatingExplorer;
+  explorer.capture({now:r.now,settings:r.engine.settings,config:r.engine.control,
+    checkpoint:r.engine.checkpoint,observations:{},equipment:{}},{phase:'normal',reasons:[],plan:null});
+  r.engine.pendingPlan=null;
+  explorer.worker={async run(){return {version:1,executablePlan:plan};},async close(){}};
+  const view=await explorer.view(),preview=await explorer.simulate({snapshotId:view.snapshotId,
+    limits:{maxReductionHours:8,minimumHomeBenefitCents:-1000}});
+  explorer.apply({previewId:preview.previewId});r.engine.tick();await r.settle();
+  const id=r.engine.cycles.active().id;
+  await r.engine.setAutomation({feature:'home',enabled:false});await r.settle();
+  assert.equal(r.engine.automationStatus().home.enabled,false);
+  assert.equal(r.engine.cycles.active()?.id,id);
+  assert.equal(explorer.publicTrial().status,'running');
+  assert.equal(r.engine.executor.status().phase,'reduction');
+  explorer.cancel({});r.engine.tick();await r.settle();
+  assert.equal(r.engine.executor.status().legacyOutstanding,false);
+  assert.equal(r.engine.automationStatus().home.enabled,false);
 });

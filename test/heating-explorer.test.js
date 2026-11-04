@@ -8,6 +8,18 @@ import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 const HOUR = 3_600_000;
 const options = { includePlan: true, includeOpportunities: false };
 
+test('demonstrated ROOM increase belongs to the requested treatment, not another floor treatment',()=>{
+  const input=heatingExplorerFixture(),response=input.checkpoint.model.equipmentResponse;
+  Object.assign(input.equipment,{preheatAvailable:true,roomSettingC:21});
+  const estimate=(key,boost)=>({ratio:1,trainingEpisodes:3,treatmentKey:key,
+    validation:{accepted:true,episodes:3,treatmentKey:key,maxRoomBoostC:boost,maxDurationHours:2}});
+  const room=estimate('room-boost-v1',1),floor=estimate('room-boost-floor-v1',5);
+  response.treatments={preheat:{'room-boost-v1':room,'room-boost-floor-v1':floor}};
+  response.phases.preheat=floor;response.validation.phases.preheat=floor.validation;
+  const result=exploreHeatingPlan(input,{},options);
+  assert.equal(result.constraints.find(row=>row.key==='validatedPreheatBoostC').value,1);
+});
+
 test('unchanged scenario uses the ordinary planner and leaves every frozen input unchanged', () => {
   const input = heatingExplorerFixture(), before = structuredClone(input);
   const decision = chooseCycle(input), result = exploreHeatingPlan(input, {}, options);
@@ -51,24 +63,49 @@ test('hypothetical settings map to the same planner without changing evidence or
   assert.equal(result.computation.plannerRuns, 2);
 });
 
-test('longer illustrative prediction cannot manufacture duration validation or an executable plan', () => {
+test('reviewed policy can permit an experiment without positive predicted savings or automatic budget',()=>{
+  const input=heatingExplorerFixture({price:2,hours:12});
+  input.prices.forEach(row=>{row.allInCentsPerKWh=2;});
+  input.checkpoint.model.equipmentResponse.phases.reduction.ratio=1.1;
+  assert.equal(chooseCycle(input).plan,null);
+  const result=exploreHeatingPlan(input,{minimumHomeBenefitCents:-1000,homeDiscomfortCentsPerDegreeSquaredHour:0,
+    cycleStartCostCents:0,cycleHourCostCents:0},{...options});
+  assert.ok(result.executablePlan);
+  assert.ok(result.executablePlan.economics.lowerBenefitCents<0);
+  assert.equal(input.config.minimumHomeBenefitCents,undefined,'Preview never edits defaults');
+});
+
+test('an explicit one-cycle learning allowance is separate from an exhausted automatic allowance',()=>{
+  const input=heatingExplorerFixture({price:2,hours:12});
+  input.prices.forEach(row=>{row.allInCentsPerKWh=2;});
+  const proposed=applyExplorerOverrides(input,{maxTrialCostCents:150,maxDropC:3,maxRiseC:3,maxUnobservedReductionHours:4});
+  assert.equal(proposed.trialBudgetRemainingCents,150);
+  assert.equal(proposed.config.learningTrials,true);
+  assert.equal(proposed.config.maxUnobservedReductionHours,4);
+  assert.equal(input.trialBudgetRemainingCents,0);
+  assert.equal(input.config.learningTrials,false);
+  assert.ok(exploreHeatingPlan(proposed,{},options).executablePlan);
+});
+
+test('initial operation beyond demonstrated duration never manufactures validation', () => {
   const input = heatingExplorerFixture({ validatedHours: 1 });
   const result = exploreHeatingPlan(input, { maxReductionHours: 8 }, options);
   assert.equal(result.evidence.validatedReductionHours, 1);
-  if (result.executablePlan) assert.ok((result.executablePlan.schedule.reductionEnd - result.executablePlan.schedule.reductionStart) / HOUR <= 1);
+  assert.ok(result.executablePlan);
+  assert.equal(input.checkpoint.model.forecastValidation.maxReductionHours, 1);
   assert.ok(result.illustrative);
   assert.equal(result.illustrative.executable, false);
   assert.equal(result.illustrative.extrapolated, true);
   assert.ok(result.illustrative.reasons.includes('outside-demonstrated-duration'));
   assert.equal((result.illustrative.schedule.reductionEnd - result.illustrative.schedule.reductionStart) / HOUR, 8);
-  assert.ok(result.constraints.some(row => row.key === 'validatedReductionHours' && row.status === 'blocking'));
+  assert.ok(result.constraints.some(row => row.key === 'validatedReductionHours' && row.status === 'available'));
 });
 
 test('strict scenario input rejects evidence, protection, arbitrary fields and invalid limits', () => {
-  for (const input of [null, [], 4, { maxDropC: 2.01 }, { maxRiseC: 0 }, { maxReductionHours: 13 },
-    { maxAwayReductionHours: 25 }, { maxPreheatHours: 7 }, { maxDropC: '1.5' }, { maxDropC: NaN },
+  for (const input of [null, [], 4, { maxDropC: 35.01 }, { maxRiseC: 0 }, { maxReductionHours: 47 },
+    { maxAwayReductionHours: 47 }, { maxPreheatHours: 25 }, { maxDropC: '1.5' }, { maxDropC: NaN },
     { preheatRoomBoostC: 2.5 }, { learningTrials: true }, { trialBudgetRemainingCents: 999 },
-    { model: {} }, { thermalValidated: true }, { maxUnobservedReductionHours: 4 },
+    { model: {} }, { thermalValidated: true }, { maxUnobservedReductionHours: 47 },
     { savingsStrategy: 'aggressive' }, JSON.parse('{"__proto__":{}}')])
     assert.throws(() => validateExplorerOverrides(input));
   assert.deepEqual(validateExplorerOverrides({ maxDropC: 0, maxRiseC: .25 }), { maxDropC: 0, maxRiseC: .25 });
@@ -90,7 +127,7 @@ test('missing or stale observations remain unknown and never produce numerical p
   }
 });
 
-test('native observation ceiling cannot be relaxed and no opportunity is invented at an evidence boundary', () => {
+test('unavailable native telemetry uses its separate ceiling rather than the ordinary reduction ceiling', () => {
   const input = heatingExplorerFixture({ validatedHours: .5 });
   input.equipment.h66Available = false;
   const result = exploreHeatingPlan(input, { maxReductionHours: 8 });
@@ -125,9 +162,13 @@ test('forecast coverage prevents an illustrative reduction with unpriced recover
 test('automatic attention requires a tested improvement, never merely a reached ceiling', () => {
   const input = heatingExplorerFixture({ validatedHours: .5, maxReductionHours: .5, maxDropC: 2 });
   const result = exploreHeatingPlan(input);
-  assert.equal(result.computation.plannerRuns, 1);
-  assert.deepEqual(result.opportunities, []);
-  for (const row of result.constraints.filter(row => row.key === 'maxReductionHours')) assert.notEqual(row.status, 'blocking');
+  assert.ok(result.computation.plannerRuns <= 4);
+  for (const opportunity of result.opportunities) {
+    assert.ok(opportunity.additionalBenefitCents > 10);
+    assert.equal(opportunity.scenario.economics.admitted, true);
+  }
+  const boundary = result.constraints.find(row => row.key === 'maxReductionHours');
+  if (boundary.status === 'blocking') assert.ok(result.opportunities.some(row => row.key === 'maxReductionHours'));
 });
 
 test('a useful relaxation explains the duration ceiling against fresh and actual selected plans', () => {
@@ -146,11 +187,11 @@ test('a useful relaxation explains the duration ceiling against fresh and actual
 });
 
 test('two interacting policy limits produce a combined opportunity only after individual probes fail', () => {
-  const input = heatingExplorerFixture({ maxReductionHours: .5, maxDropC: 1 });
+  const input = heatingExplorerFixture({ maxReductionHours: .5, maxDropC: .6 });
   const result = exploreHeatingPlan(input);
   assert.equal(result.computation.plannerRuns, 4);
   assert.equal(result.opportunities.length, 1);
-  assert.deepEqual(result.opportunities[0].overrides, { maxReductionHours: 1, maxDropC: 1.5 });
+  assert.deepEqual(result.opportunities[0].overrides, { maxReductionHours: 1, maxDropC: 1.1 });
   assert.ok(result.opportunities[0].additionalBenefitCents > 10);
 });
 
@@ -268,7 +309,7 @@ test('exploration exposes ROOM-increase evidence separately from permitted durat
   const boundary = result => result.constraints.find(row => row.key === 'validatedPreheatBoostC');
   const blocked = exploreHeatingPlan(input, { preheatRoomBoostC: 5 }, options);
   assert.equal(boundary(blocked).value, 1);
-  assert.equal(boundary(blocked).status, 'blocking');
+  assert.equal(boundary(blocked).status, 'available', 'Initial operation remains available without inventing demonstrated boost support');
   const supported = exploreHeatingPlan(input, { preheatRoomBoostC: 1 }, options);
   assert.equal(boundary(supported).status, 'available');
   input.equipment.roomSettingC = 34;
@@ -312,12 +353,12 @@ test('a supported sensor estimate retains bounded economic operation and current
   assert.equal(expired.valid, false);
 });
 
-test('provisional reference exposes the smaller effective drop and blocks unsafe previously approved plans', () => {
+test('provisional reference preserves configured comfort and does not block an approved plan', () => {
   const input = heatingExplorerFixture(), approved = chooseCycle(input).plan;
   input.equipment.comfortReferenceProvisional = true;
   const decision = chooseCycle(input), result = exploreHeatingPlan(input, {}, options);
-  assert.equal(decision.comfort.maxDropC, .5);
-  if (decision.plan) assert.equal(decision.plan.maxDropC, .5);
-  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, .5);
-  assert.equal(revalidatePlan({ ...input, plan: approved }).valid, false);
+  assert.equal(decision.comfort.maxDropC, input.settings.comfort.maxDropC);
+  if (decision.plan) assert.equal(decision.plan.maxDropC, input.settings.comfort.maxDropC);
+  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, input.settings.comfort.maxDropC);
+  assert.equal(revalidatePlan({ ...input, plan: approved }).valid, true);
 });

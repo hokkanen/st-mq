@@ -79,7 +79,8 @@ test('held indoor endpoints integrate input windows without multiplying independ
   near(intervals[1].observationIntervalHours, 1.25);
   const score = evaluateThermalModel(initialAdaptiveModel(), rows, { rollout: false });
   assert.equal(score.predictions.length, 2);
-  const heldTail = row(11, { indoorSensors: rows.at(-1).indoorSensors });
+  rows.at(-1).compressorDuty = .9;
+  const heldTail = row(11, { compressorDuty: .9, indoorSensors: rows.at(-1).indoorSensors });
   const extended = evaluateThermalModel(initialAdaptiveModel(), [...rows, heldTail], { rollout: false });
   assert.equal(extended.predictions.length, 2, 'The held tail supplies no fitting target');
   assert.equal(extended.lastEndpointFresh, false);
@@ -113,11 +114,11 @@ test('isolated episodes cannot qualify from an invented room-temperature reserve
   for (let i = 0; i < rows.length; i += 512)
     cp = updateAdaptiveLearningBatch(cp, rows.slice(i, i + 512), { now: rows.at(-1).timestamp });
   cp = updateAdaptiveEpisode(cp, episode);
-  assert.ok(Date.parse(cp.episodeArchive[0].samples[0].timestamp) <= episode.startedAt - 48 * HOUR);
+  assert.ok(Date.parse(cp.episodeArchive[0].samples[0].timestamp) <= episode.startedAt - 6 * HOUR);
   const isolated = rows.filter(row => row.timestamp >= episode.startedAt);
   const unqualified = evaluateThermalModel(model, isolated, { completeEpisodes: [episode], requireWarmup: true });
   assert.equal(unqualified.samples, 0);
-  assert.ok(unqualified.excluded.some(row => row.reason === 'insufficient-causal-thermal-warmup'));
+  assert.ok(unqualified.excluded.some(row => row.reason === 'incomplete-episode'));
   assert.deepEqual(restoreAdaptiveCheckpoint(JSON.stringify(cp)), restoreAdaptiveCheckpoint(cp));
 });
 
@@ -127,7 +128,7 @@ test('old separate-gain checkpoints and other treatment validation cannot qualif
   const model = initialAdaptiveModel();
   model.validation = { accepted: true, kind: 'conditional-thermal', samples: 3,
     parameterEvidence: { lossPerHour: { status: 'identified' }, hydronicCPerKwh: { status: 'identified' } } };
-  model.equipmentResponse = { phases: { preheat: { trainingEpisodes: 3 } },
+  model.equipmentResponse = { phases: { preheat: { trainingEpisodes: 3, treatmentKey: 'room-boost-v1' } },
     validation: { phases: { preheat: { accepted: true, episodes: 3, maxDurationHours: 2, treatmentKey: 'room-boost-v1' } } } };
   assert.equal(actionEvidenceReady(model, 'preheat', 1, 'room-boost-v1'), true);
   assert.equal(actionEvidenceReady(model, 'preheat', 1, 'room-boost-floor-v1'), false);

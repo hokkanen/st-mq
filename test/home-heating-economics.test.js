@@ -1,10 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { initialAdaptiveModel, THERMAL_PARAMETER_BOUNDS } from '../src/control/adaptive-learning.js';
-import { evaluateCycle, economicAdmission, chooseCycle, trialEnvelope, recoveryPolicy, effectiveComfortDropC,
+import { initialHomeState } from '../src/domain/home-model.js';
+import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
+import { evaluateCycle, economicAdmission, chooseCycle, trialEnvelope, recoveryPolicy,
   indoorUncertaintyAt, learningReadiness } from '../src/control/planner.js';
 
 const HOUR = 3_600_000, now = Date.parse('2026-01-01T00:00:00Z');
+test('unchanged compressor demand and no observed Normal AUX cannot invent savings at flat prices',()=>{
+  for(const nativeAuxAllowed of [true,false,null]){
+    const input=heatingExplorerFixture({hours:24,price:5});
+    input.prices.forEach(row=>{row.allInCentsPerKWh=5;});
+    input.settings.savingsStrategy='savings';input.equipment.nativeAuxAllowed=nativeAuxAllowed;
+    input.checkpoint.model.equipmentResponse.phases.reduction.ratio=1;
+    assert.equal(chooseCycle(input).plan,null);
+    input.equipment.heatingDemand={observedThrough:input.now,normalAuxiliaryKw:0,auxiliaryCoveredHours:24};
+    assert.equal(chooseCycle(input).plan,null);
+  }
+});
+
+test('recorded Normal AUX is not multiplied a second time by learned recovery-risk calibration',()=>{
+  for(const scale of [.25,1,4]){
+    const {args}=fixture();args.model.energy.auxiliaryRiskScale=scale;
+    args.equipment={...args.equipment,nativeAuxAllowed:true,
+      heatingDemand:{observedThrough:now,normalAuxiliaryKw:1.5,auxiliaryCoveredHours:24}};
+    const normal=evaluateCycle(args);
+    assert.equal(normal.trajectory[0].auxiliaryKw,1.5);
+  }
+});
 function fixture({ price = 1, hours = 24, indoorC = 21 } = {}) {
   const model = initialAdaptiveModel({ heatPumpModelConfirmed: true });
   model.uncertainty = { points: [{ hours: 24, errorC: 0.1 }], extrapolationCPerHour: 0.05 };
@@ -17,19 +40,21 @@ function fixture({ price = 1, hours = 24, indoorC = 21 } = {}) {
     end: now + (i + 1) * HOUR / 4, outdoorC: 0, solarRadiationWm2: 0, price: i < 4 ? price : 1 }));
   const schedule = { preheatStart: now, preheatEnd: now, reductionStart: now, reductionEnd: now + HOUR,
     roomBoostC: 0, treatmentKey: 'reduction-only-v1' };
-  const args = { intervals, model, initialState: { indoorC, reserveC: indoorC + 4.725 }, targetC: 21,
+  const args = { intervals, model, initialState: initialHomeState(model,indoorC,0), targetC: 21,
     occupancy: { mode: 'occupied' }, maxDropC: 2, maxRiseC: 2,
     equipment: { supplyC: 35, brineC: 0, nativeAuxAllowed: false }, config: {} };
   return { args, schedule, prediction: evaluateCycle({ ...args, schedule }), referencePrediction: evaluateCycle(args) };
 }
 
-test('tiny opportunities fail the monetary hurdle at every savings strategy', () => {
+test('small robust benefits are eligible by default and monetary preferences remain configurable', () => {
   const input = fixture({ price: 1.1 });
   for (const savingsStrategy of ['gentle', 'balanced', 'savings']) {
     const admission = economicAdmission({ ...input, settings: { savingsStrategy } });
-    assert.equal(admission.admitted, false);
-    assert.ok(admission.minimumCents >= 10);
-    assert.ok(admission.lowerBenefitCents <= admission.hurdleCents);
+    assert.equal(admission.admitted, savingsStrategy !== 'gentle');
+    assert.ok(admission.lowerBenefitCents > 0);
+    const configured=economicAdmission({...input,args:{...input.args,config:{minimumHomeBenefitCents:10}},settings:{savingsStrategy}});
+    assert.equal(configured.admitted,false);
+    assert.equal(configured.minimumCents,10);
   }
 });
 
@@ -37,21 +62,21 @@ test('a large price spike can clear conservative paired costs without negative d
   const input = fixture({ price: 5000 });
   const admission = economicAdmission({ ...input, settings: { savingsStrategy: 'balanced' } });
   assert.ok(admission.benefitCents > 100);
-  assert.ok(admission.lowerBenefitCents <= admission.benefitCents - 5);
+  assert.ok(admission.lowerBenefitCents <= admission.benefitCents);
   assert.ok(admission.discomfortCents >= 0);
-  assert.ok(admission.burdenCents > 0);
+  assert.equal(admission.burdenCents, 0);
   assert.equal(admission.admitted, true);
 });
 
-test('named strategies change economic admission while sharing predictions and the balanced default', () => {
-  for (const [price, expected] of [[50, [false, false, true]], [100, [false, true, true]], [200, [true, true, true]]]) {
+test('named strategies share physical predictions and default to More savings', () => {
+  for (const [price, expected] of [[1, [false, false, false]], [2, [false, true, true]], [10, [true, true, true]]]) {
     const input = fixture({ price });
     const admissions = ['gentle', 'balanced', 'savings'].map(savingsStrategy =>
       economicAdmission({ ...input, settings: { savingsStrategy } }));
     assert.deepEqual(admissions.map(row => row.admitted), expected);
-    assert.deepEqual(admissions.map(row => row.minimumCents), [50, 30, 10]);
+    assert.deepEqual(admissions.map(row => row.minimumCents), [2, 0, 0]);
     assert.equal(new Set(admissions.map(row => row.lowerBenefitCents)).size, 1, 'Policy cannot change the physical forecast');
-    assert.deepEqual(economicAdmission(input), admissions[1]);
+    assert.deepEqual(economicAdmission(input), admissions[2]);
   }
 });
 
@@ -90,8 +115,12 @@ test('savings strategy never changes candidate physical search or hard comfort l
   const result = value => chooseCycle({ ...common, settings: { savingsStrategy: value,
     comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 }, occupancy: { mode: 'occupied' } } });
   const conservative = result('gentle'), aggressive = result('savings');
-  assert.equal(conservative.plan, null); assert.equal(aggressive.plan, null);
-  assert.deepEqual(conservative.evaluation.search, aggressive.evaluation.search);
+  assert.deepEqual(conservative.plan?.search??conservative.evaluation.search,
+    aggressive.plan?.search??aggressive.evaluation.search);
+  for(const result of [conservative,aggressive])if(result.plan){
+    assert.equal(result.plan.maxDropC,2);assert.equal(result.plan.maxRiseC,2);
+    assert.equal(result.plan.prediction.severe,false);
+  }
 });
 
 function preheatStress(extra = {}) {
@@ -185,19 +214,17 @@ test('sensor estimate age ends forecast eligibility without serializing infinite
   assert.ok(result.trajectory.every(row => row.uncertaintyC === null || Number.isFinite(row.uncertaintyC)));
 });
 
-test('source uncertainty and provisional reference limit the same occupied trial cold margin', () => {
+test('source uncertainty affects cold margin while provisional reference preserves configured limits', () => {
   const { args, schedule } = fixture({ hours: 6 });
   const ordinary = trialEnvelope({ ...args, schedule });
   assert.equal(ordinary.coldSafe, true);
   const uncertain = trialEnvelope({ ...args, schedule,
-    equipment: { ...args.equipment, indoorEstimated: true, indoorUncertaintyC: .1 } });
+    equipment: { ...args.equipment, indoorEstimated: true, indoorUncertaintyC: 1.1 } });
   assert.equal(uncertain.coldSafe, false);
   assert.ok(uncertain.floorC < 20);
   assert.equal(trialEnvelope({ ...args, schedule,
-    equipment: { ...args.equipment, comfortReferenceProvisional: true } }).coldSafe, false);
-  assert.equal(effectiveComfortDropC(2, { comfortReferenceProvisional: true }), .5);
-  assert.equal(effectiveComfortDropC(.25, { comfortReferenceProvisional: true }), .25);
-  assert.equal(effectiveComfortDropC(2), 2);
+    equipment: { ...args.equipment, comfortReferenceProvisional: true } }).coldSafe, true);
+  assert.equal(trialEnvelope({...args,schedule,maxDropC:.25}).coldSafe,false);
 });
 
 test('hot stress includes the estimated source margin and rejects an expired estimate', () => {

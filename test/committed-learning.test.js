@@ -8,13 +8,22 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
-import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint, LEARNING_ALGORITHM, LEARNING_WINDOW_MS} from '../src/app/committed-learning.js';
+import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint, learningConfiguration, LEARNING_ALGORITHM, LEARNING_WINDOW_MS} from '../src/app/committed-learning.js';
+import { DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const start = Date.parse('2026-01-01T00:00:00Z');
 const config = { heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025 };
+test('committed configuration resolves every initial coefficient and owns its snapshot', () => {
+  const resolved = learningConfiguration();
+  assert.deepEqual(resolved.homeModel, DEFAULT_HOME_MODEL);
+  const overridden = learningConfiguration({ homeModel: { lossPerHour: .02 } });
+  assert.deepEqual(overridden.homeModel, { ...DEFAULT_HOME_MODEL, lossPerHour: .02 });
+  overridden.homeModel.lossPerHour = .03;
+  assert.equal(learningConfiguration().homeModel.lossPerHour, DEFAULT_HOME_MODEL.lossPerHour);
+});
 function knownContext(store, at = start, changes = {}, configuration = config) {
   return recordLearningContext(store, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21,
     roomBoostC: 0, ...changes }, at, { config: configuration });
@@ -457,7 +466,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v17-time-evidence-admission');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v18-initial-model-continuous-learning');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

@@ -267,7 +267,7 @@ for (const trial of [false, true]) for (const missing of ['treatment', 'recovery
     // This fixture isolates loss of forecast coverage after admission. Its
     // moderate Normal demand needs a longer useful window than the deliberately
     // short validated-plan fixture; an idle quarter-hour is no longer a trial.
-    r.engine.pendingPlan.schedule.reductionEnd = r.now + 90 * MINUTE;
+    r.engine.pendingPlan.schedule.reductionEnd = r.now + 2 * HOUR;
     const market = r.store.getState('provider:market');
     market.intervals.forEach(row => { row.spotCtPerKwh = 10; });
     r.store.setState('provider:market', market);

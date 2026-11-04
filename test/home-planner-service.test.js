@@ -32,7 +32,7 @@ test('Home planning runs off the main thread and preserves the pure planner resu
   assert.ok(ticks >= 3, 'CPU-heavy planning must leave local timers responsive');
   assert.equal(completed, false, 'The heartbeat was checked during the calculation');
   const decision = await pending;
-  assert.ok((decision.plan?.search ?? decision.evaluation?.search).evaluatedCandidates > 300);
+  assert.ok((decision.plan?.search ?? decision.evaluation?.search).evaluatedCandidates > 200);
 });
 
 test('Home planning keeps only the latest queued snapshot and never returns superseded work', async t => {

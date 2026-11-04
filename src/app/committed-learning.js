@@ -25,14 +25,15 @@ const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
 const EQUIPMENT_KEYS = ['heatPumpCompressorKw', 'auxRatedKw', 'circulationKw', 'dhwrKw',
   'compressorIntegralA1', 'compressorHysteresisC', 'auxIntegralA2', 'auxHysteresisC', 'a2Basis',
   'recoveryCompressorOnly', 'recoveryHoldMinutes', 'recoveryComfortMarginC',
-  'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours', 'maxPreheatHours', 'preheatRoomBoostC',
-  'recoveryTimeoutHours', 'dhwrPulseMinutes', 'heatPumpModelConfirmed', 'floorThermalPriors'];
-const MODEL_KEYS = [...EQUIPMENT_KEYS, 'targetC', 'thermalPriors', 'indoorSensorWeights'];
+  'dhwrPulseMinutes', 'heatPumpModelConfirmed', 'floorThermalPriors'];
+const MODEL_KEYS = [...EQUIPMENT_KEYS, 'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours',
+  'maxPreheatHours', 'preheatRoomBoostC', 'recoveryTimeoutHours', 'targetC', 'thermalPriors', 'homeModel', 'indoorSensorWeights'];
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit']);
 const readingAge = (row, fallback) => row.source === 'husdata-h66' ? H66_MAX_AGE_MS : fallback;
 
 export function learningConfiguration(config = {}) {
-  const resolved = { ...CONTROL_DEFAULTS, ...config };
+  const resolved = { ...CONTROL_DEFAULTS, ...config,
+    homeModel: { ...CONTROL_DEFAULTS.homeModel, ...config.homeModel } };
   return Object.fromEntries(MODEL_KEYS.filter(key => resolved[key] !== undefined).map(key => [key, structuredClone(resolved[key])]));
 }
 export function learningVersion(value) {
@@ -465,7 +466,7 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
     payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
       ...(prior.epoch ? { epoch: prior.epoch } : {}) }
       : first ? { seed: seed ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
-          initialization: 'explicit current v4 seed or fresh passive thermal priors' } } : {}) } });
+          initialization: 'explicit current v4 seed or configured initial thermal estimates' } } : {}) } });
 }
 
 function resetMeasurement(checkpoint, configuration, at) {

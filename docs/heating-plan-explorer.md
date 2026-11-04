@@ -27,7 +27,8 @@ to inspect the plan and alternatives, even when no action is scheduled.
 Configured policy limits, learning evidence, forecast coverage and equipment
 readiness have different effects. For example, raising the configured four-hour
 reduction ceiling cannot manufacture evidence for eight-hour reductions. The
-planner retains its existing validated-duration and bounded-trial checks.
+planner starts from explicit initial estimates and refines them with observed
+response. Lack of previous trials is not a separate execution prohibition.
 Preheat also requires evidence for its actual native ROOM increase. A longer
 demonstrated duration does not establish support for a larger ROOM increase;
 the explorer and Learning details show the separate demonstrated limit.
@@ -46,20 +47,30 @@ savings strategy and the native ROOM increase used for preheat. The ceiling is
 the maximum permitted duration; it does not force the planner to choose that
 duration. Several limits can be changed together.
 
-All six controls remain visible. Narrow screens pair savings strategy with ROOM
-increase, temperature drop with rise, and reduction duration with preheat duration.
-Wider screens show strategy, drop and reduction across the first row, followed by
-ROOM increase, rise and preheat across the second row. Enter durations directly.
+Controls remain visible on narrow and wide screens. Enter durations and monetary
+limits directly; several limits can be reviewed together. These are one-cycle
+preferences, with wider ranges than the automatic defaults.
 
-| Explorer control | Permanent configuration field | Supported range |
+| Explorer control | Related automatic configuration | Manual range |
 | --- | --- | --- |
-| Maximum reduction | `controller.max_reduction_hours` | 0.25–12 hours |
-| Maximum reduction while away | `controller.max_away_reduction_hours` | 0.25–24 hours |
-| Allowed average temperature drop | `controller.max_drop_c` | 0–2 °C |
-| Allowed average temperature rise | `controller.max_rise_c` | 0.25–2 °C |
-| Maximum preheat | `controller.max_preheat_hours` | 0.25–6 hours |
-| Preheat ROOM increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C |
+| Maximum reduction | `controller.max_reduction_hours` | 0.25–46 hours |
+| Maximum reduction while away | `controller.max_away_reduction_hours` | 0.25–46 hours |
+| Maximum reduction without native telemetry | `controller.max_unobserved_reduction_hours` | 0.25–46 hours |
+| Allowed average temperature drop | `controller.max_drop_c` | 0–35 °C |
+| Allowed average temperature rise | `controller.max_rise_c` | 0.25–35 °C |
+| Maximum preheat | `controller.max_preheat_hours` | 0.25–24 hours |
+| Preheat ROOM increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C, within native ROOM headroom |
+| One-cycle experiment allowance | `controller.max_trial_cost_cents` | Nonnegative cents; separate from the automatic daily allowance |
+| Minimum cycle benefit | Savings strategy's benefit hurdle | Cents; a negative value explicitly permits estimated extra cost |
+| Comfort cost within temperature limits | `controller.home_discomfort_cents_per_degree_squared_hour` | Nonnegative cents per °C²-hour |
+| Cycle start allowance | `controller.cycle_start_cost_cents` | Nonnegative cents |
+| Cycle duration allowance | `controller.cycle_hour_cost_cents` | Nonnegative cents per hour |
+| Additional cost uncertainty allowance | `controller.economic_uncertainty_floor_cents` | Nonnegative cents |
 | Savings strategy | `controller.savings_strategy` | Gentle, Balanced, More savings |
+
+Duration ranges fit the bounded 48-hour forecast and its recovery coverage; they
+are not promises that forecasts or the selected schedule cover the full range.
+Native overrides retain bounded leases and refresh only with current authority.
 
 The current plan and alternatives share one captured set of temperatures, stored
 heat, model, weather, prices, occupancy and equipment evidence. Polling does not
@@ -106,11 +117,12 @@ budget or update learning.
 ## Use a scenario for one cycle
 
 The admin action applies a reviewed scenario to a specific upcoming opportunity,
-with a visible expiry. Home must already permit Automatic heating. Approval does
-not enable it, override a manual action or grant control to a history viewer or
-slave. The server enforces this independently of the buttons.
-The approved opportunity must start within six hours; it has a five-minute
-latest-start grace period. The outer scope expires after the planned reduction
+with a visible expiry. Under the owner-approved 2026-11-04 policy, approval grants
+a separate one-cycle authority even while Home automatic control is paused or
+disabled. It preserves those saved choices and cannot override an independent
+manual action or grant authority to a history viewer or slave. The server enforces
+this independently of the buttons. The approved opportunity may start within
+the available forecast; it has a five-minute latest-start grace period. The outer scope expires after the planned reduction
 and the configured recovery timeout, or earlier when the cycle ends. History and
 slave views show recorded-plan context; live simulation is unavailable there.
 
@@ -122,15 +134,22 @@ If a device acknowledgement arrives after the start window or approval scope has
 ended, the exposure remains recorded, and recovery ends the approved action
 without renewing permission or discarding restoration duties.
 
-Admin-selected temperature allowances are explicit temporary preferences within
-the supported settings ranges. Absolute comfort protection, native protections,
-readiness, learning evidence and trial cost bounds are not adjustable execution
-bypasses. The action never writes configuration defaults. A permanent change
+Admin-selected temperature allowances are explicit temporary preferences. A
+reviewed drop greater than 2°C overrides that ordinary occupied guard for this
+cycle. Provisional model/reference quality and previous demonstrated durations
+add no hidden policy cap. An explicit experiment allowance can enable learning
+for this cycle even when automatic experiments are disabled or their daily
+allowance is exhausted; its accepted exposure is separate from that automatic
+allowance. Negative minimum benefit permits a deliberately paid experiment.
+Native protections, real device capability, current inputs and durable
+restoration remain required. Approval is checked again after queued intent writes
+and before new activation. The action never writes configuration defaults. A permanent change
 uses the existing configuration source and **Apply reviewed configuration**.
 
 An unused approval cannot silently transfer to another opportunity. Cancellation
 ends the authorized scope; an active cycle follows the normal restoration and
-recovery path. Closing the browser does not cancel a cycle or erase restoration
+recovery path. Changing the saved Automatic / Paused choice does not cancel this
+independent reviewed cycle; use its cancellation action to end it. Closing the browser does not cancel a cycle or erase restoration
 obligations. Restart ends the approval and requires a fresh comparison; the
 existing executor still owns any outstanding physical restoration.
 

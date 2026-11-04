@@ -6,7 +6,7 @@ import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adapt
 test('daily trials distinguish attempts, completion and assessed evidence without claiming learned savings', () => {
   const display = learningDisplay({ trials: { attempted: 2, target: 2, completed: 1,
     incomplete: 1, assessed: 0, observedCompressorRunHours: .5, remainingCents: 150,
-    nextEligibleAt: Date.parse('2026-01-02T22:00:00Z'), blockingReason: 'recent-cycle-incomplete' } });
+    blockingReason: 'normal-operation-preferred' } });
   const row = display.evidenceRows.find(item => item.key === 'Daily learning trials');
   assert.equal(row.value, '2 attempted / 2 sought');
   assert.match(row.detail, /1 completed, 1 incomplete, 0 with a comparable/);
@@ -231,8 +231,7 @@ test('Home explains retained intervals, held sensor readings and provisional nor
 test('cycle costs use bounded assessment windows and disclose uncovered periods', () => {
   const display = learningDisplay({ metrics: { profit: { value: 0, count: 3, uncertainty: 0.2 } },
     outcomes: { attempted: 100, completed: 80, incomplete: 20, assessed: 50, observedCostCents: 100, missingHours: 2.5 },
-    parameters: { auxIntegralA2: 600, a2Basis: 'offset', auxHysteresisC: 10, compressorIntegralA1: -60, compressorHysteresisC: 7 },
-    controlHold: { until: Date.parse('2026-01-02T12:00:00Z'), reason: 'incomplete-recovery' } });
+    parameters: { auxIntegralA2: 600, a2Basis: 'offset', auxHysteresisC: 10, compressorIntegralA1: -60, compressorHysteresisC: 7 } });
   assert.equal(display.metrics[0].value, '0.00 €/cycle');
   assert.match(display.metrics[0].evidence, /3 assessed cycles among the latest 30 completed cycles/);
   assert.match(display.metrics[0].evidence, /not a statistical confidence interval/);
@@ -240,7 +239,7 @@ test('cycle costs use bounded assessment windows and disclose uncovered periods'
   assert.match(text, /Recent attempted cycles \(latest 100\): 100/);
   assert.match(text, /Covered cycle electricity cost estimate: €1.00; source-map or nominal-power estimates are used unless metered/);
   assert.match(text, /2.5 hours without cost coverage are excluded/);
-  assert.match(text, /2 Jan 2026, 14:00 Finnish time/);
+  assert.ok(!display.evidenceRows.some(row=>row.key==='Automatic cycle hold'));
   assert.match(display.coefficientEvidence.join(' '), /A2 600 °min \(relative to A1\).*A1 -60 °min/);
 });
 
@@ -252,7 +251,7 @@ test('equipment and frozen forecast checks disclose different inputs and support
       preheat: { accepted: true, episodes: 3, maxDurationHours: 2, maxRoomBoostC: 1 } } } },
       forecastValidation: { accepted: true, episodes: 3, maxReductionHours: 2 } } } });
   const text = display.evidence.join(' ');
-  assert.match(text, /retained earlier validation over 3 held-out completed episodes/);
+  assert.match(text, /retained earlier validation over 3 held-out closed episodes/);
   assert.match(text, /error in mean episode compressor duty 5.0 percentage points; supported phase duration up to 4.0 hours/);
   assert.match(text, /uses recorded indoor and outdoor temperatures and requested control context/);
   assert.match(text, /supported reduction duration up to 2.0 hours/);
@@ -380,7 +379,7 @@ test('combined hydronic parameter explains the source conversion and separates f
     savingsStrategy: 'balanced', preheatRoomBoostC: 5,
     comfort: { maxDropC: 1.5, maxRiseC: 1.5 } }, preheatValves: {} });
   const combined = display.coefficients.find(row => row.key === 'hydronicCPerKwh');
-  assert.equal(combined.value, '0.0798 °C/kWh thermal');
+  assert.equal(combined.value, `${model.parameters.hydronicCPerKwh.toFixed(4)} °C/kWh thermal`);
   const source = display.coefficients.find(row => row.key === 'source-model-confirmed');
   const sourceNotes = source.calculation.paragraphs.join(' ');
   assert.match(combined.calculation.equations[0].expression, /d × Q/);
@@ -405,7 +404,7 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(display.coefficients.find(row => row.key === 'floor-state-validation').detail, /No extra storage-response coefficient is fitted/);
   assert.match(display.coefficientEvidence.join(' '), /15-minute expiry renewed every 5 minutes/);
   assert.match(display.coefficientEvidence.join(' '), /H66 ROOM has no device-side lease/);
-  assert.match(display.coefficientEvidence.join(' '), /increases the saved normal ROOM setting by 5\.0 °C/);
+  assert.match(display.coefficientEvidence.join(' '), /increases the saved normal ROOM setting by up to 5\.0 °C/);
   assert.match(display.coefficientEvidence.join(' '), /1\.5 °C below and 1\.5 °C above the normal average reference/);
   assert.doesNotMatch(JSON.stringify(display), /absolute ROOM setting|Final DHW refill|older algorithms|archival gaps/);
   const recovery = display.policyRows.find(row => row.key === 'Recovery hold');
@@ -439,11 +438,11 @@ test('Home separates outcomes, model equations and planning without repeating gr
   assert(display.policyRows.some(row => row.key === 'Valve override lease'));
   assert(!display.evidenceRows.some(row => row.key === 'Room comfort projection'));
   const economics = display.policyRows.find(row => row.key === 'Worthwhile cycle threshold');
-  assert.match(economics.value, /50 ct/);
+  assert.match(economics.value, /2 ct/);
   assert.match(economics.calculation.paragraphs.join(' '), /not an off switch/);
   assert.doesNotMatch(JSON.stringify(display), /savings preference \/ 100|50 − 40a|0–100/);
   assert.equal(display.policyRows.find(row => row.key === 'Savings strategy').value, 'Gentle');
-  assert.match(economics.calculation.equations.find(row => row.label === 'Starting hurdle').legend, /minimum_benefit = 50 ct.*discomfort_weight = 30 ct/);
+  assert.match(economics.calculation.equations.find(row => row.label === 'Starting hurdle').legend, /minimum_benefit = 2 ct.*discomfort_weight = 5 ct/);
 });
 
 

@@ -707,7 +707,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         // ROOM restoration completes before reduction settings are sent. The executor owns DHWR.
         if (state.obligations['0203']) changed.push(...await apply({ '0203': state.baseline['0203'] }, { now, reason: 'preheat-complete', restoring: true }));
         changed.push(...await apply({ '0212': Math.min(40, state.baseline['0212']),
-          '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt, manualPause: manual && pauseId !== null }));
+          '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt,
+          validateActivation, manualPause: manual && pauseId !== null }));
       }
       return writeState(() => {
         state.phase = phase;

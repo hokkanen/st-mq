@@ -4,6 +4,7 @@ import { Store } from '../src/storage/store.js';
 import { CycleTracker } from '../src/app/cycles.js';
 import { initialAdaptiveModel, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
 import { evaluateCycle, chooseCycle, revalidatePlan } from '../src/control/planner.js';
+import { initialHomeState } from '../src/domain/home-model.js';
 
 const HOUR = 3600000, start = Date.parse('2026-01-01T00:00:00Z');
 const intervals = (hours = 8, { outdoorC = 0, solarRadiationWm2 = 0, price = i => i < 2 ? 100 : 5 } = {}) =>
@@ -62,7 +63,7 @@ test('recovery accounting stops once the room and reserve regain comparable norm
   assert.equal(expensive.recoveredAt, short.recoveredAt, 'Electrical inefficiency is not extra delivered heat');
 });
 
-test('unvalidated bootstrap cannot bypass disabled learning trials even with native controls', () => {
+test('startup economic operation remains available with learning trials disabled', () => {
   const choose = (rows, equipment = {}) => chooseCycle({ now: start,
     observations: { indoor: { value: 21, observedAt: start } },
     prices: rows.map(x => ({ ...x, allInCentsPerKWh: x.price })),
@@ -71,9 +72,10 @@ test('unvalidated bootstrap cannot bypass disabled learning trials even with nat
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
     config: { learningTrials: false }, equipment });
   for (const equipment of [{},{h66Available:true,preheatAvailable:true}]) {
-    const selected = choose(intervals(24),equipment);
-    assert.equal(selected.phase,'normal');assert.equal(selected.plan,null);
-    assert.deepEqual(selected.reasons,['awaiting-tariff-response-evidence']);
+    const selected = choose(intervals(24, { price: i => i < 2 ? 500 : 5 }),equipment);
+    assert.ok(selected.plan);assert.equal(selected.plan.trial,false);
+    assert.ok(selected.plan.estimatedBenefitCents>0);
+    assert.equal(selected.plan.readiness.actionValidated,false);
   }
   const warm = choose(intervals(8, { outdoorC: 30, price: i => i < 8 ? -100 : 100 }),
     { h66Available: true, preheatAvailable: true });
@@ -92,28 +94,31 @@ test('native integral and supply trends stay bounded to near-term evidence', () 
 
 test('missing solar over a 48-hour horizon still permits a bounded startup trial', () => {
   const rows = intervals(48, { solarRadiationWm2: null, price: () => 10 });
+  const model=initialAdaptiveModel();
   const decision = chooseCycle({ now: start, observations: { indoor: { value: 21, observedAt: start } },
     prices: rows.map(x => ({ ...x, allInCentsPerKWh: x.price })),
     forecast: rows.map(x => ({ ...x, issuedAt: start })),
-    checkpoint: { model: initialAdaptiveModel(), baselineC: 21,health:{usableSamples:4} },
+    checkpoint: { model, baselineC: 21,health:{usableSamples:4} },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
-    thermalState: { reserveC: 25.725 }, equipment:{compressorOn:1,dhwRouting:0},trialBudgetRemainingCents: 100 });
+    thermalState: initialHomeState(model,21,0), config:{maxUnobservedReductionHours:2},
+    equipment:{compressorOn:1,dhwRouting:0,h66Available:true},trialBudgetRemainingCents: 300 });
   assert.equal(decision.phase, 'reduction');
   assert.equal(decision.plan.trial, true);
-  assert.ok(decision.plan.schedule.reductionEnd - decision.plan.schedule.reductionStart <= HOUR / 2);
-  assert.ok(decision.plan.trialAllowanceCents <= 50);
+  assert.ok(decision.plan.schedule.reductionEnd - decision.plan.schedule.reductionStart <= 4*HOUR);
+  assert.ok(decision.plan.trialAllowanceCents <= 150);
   assert.equal(decision.plan.trialSafety.comfortSafe,true);
 });
 
 test('cycle selection and revalidation accept old indoor values without renewing their timestamps', () => {
   const rows = intervals(48, { solarRadiationWm2: null, price: () => 10 });
+  const model=initialAdaptiveModel();
   const args = { now: start, observations: { indoor: { value: 21, observedAt: start - 7 * 24 * HOUR,
     stale: false, needsAttention: true, held: true } },
     prices: rows.map(row => ({ ...row, allInCentsPerKWh: row.price })),
     forecast: rows.map(row => ({ ...row, issuedAt: start })),
-    checkpoint: { model: initialAdaptiveModel(), baselineC: 21, health: { usableSamples: 4 } },
+    checkpoint: { model, baselineC: 21, health: { usableSamples: 4 } },
     settings: { comfort: { targetC: 21, maxDropC: 1 }, occupancy: { mode: 'occupied' } },
-    thermalState: { reserveC: 25.725 }, equipment: { compressorOn: 1, dhwRouting: 0 }, trialBudgetRemainingCents: 100 };
+    thermalState: initialHomeState(model,21,0), equipment: { compressorOn: 1, dhwRouting: 0, h66Available:true }, trialBudgetRemainingCents: 300 };
   const decision = chooseCycle(args);
   assert.equal(decision.phase, 'reduction');
   assert.equal(revalidatePlan({ ...args, plan: decision.plan }).valid, true);

@@ -18,14 +18,15 @@ function preheatFixture() {
   return input;
 }
 
-test('economic preheat never extrapolates held-out ROOM-boost authority', () => {
+test('initial estimates permit configured ROOM boosts without manufacturing demonstrated support', () => {
   const input = preheatFixture();
   const supported = chooseCycle(input);
   assert.equal(supported.plan?.trial, false);
   assert.equal(supported.plan.schedule.roomBoostC, 1);
   input.config.preheatRoomBoostC = 5;
   const unsupported = chooseCycle(input);
-  assert.equal(unsupported.plan, null, 'Large negative prices cannot turn +1 evidence into +5 authorization');
+  assert.equal(unsupported.plan?.schedule.roomBoostC, 5, 'Configured increases use initial estimates and physical comfort checks');
+  assert.equal(input.checkpoint.model.equipmentResponse.validation.phases.preheat.maxRoomBoostC, 1);
   input.checkpoint.model.equipmentResponse.validation.phases.preheat.maxRoomBoostC = 5;
   assert.equal(chooseCycle(input).plan?.schedule.roomBoostC, 5, 'Matching independent boost evidence permits consideration');
 });
@@ -38,8 +39,9 @@ test('dispatch revalidates the supported ROOM boost and the current preheat-dura
   assert.equal(beyondDuration.reason, 'scheduled-cycle-outside-current-limits');
   input.checkpoint.model.equipmentResponse.validation.phases.preheat.maxRoomBoostC = .5;
   const beyondBoost = revalidatePlan({ ...input, plan });
-  assert.equal(beyondBoost.valid, false);
-  assert.equal(beyondBoost.reason, 'scheduled-preheat-evidence-unavailable');
+  assert.equal(beyondBoost.valid, true, 'The initial estimate remains available when independent boost support is smaller');
+  input.equipment.roomSettingMaximumC = input.equipment.roomSettingC;
+  assert.equal(revalidatePlan({ ...input, plan }).valid, false, 'Actual ROOM headroom remains mandatory');
 });
 
 function trialFixture({ indoorC = 21, price = 10, hours = 8 } = {}) {

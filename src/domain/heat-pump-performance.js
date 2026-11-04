@@ -1,6 +1,7 @@
 /** Fixed DHP-H 10 source estimate. Danfoss AN000086466221en-010701,
  * technical data pp. 107–108: B0/W35 9.40 kW, COP 4.24;
  * B0/W45 9.24 kW, COP 3.51. These are test-boundary outputs, not metering. */
+import { DEFAULT_HOME_MODEL } from './home-model.js';
 export const HEAT_PUMP_PERFORMANCE = Object.freeze({
   version: 'dhp-h10-b0-v1', model: 'Danfoss DHP-H 10', brineReferenceC: 0,
   supplyRangeC: [35, 45], nominalSupplyC: 35, pumpsIncluded: true,
@@ -46,6 +47,15 @@ export function estimateHydronicHeat(inputs = {}, performance = {}) {
 }
 
 export const hydronicGain = model => Number.isFinite(model?.parameters?.hydronicCPerKwh)
-  ? model.parameters.hydronicCPerKwh : 0.75 / 9.4;
+  ? model.parameters.hydronicCPerKwh : DEFAULT_HOME_MODEL.hydronicCPerKwh;
 export const nominalCompressorHeatKw = (model, inputs = {}) =>
   estimateHeatPumpPerformance({ ...model?.performance, ...inputs }).heatKw;
+
+/** Forecast operating point, bounded by an actually reported native ceiling. */
+export function planningSupplyC(equipment = {}, roomBoostC = 0) {
+  const base=Number.isFinite(equipment.normalSupplyC)?equipment.normalSupplyC:Number.isFinite(equipment.supplyC)
+    ?equipment.supplyC-(equipment.observedPhase==='preheat'?3*(equipment.observedRoomBoostC??0):0):null;
+  if(!Number.isFinite(base))return null;
+  const requested=base+3*Math.max(0,roomBoostC);
+  return Number.isFinite(equipment.maximumSupplyC)?Math.min(requested,equipment.maximumSupplyC):requested;
+}

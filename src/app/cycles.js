@@ -69,15 +69,9 @@ export class CycleTracker {
     this.fireplaceContext = context;
   }
   save(cycle) { this.store.cycle(this.input, cycle); this.store.setState(this.key, cycle.status === 'completed' || cycle.status === 'incomplete' ? null : cycle); }
-  controlHold(now) {
-    const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
-    return previous?.status==='incomplete'&&number(previous.endedAt)&&now-previous.endedAt<24*HOUR
-      ? {until:previous.endedAt+24*HOUR,reason:previous.incompleteReason}:null;
-  }
   budget(now) {
     const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
-    const cooldown=previous?.status==='incomplete'?24:6;
-    if (previous && (!previous.endedAt || now-previous.endedAt<cooldown*HOUR)) return 0;
+    if (previous && !number(previous.endedAt)) return 0;
     const state = this.store.getState(`trials:${this.input}`);
     return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
   }
@@ -86,15 +80,12 @@ export class CycleTracker {
     // of repeatedly extracting fields from large old recovery-cycle payloads.
     const rows = this.store.cycleSummaries({ input: this.input, limit: 100, since: now - 26 * HOUR });
     const date = dateKey(now), today = rows.filter(row => row.trial && row.startedAt <= now && dateKey(row.startedAt) === date);
-    const previous = this.store.cycleSummaries({ input: this.input, limit: 1 })[0];
-    const cooldownHours = previous?.status === 'incomplete' ? 24 : 6;
-    const until = number(previous?.endedAt) ? previous.endedAt + cooldownHours * HOUR : null;
     return { date, target: this.config.learningTrialTargetPerDay, attempted: today.length,
       completed: today.filter(row => row.status === 'completed').length,
       incomplete: today.filter(row => row.status === 'incomplete').length,
       assessed: today.filter(row => number(row.profitCents)).length,
       observedCompressorRunHours: today.reduce((sum, row) => sum + (row.compressorRunHours ?? 0), 0),
-      remainingCents: this.budget(now), nextEligibleAt: until > now ? until : null,
+      remainingCents: this.budget(now),
       basis: 'Actual recorded trials today in Europe/Helsinki; completion and comparable assessment do not establish model acceptance.' };
   }
   start(plan, sample, now, { executed = false } = {}) {
@@ -116,7 +107,7 @@ export class CycleTracker {
         dhwCostCents:0,dhwKwh:0,routeCoveredHours:0,routeMissingHours:0 },
       originalPrediction: { costCents: plan.prediction.costCents, recoveryCostCents: plan.prediction.recoveryCostCents,
         electricityKwh: plan.prediction.electricityKwh }, stableSince: null };
-    if (plan.trial) {
+    if (plan.trial && plan.userTrial?.limits?.maxTrialCostCents === undefined) {
       const old = this.store.getState(`trials:${this.input}`);
       this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
     }
@@ -127,7 +118,16 @@ export class CycleTracker {
   cancel(now, reason) {
     const cycle = this.active(); if (!cycle) return;
     cycle.status = 'incomplete'; cycle.endedAt = now; cycle.incompleteReason = reason;
-    this.save(cycle); this.store.event('cycle-incomplete', { id: cycle.id, reason }, now);
+    this.store.transaction(() => {
+      this.save(cycle);
+      const phases = [...new Set(cycle.observations.map(row => row.phase))];
+      if (phases.length && now > cycle.startedAt) appendLearningRecord(this.store, this.input, 'episode', {
+        id: cycle.id, startedAt: cycle.startedAt, endedAt: now, phases,
+        treatmentKey: cycle.treatmentKey ?? 'native', responseComplete: true,
+        complete: false, recoveryComplete: false, origin: 'interrupted-cycle',
+      }, { config: this.config, seed: this.learningSeed?.() ?? null });
+      this.store.event('cycle-incomplete', { id: cycle.id, reason }, now);
+    });
   }
   shorten(now, reason) {
     const cycle = this.active(); if (!cycle) return;
@@ -343,6 +343,7 @@ export class CycleTracker {
         // Keep the attempt and actual observations, without letting assumed wood
         // heat calibrate recovery energy or certify advance control performance.
         episode.complete = false;
+        episode.responseComplete = true;
       }
       // Completion and calibration are one durable operation. A crash after
       // this commit leaves an unapplied journal entry, not a lost episode.

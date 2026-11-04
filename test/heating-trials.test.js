@@ -15,6 +15,7 @@ function input(outdoorC = 10) {
   value.checkpoint.model = initialAdaptiveModel({ heatPumpModelConfirmed: true });
   Object.assign(value.config, { learningTrials: true, maxTrialCostCents: 150, trialBudgetCentsPerDay: 300 });
   value.trialBudgetRemainingCents = 300;
+  value.prices.forEach(row => {row.allInCentsPerKWh=2;});
   Object.assign(value.equipment, { compressorOn: 0, heatingDemand: { observedThrough: value.now,
     coveredHours: 24, duty: .3, indoorOutdoorGapC: 10, cycles: 8, runHours: .35, cycleHours: 1.15 } });
   return value;
@@ -26,13 +27,14 @@ test('trial windows span useful demand cycles, lengthening in milder weather wit
   assert.equal(cold.plan.trial, true);
   assert.equal(mild.plan.trial, true);
   assert.ok(duration(cold.plan) > .5);
-  assert.ok(duration(mild.plan) > duration(cold.plan));
+  assert.ok(mild.plan.trialOpportunity.minimumHours > cold.plan.trialOpportunity.minimumHours);
+  assert.ok(duration(mild.plan) >= mild.plan.trialOpportunity.minimumHours);
   assert.ok(duration(mild.plan) <= mildInput.config.maxReductionHours);
   assert.equal(mild.plan.readiness.actionValidated, false);
   assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).valid, true);
   assert.equal(mildInput.checkpoint.model.validation, null, 'Planning creates no learning evidence');
   mildInput.equipment.learningTrialsToday = 2;
-  assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).reason, 'daily-learning-trial-target-reached');
+  assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).valid, true, 'The daily target cannot end useful lifelong exploration');
 });
 
 test('no heating opportunity is not a daily experiment, and hard ceilings still win', () => {
@@ -40,11 +42,15 @@ test('no heating opportunity is not a daily experiment, and hard ceilings still 
   assert.equal(warm.plan, null);
   assert.ok(warm.reasons.includes('no-useful-space-heating-window'));
   const capped = input(); capped.config.maxReductionHours = .5;
-  assert.equal(chooseCycle(capped).plan, null);
+  const limited=chooseCycle(capped).plan;
+  assert.ok(!limited || duration(limited)<=.5);
+  assert.notEqual(limited?.trial,true,'A shorter economic action can remain useful without being a qualified experiment');
   const unobserved = input(); unobserved.equipment.h66Available = false;
-  assert.equal(chooseCycle(unobserved).plan, null);
+  const blind=chooseCycle(unobserved).plan;
+  assert.ok(!blind||duration(blind)<=.5);
+  assert.notEqual(blind?.trial,true,'Experiments require native observations');
   const disabled = input(); disabled.config.learningTrials = false;
-  assert.equal(chooseCycle(disabled).plan, null);
+  assert.notEqual(chooseCycle(disabled).plan?.trial,true);
 });
 
 test('daily trial priority expands checked action coverage instead of depending on episode modulo', () => {
@@ -52,12 +58,13 @@ test('daily trial priority expands checked action coverage instead of depending 
   Object.assign(value.config, { learningTrials: true, maxTrialCostCents: 150 });
   value.trialBudgetRemainingCents = 300;
   value.equipment.learningTrialsToday = 0;
+  value.prices.forEach(row => {row.allInCentsPerKWh=2;});
   const result = chooseCycle(value);
   assert.equal(result.plan?.trial, true);
   assert.ok(duration(result.plan) > .5);
   value.equipment.learningTrialsToday = 2;
   const ordinary = chooseCycle(value);
-  if (ordinary.plan) assert.equal(ordinary.plan.trial, false);
+  if (ordinary.plan?.trial) assert.ok(ordinary.plan.trialAllowanceCents<=150, 'Continued exploration remains cost bounded');
 });
 
 function costArgs({ outdoorC = 10, price = 10 } = {}) {
@@ -129,6 +136,19 @@ test('demand summary separates DHW, missing coverage, future reports and interve
   assert.equal(heatingDemandHistory(intervention, now), null);
 });
 
+test('Normal AUX estimates use observed routed energy and keep missing evidence unknown',()=>{
+  const segment={phase:'normal',auxRoute:'space',compressorDuty:1,outdoorC:0,quality:[],auxiliaryObserved:true};
+  const samples=[{timestamp:now,indoorC:21,inputSegments:[
+    {...segment,start:now-2*HOUR,end:now-HOUR,thermalAuxKw:0},
+    {...segment,start:now-HOUR,end:now,thermalAuxKw:3}]}];
+  const actual=heatingDemandHistory(samples,now);
+  assert.equal(actual.normalAuxiliaryKw,1.5);assert.equal(actual.auxiliaryCoveredHours,2);
+  const unknown=structuredClone(samples);unknown[0].inputSegments.forEach(row=>{row.auxiliaryObserved=false;});
+  assert.equal(heatingDemandHistory(unknown,now).normalAuxiliaryKw,null);
+  const diverted=structuredClone(samples);diverted[0].inputSegments[1].auxRoute='dhw';
+  assert.equal(heatingDemandHistory(diverted,now).normalAuxiliaryKw,0);
+});
+
 test('stale demand history cannot authorize a useful no-demand window', () => {
   const value = input(25), args = costArgs({ outdoorC: 25 });
   args.equipment = { ...value.equipment, heatingDemand: { ...value.equipment.heatingDemand, observedThrough: now - 3 * HOUR } };
@@ -136,7 +156,7 @@ test('stale demand history cannot authorize a useful no-demand window', () => {
   assert.equal(trialOpportunity({ ...args, baseline }).useful, false);
 });
 
-test('daily progress is rebuilt from recorded dispatched trials with Finnish day and cooldown boundaries', () => {
+test('daily progress is rebuilt from recorded dispatched trials with Finnish day boundaries', () => {
   const store = new Store(':memory:');
   try {
     const tracker = new CycleTracker({ store, input: 'providers' });
@@ -153,15 +173,15 @@ test('daily progress is rebuilt from recorded dispatched trials with Finnish day
     assert.equal(progress.completed, 1);
     assert.equal(progress.assessed, 1, 'A valid zero assessment remains valid');
     assert.equal(progress.observedCompressorRunHours, .5);
-    assert.equal(progress.remainingCents, 0);
-    assert.equal(progress.nextEligibleAt, at + 7 * HOUR);
-    assert.equal(tracker.trialProgress(at + 8 * HOUR).nextEligibleAt, null);
+    assert.equal(progress.remainingCents, 300);
+    assert.equal(Object.hasOwn(progress,'nextEligibleAt'), false, 'No hidden cooldown follows completed recovery');
+    assert.equal(Object.hasOwn(tracker.trialProgress(at + 8 * HOUR),'nextEligibleAt'), false);
     assert.equal(tracker.trialProgress(at + 25 * HOUR).attempted, 0);
   } finally { store.close(); }
 });
 
 test('daily target and trial allowances remain configuration owned and bounded', () => {
-  assert.equal(controlConfiguration().learningTrialTargetPerDay, 2);
+  assert.equal(controlConfiguration().learningTrialTargetPerDay, 4);
   assert.equal(controlConfiguration({ learning_trial_target_per_day: 4 }).learningTrialTargetPerDay, 4);
   for (const value of [0, 5, 1.5, null, '2'])
     assert.throws(() => controlConfiguration({ learning_trial_target_per_day: value }));

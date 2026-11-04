@@ -8,7 +8,8 @@ const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.
  * evidence. DHW, gaps, interventions and significant wood heat break cycles. */
 export function heatingDemandHistory(samples = [], now) {
   const from = now - 48 * HOUR, spans = [];
-  let coveredHours = 0, runHours = 0, gapHours = 0, observedThrough = null, segments = 0;
+  let coveredHours = 0, runHours = 0, gapHours = 0, observedThrough = null, segments = 0,
+    auxiliaryHours=0,auxiliaryKwh=0;
   for (const sample of samples.slice(-194)) {
     const timestamp = typeof sample.timestamp === 'number' ? sample.timestamp : Date.parse(sample.timestamp);
     if (!finite(timestamp) || timestamp > now || timestamp <= from) continue;
@@ -22,6 +23,9 @@ export function heatingDemandHistory(samples = [], now) {
       if (previous && start < previous.end) continue;
       const hours = (end - start) / HOUR;
       coveredHours += hours; runHours += row.compressorDuty * hours;
+      if(row.auxiliaryObserved===true&&finite(row.thermalAuxKw)&&row.thermalAuxKw>=0&&row.thermalAuxKw<=20){
+        auxiliaryHours+=hours;auxiliaryKwh+=row.thermalAuxKw*hours;
+      }
       gapHours += Math.max(0, sample.indoorC - row.outdoorC) * hours;
       observedThrough = end;
       if (previous && start === previous.end && row.compressorDuty === previous.duty) previous.end = end;
@@ -39,6 +43,7 @@ export function heatingDemandHistory(samples = [], now) {
       cycles.push((row.end - before.start) / HOUR);
   }
   return { observedThrough, coveredHours, duty: runHours / coveredHours,
+    normalAuxiliaryKw:auxiliaryHours>0?auxiliaryKwh/auxiliaryHours:null,auxiliaryCoveredHours:auxiliaryHours,
     indoorOutdoorGapC: gapHours / coveredHours, cycles: cycles.length,
     runHours: median(runs), cycleHours: median(cycles),
     basis: 'Recorded Normal space-heating coverage; DHW and gaps excluded.' };
@@ -71,4 +76,19 @@ export function trialOpportunity({ schedule, baseline, equipment = {}, initialSt
     minimumHours: finite(minimumHours) ? minimumHours : null, requiredRunHours, expectedRunHours,
     basis: recent ? 'Recorded space-heating cycles adjusted for forecast indoor/outdoor difference.'
       : 'Unvalidated Normal-demand forecast; no recent qualified cycle history.' };
+}
+
+/** Forecast contrast only: useful experiment selection, never acquired evidence. */
+export function trialInformation({schedule,prediction,baseline,opportunity,noiseC}) {
+  const reference=new Map(baseline.trajectory.map(row=>[row.at,row]));
+  let signalC=0,dutyContrastHours=0;
+  for(const row of prediction.trajectory){
+    const normal=reference.get(row.at);if(!normal)continue;
+    if(row.at<=schedule.reductionEnd+6*HOUR)signalC=Math.max(signalC,Math.abs(row.indoorC-normal.indoorC));
+    if(row.at>schedule.preheatStart&&row.at<=schedule.reductionEnd)
+      dutyContrastHours+=Math.abs(row.compressorDuty-normal.compressorDuty)*row.durationHours;
+  }
+  return {signalC,dutyContrastHours,score:signalC/Math.max(.1,noiseC)
+    +dutyContrastHours/Math.max(.05,opportunity.requiredRunHours),
+    basis:'Predicted thermal and compressor contrast; not observed information gain or validated treatment response.'};
 }

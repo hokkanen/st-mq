@@ -1,20 +1,28 @@
 import { predictThermalStep } from '../control/adaptive-learning.js';
 import { goodQuality } from '../control/learning.js';
+import { initialHomeState } from '../domain/home-model.js';
 
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
 /** Runtime prediction only: this state never enters the learning checkpoint. */
 export function indoorControlState({ previous, checkpoint, sample, observation, identity, now }) {
   if (!observation || observation.stale || !finite(observation.value)) return null;
-  const signature = JSON.stringify([identity, checkpoint.model.parameters, checkpoint.model.floor]);
+  const signature = JSON.stringify([identity, checkpoint.model.parameters, checkpoint.model.floor, checkpoint.model.initialModel]);
   let state, cursor, measuredStateAt;
   if (!observation.estimated) {
     const observedAt = Date.parse(checkpoint.state?.observedAt);
     if (!checkpoint.state || !finite(checkpoint.state.reserveC) || !finite(checkpoint.state.indoorC)
-      || !finite(observedAt) || observedAt > now || now - observedAt > HOUR / 2) return null;
+      || !finite(observedAt) || observedAt > now || now - observedAt > HOUR / 2) {
+      if (previous?.signature === signature && finite(previous.at) && previous.at <= now && now-previous.at <= HOUR/2
+        && finite(previous.state?.reserveC) && finite(previous.state?.indoorC)) {
+        state={...previous.state};cursor=previous.at;measuredStateAt=previous.measuredStateAt;
+      } else return {signature,at:now,measuredStateAt:null,estimated:false,
+        state:initialHomeState(checkpoint.model,observation.value,sample.outdoorC,sample.solarRadiationWm2)};
+    } else {
     // A committed checkpoint describes its own boundary. Catch its reserve up
     // through actual covered inputs before attaching today's measured room value.
     state = { ...checkpoint.state }; cursor = observedAt; measuredStateAt = observedAt;
+    }
   } else {
     if (!previous || previous.signature !== signature || !finite(previous.at) || previous.at > now
       || now - previous.at > HOUR / 2 || !finite(previous.state?.reserveC) || !finite(previous.state?.indoorC)) return null;

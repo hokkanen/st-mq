@@ -288,9 +288,10 @@ observes achieved temperature, not the person's intent: a faulty valve or open
 window can resemble a changed preference. A native ROOM setting edit also retains
 the previous reference while new Normal evidence refines it; it invalidates
 applicable equipment-response evidence without erasing that comfort reference.
-Provisional references limit automatic reduction to at most 0.5°C below the
-reference; equipment readiness, thermal-model evidence and all other comfort checks
-remain independent.
+Under the owner-approved 2026-11-04 amendment, provisional references use the
+configured comfort limits immediately. There is no separate startup temperature
+cap. Reference quality remains visible; actual equipment readiness, current
+measurements and configured comfort checks still apply.
 
 ## One missing room
 
