@@ -46,6 +46,7 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-opportunity button { margin-top: 7px; font-size: 11px; }
 .heating-explorer-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-flow: row; gap: 8px 16px; margin: 18px 0; }
 .heating-explorer-control { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; grid-row: span 3; padding-bottom: 8px; }
+.heating-explorer-control input, .heating-explorer-control select, .heating-explorer-control button { scroll-margin-top: var(--heating-explorer-control-scroll-margin, 155px); }
 #heating-explorer-controls > [data-key="savingsStrategy"] { grid-column: 1; grid-row: 1 / span 3; }
 #heating-explorer-controls > [data-key="maxDropC"] { grid-column: 2; grid-row: 1 / span 3; }
 #heating-explorer-controls > [data-key="maxReductionHours"], #heating-explorer-controls > [data-key="maxAwayReductionHours"] { grid-column: 3; grid-row: 1 / span 3; }

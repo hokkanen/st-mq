@@ -206,6 +206,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const heading = $('heating-simulator-title');
     const header = dialog.querySelector('.heating-explorer-header');
     heading.style.scrollMarginTop = `${header.offsetHeight + 24}px`;
+    dialog.style.setProperty('--heating-explorer-control-scroll-margin', heading.style.scrollMarginTop);
     // A closed advanced fold can leave too little content below the heading
     // for start alignment. Reserve only the missing scroll room, even if the
     // extra content grows an auto-sized dialog to its maximum height.
@@ -529,6 +530,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   if (Observer) {
     const observer = new Observer(() => {
       const margin = `${dialog.querySelector('.heating-explorer-header').offsetHeight + 24}px`;
+      dialog.style.setProperty('--heating-explorer-control-scroll-margin', margin);
       $('heating-explorer-comparison-section').style.scrollMarginTop = margin;
       $('heating-explorer-form').style.scrollMarginTop = margin;
       $('heating-simulator-title').style.scrollMarginTop = margin;

@@ -270,7 +270,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true', 'An older close cannot collapse a reopened heating plan');
   assert.equal(await evaluate('document.activeElement.id'), 'heating-explorer-close');
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
-  for (const [width, height] of [[280,740],[320,740],[390,844],[650,900],[651,900],[768,1024],[1024,768],[1280,1000],[1920,1080]]) {
+  for (const [width, height] of [[280,740],[320,740],[390,420],[390,844],[650,900],[651,900],[768,1024],[844,390],[1024,768],[1280,1000],[1920,1080]]) {
     await send('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
     for (const theme of ['light', 'dark']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
@@ -392,10 +392,16 @@ try {
   await tap('#heating-explorer-reset');
   assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'balanced');
   const beforeInvalid=await evaluate(`explorerFixture.requests.length`);
-  await evaluate(`document.getElementById('heating-limit-preheatRoomBoostC').value='1.5';document.getElementById('heating-limit-preheatRoomBoostC').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit()`);
-  assert.equal(await evaluate(`explorerFixture.requests.length`),beforeInvalid,'Fractional ROOM settings fail native validation before a request');
-  await evaluate(`document.getElementById('heating-explorer-reset').click();document.getElementById('heating-limit-maxReductionHours').value='';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit()`);
-  assert.equal(await evaluate(`explorerFixture.requests.length`),beforeInvalid,'An empty required limit cannot submit');
+  for(const width of [390,1280]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:width===390?2:1,mobile:width===390});
+    for(const [key,value] of [['preheatRoomBoostC','1.5'],['maxReductionHours','']]) {
+      await evaluate(`(() => {document.getElementById('heating-explorer-reset').click();const input=document.getElementById('heating-limit-${key}');input.value=${JSON.stringify(value)};input.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit();})()`);
+      assert.equal(await evaluate(`explorerFixture.requests.length`),beforeInvalid,'Invalid limits cannot submit');
+      await evaluate(`await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame)`);
+      assert(await evaluate(`(() => {const input=document.getElementById('heating-limit-${key}'),r=input.getBoundingClientRect(),header=document.querySelector('.heating-explorer-header').getBoundingClientRect();return document.activeElement===input&&r.top>=header.bottom&&r.bottom<=innerHeight&&input.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2));})()`),`${width}px: native validation keeps the invalid ${key} visible below the sticky header`);
+    }
+  }
+  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:2,mobile:true});
   await evaluate(`document.getElementById('heating-explorer-reset').click()`);
   await tap('.heating-explorer-footnotes > summary');
   assert.equal(await evaluate(`document.querySelector('.heating-explorer-footnotes').open`),true,'Touch opens estimate explanations');
