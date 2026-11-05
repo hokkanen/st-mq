@@ -58,7 +58,12 @@ test('a dense completed window crosses the controller row limit without stalling
   await assert.rejects(store.runWrite(() => appendLearningRecord(store, 'mqtt', 'sample', sample,
     { config: engine.control })), { code: 'journal_main_thread_transaction_too_large' });
   assert.deepEqual(store.checkpoint(), before, 'The existing controller guard still rolls back atomically');
+  let conditionChecks = 0;
+  const sameFence = engine.sameUpdateFence.bind(engine);
+  t.mock.method(engine, 'sameUpdateFence', (...args) => { conditionChecks++; return sameFence(...args); });
   await engine.update();
+  assert(conditionChecks < 100, 'Complete control conditions are checked per learning job, not per read statement');
+  t.diagnostic(JSON.stringify({ completeConditionChecks: conditionChecks }));
   assert.equal(engine.latestStatus.now, START, 'The complete controller pass publishes');
   const row = store.db.prepare("SELECT payload FROM learning_journal WHERE input='mqtt' AND kind='sample' AND at=?").get(START);
   assert.deepEqual(JSON.parse(row.payload).value, sample, 'All original segments, clocks, provenance and values are retained');
