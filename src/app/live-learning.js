@@ -8,7 +8,7 @@ const failed = () => Object.assign(new Error('Live learning calculation failed; 
 const cancelled = () => Object.assign(new Error('Live learning calculation was cancelled.'), { code: 'STORAGE_WRITE_CANCELLED' });
 const PAGE = 128;
 
-/** One readonly calculation at a time. Large new coefficient tails are staged
+/** One learning operation at a time. Large new coefficient tails are staged
  * by the owner in bounded writes and remain unselected until Engine publication. */
 export class LiveLearning {
   constructor({ store, input }) {

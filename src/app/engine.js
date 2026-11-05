@@ -83,6 +83,12 @@ function statusWithoutCharging(status) {
   return result;
 }
 
+function cycleStatus(cycle) {
+  return cycle ? { id: cycle.id, status: cycle.status, startedAt: cycle.startedAt,
+    actual: cycle.actual, stableSince: cycle.stableSince, referenceLabel: cycle.plan.referenceLabel,
+    adjustments: cycle.adjustments } : null;
+}
+
 function validatePhaseSnapshot(value) {
   if (value != null && (typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).some(key => !['phase', 'expiresAt'].includes(key))
@@ -1917,7 +1923,10 @@ export class Engine {
         }
       }
       if (this.plant) this.store.setState('simulation:plant',this.plant.state);
-      if (this.latestStatus?.now === now) { this.latestStatus.execution = execution; this.latestStatus.learning.episode = this.cycles.active(); }
+      if (this.latestStatus?.now === now) {
+        this.latestStatus.execution = execution;
+        this.latestStatus.learning.episode = cycleStatus(this.cycles.active());
+      }
       return execution;
     };
     const alreadyPending = this.dispatchPending;
@@ -1985,9 +1994,7 @@ export class Engine {
     const visibleCheckpoint = { ...checkpoint, samples:undefined, episodeArchive:undefined };
     const visiblePlan = decision.plan ? { ...decision.plan, model:undefined, intervals:undefined,
       prediction:{...decision.plan.prediction,trajectory:undefined},referencePrediction:{...decision.plan.referencePrediction,trajectory:undefined} } : null;
-    const visibleCycle = this.cycles.active();
-    const episodeStatus = visibleCycle ? {id:visibleCycle.id,status:visibleCycle.status,startedAt:visibleCycle.startedAt,
-      actual:visibleCycle.actual,stableSince:visibleCycle.stableSince,referenceLabel:visibleCycle.plan.referenceLabel,adjustments:visibleCycle.adjustments} : null;
+    const episodeStatus = cycleStatus(this.cycles.active());
     this.latestStatus = { now,input,environment:this.environment(),automation:this.automationStatus(),
       runtimeTiming:this.runtimeTiming?.() ?? null, heatingScenario: this.heatingExplorer.publicTrial(),
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,

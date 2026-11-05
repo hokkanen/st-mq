@@ -12,6 +12,33 @@ import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/teleme
 
 const HOUR = 3_600_000;
 
+test('a completed live receipt publishes the bounded cycle summary instead of working learning inputs', async t => {
+  const r = setup(t, { delayed: true }); r.plan();
+  r.engine.tick();
+  assert.equal(r.engine.status().learning.episode, null, 'an unconfirmed command creates no episode');
+  await new Promise(resolve => setImmediate(resolve));
+  r.acknowledge(); await r.settle();
+  const cycle = r.engine.cycles.active();
+  assert(cycle, 'the confirmed reduction starts a real tracked cycle');
+  const check = () => {
+    const episode = r.engine.status().learning.episode, current = r.engine.cycles.active();
+    assert.equal(episode.id, cycle.id);
+    assert.equal(episode.status, current.status);
+    assert.deepEqual(episode.actual, current.actual);
+    assert.equal(episode.referenceLabel, current.plan.referenceLabel);
+    for (const key of ['plan', 'modelConfig', 'observations', 'lastSample', 'observerState', 'originalPrediction'])
+      assert.equal(Object.hasOwn(episode, key), false, `${key} stays in the retained learning state`);
+    assert(JSON.stringify(episode).length < 2048, 'status polling stays bounded after command completion');
+  };
+  check();
+  r.transport.publish = async batch => {
+    r.commands.push([...batch]); return { status: 'mqtt', sent: true, actual: null };
+  };
+  r.advance(60_000); r.engine.tick(); await r.settle();
+  check();
+  assert(r.engine.cycles.active().observations.length > 0, 'working evidence remains retained');
+});
+
 test('a live trial continues after exposure grows beyond its initial estimate and stops at the actual budget cap', async t => {
   const r = setup(t), native = r.native(), plan = r.plan();
   native.receive('2201', 2);
