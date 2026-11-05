@@ -544,7 +544,7 @@ survive restart. Initial-model and continuous-learning interpretation uses the c
 
 Recovery restores normal ROOM and tariff operation while applying one shared
 **60-minute hold** (`controller.recovery_hold_minutes`). Until its fixed deadline,
-DHW start stays at the lower of 40 °C and its normal setting, the stop register
+DHW start stays at the lower of 45 °C and its normal setting, the stop register
 stays at 50 °C, new automatic DHWR pulses are suppressed and AUX is restricted.
 The stop register may govern AUX operation only; this is not an established 50 °C
 compressor cutoff. The hour is an initial engineering choice, not a learned

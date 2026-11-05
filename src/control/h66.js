@@ -1,6 +1,6 @@
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
-import { H66_SETTING_LIMITS, validateH66ControlState } from '../domain/heating-control-state.js';
+import { H66_SETTING_LIMITS, REDUCED_DHW_TARGETS, validateH66ControlState } from '../domain/heating-control-state.js';
 import { createWriteScope } from '../storage/write-scope.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
 
@@ -683,7 +683,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         // ownership so a cold-room fallback can permit AUX without ending the hold.
         for (const index of ['0203', ...(!holdDhwReduced ? ['0212', '0208'] : []), ...(!compressorOnly ? ['2201'] : [])]) if (state.obligations[index])
           changed.push(...await apply({ [index]: state.baseline[index] }, { now, reason: 'recovery', restoring: true }));
-        const values = { ...(holdDhwReduced ? { '0212': Math.min(40, state.baseline['0212']), '0208': 50 } : {}),
+        const values = { ...(holdDhwReduced ? { '0212': Math.min(REDUCED_DHW_TARGETS.startMaximumC, state.baseline['0212']),
+          '0208': REDUCED_DHW_TARGETS.stopC } : {}),
           ...(compressorOnly ? { '2201': config.compressorOnlyMode ?? 2 } : {}) };
         if (Object.keys(values).length) changed.push(...await apply(values, { now, reason: 'recovery-hold', expiresAt, activationExpiresAt }));
       } else if (phase === 'preheat') {
@@ -706,8 +707,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       } else {
         // ROOM restoration completes before reduction settings are sent. The executor owns DHWR.
         if (state.obligations['0203']) changed.push(...await apply({ '0203': state.baseline['0203'] }, { now, reason: 'preheat-complete', restoring: true }));
-        changed.push(...await apply({ '0212': Math.min(40, state.baseline['0212']),
-          '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt,
+        changed.push(...await apply({ '0212': Math.min(REDUCED_DHW_TARGETS.startMaximumC, state.baseline['0212']),
+          '0208': REDUCED_DHW_TARGETS.stopC, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt,
           validateActivation, manualPause: manual && pauseId !== null }));
       }
       return writeState(() => {

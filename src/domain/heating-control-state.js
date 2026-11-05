@@ -4,6 +4,7 @@ export const H66_SETTING_LIMITS = Object.freeze({
   '0203': Object.freeze([5, 35]), '0212': Object.freeze([30, 55]),
   '0208': Object.freeze([50, 65]), '2201': Object.freeze([0, 4]),
 });
+export const REDUCED_DHW_TARGETS = Object.freeze({ startMaximumC: 45, stopC: 50 });
 const h66Value = (index, value) => Object.hasOwn(H66_SETTING_LIMITS, index) && Number.isFinite(value)
   && value >= H66_SETTING_LIMITS[index][0] && value <= H66_SETTING_LIMITS[index][1]
   && (index !== '2201' || Number.isInteger(value));

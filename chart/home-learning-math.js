@@ -1,5 +1,6 @@
 import { HEATING_STRATEGIES, heatingEconomics } from '../src/domain/heating-strategy.js';
 import { DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
+import { REDUCED_DHW_TARGETS } from '../src/domain/heating-control-state.js';
 
 // Presentation of implemented calculations. Symbols are defined beside each
 // equation; these descriptions do not participate in prediction or control.
@@ -132,7 +133,7 @@ export function recoveryHoldCalculation() {
   return calculation([
     equation('One recovery deadline', 't_release = t_reduction_end + hold_minutes',
       'Use consistent time units. The default hold is 60 minutes after tariff reduction ends. The deadline remains fixed while the controller refreshes its decisions.'),
-    equation('Reduced hot-water settings', 'start_hold = min(start_normal, 40 °C); stop_hold = 50 °C',
+    equation('Reduced hot-water settings', `start_hold = min(start_normal, ${REDUCED_DHW_TARGETS.startMaximumC} °C); stop_hold = ${REDUCED_DHW_TARGETS.stopC} °C`,
       'These native settings remain reduced during tariff reduction and the recovery hold. The stop register may govern AUX operation only; 50 °C is not an established compressor hot-water cutoff.'),
   ], ['During the hold, normal ROOM and tariff operation allow compressor recovery and automatic DHWR starts are suppressed. The AUX restriction applies when enabled; cold-average protection can release AUX permission early while reduced DHW settings and DHWR suppression retain their original deadline.',
     'At the deadline, captured normal DHW and operating-mode settings are restored and normal DHWR eligibility resumes. This does not force an immediate circulation pulse or end the thermal recovery assessment. Native AUX permission applies to the heat pump as a whole; it is not a space-heating-only command.',

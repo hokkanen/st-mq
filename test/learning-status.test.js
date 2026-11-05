@@ -543,5 +543,8 @@ test('Recovery policy uses the configured control duration and preserves an unkn
   const row = learning => learningDisplay(learning, { settings: { savingsStrategy: 'balanced' } })
     .policyRows.find(item => item.key === 'Recovery hold');
   assert.equal(row({ parameters: { recoveryHoldMinutes: 35 } }).value, '35 min shared deadline');
+  assert.equal(row({ parameters: { recoveryHoldMinutes: 35 } }).calculation.equations
+    .find(item => item.label === 'Reduced hot-water settings').expression,
+  'start_hold = min(start_normal, 45 °C); stop_hold = 50 °C');
   assert.equal(row({}).value, 'Duration unavailable');
 });

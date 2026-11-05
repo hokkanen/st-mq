@@ -92,6 +92,41 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; }, elapse(ms) { elapsed += ms; } };
 }
 
+for (const normalStart of [40, 45, 48]) for (const manual of [false, true])
+test(`${manual ? 'manual' : 'automatic'} reduction preserves Normal ${normalStart} C start within the 45/50 C policy`, async t => {
+  const original = { ...baselines, '0212': normalStart, '0208': 55 };
+  const r = rig({ values: original }); t.after(() => r.controller.close());
+  const expiresAt = r.now + 60_000;
+  await r.controller.setPhase({ phase: 'reduction', manual, expiresAt });
+  assert.equal(r.native['0212'], Math.min(normalStart, 45));
+  assert.equal(r.native['0208'], 50);
+  assert.deepEqual(r.controller.status().baseline, original);
+  assert.equal(r.sent.filter(row => row.index === '0212').length, normalStart > 45 ? 1 : 0,
+    'An equal or lower Normal start needs no temporary write');
+  if (manual) await r.controller.setPhase({ phase: 'normal' });
+  else {
+    r.setNow(r.now + 1000);
+    await r.controller.setPhase({ phase: 'recovery', holdDhwReduced: true, compressorOnly: true, expiresAt });
+    assert.equal(r.native['0212'], Math.min(normalStart, 45));
+    assert.equal(r.native['0208'], 50);
+    r.setNow(expiresAt); await r.controller.reconcile();
+  }
+  assert.deepEqual(r.native, original, 'Normal restores the exact captured start, stop and AUX permission');
+  assert.deepEqual(r.controller.status().obligations, {});
+});
+
+test('the 45 C hot-water override restores its captured 48/55 C Normal settings after an expired restart', async t => {
+  const original = { ...baselines, '0212': 48, '0208': 55 }, first = rig({ values: original });
+  t.after(() => first.controller.close());
+  await first.controller.setPhase({ phase: 'reduction', expiresAt: first.now + 60_000 });
+  assert.equal(first.native['0212'], 45); await first.controller.close();
+  const restarted = rig({ store: first.store, values: first.native, startAt: first.now + 60_001 });
+  t.after(() => restarted.controller.close());
+  await nextTurn(); await restarted.controller.reconcile();
+  assert.deepEqual(restarted.native, original);
+  assert.deepEqual(restarted.controller.status().obligations, {});
+});
+
 for (const action of ['temporary', 'native']) {
   for (const scenario of ['commit-failure', 'unchanged', 'non-storage', 'pre-admission', 'after-dispatch'])
     test(`H66 ${action} command storage evidence distinguishes ${scenario}`, async t => {
@@ -433,7 +468,7 @@ test('preheat and reduction restore exact original native settings, never write 
   assert.deepEqual(r.controller.status().baseline, baselines);
   await r.controller.setPhase({ phase: 'reduction', expiresAt: r.now + 120_000 });
   assert.deepEqual(r.sent.map(item => [item.index, item.payload]), [
-    ['0203', '25'], ['0203', '20'], ['0212', '40'], ['0208', '50'], ['2201', '2'],
+    ['0203', '25'], ['0203', '20'], ['0208', '50'], ['2201', '2'],
   ]);
   assert.equal(r.controller.status().phase, 'reduction');
   await r.controller.setPhase({ phase: 'recovery' });
@@ -811,8 +846,8 @@ for (const baseline of [25, 27, 33, 35]) test(`five-degree preheat respects a ${
 });
 
 for (const [register, manual] of [['2201', 0], ['0208', 58]]) test(`restoration preserves a ${register} panel edit during an earlier register readback`, async t => {
-  const r = rig({ behavior({ index, payload, feed, native }) {
-    if (index === '0212' && Number(payload) === 44) { native[register] = manual; feed(register, manual); }
+  const r = rig({ values: { ...baselines, '0212': 48 }, behavior({ index, payload, feed, native }) {
+    if (index === '0212' && Number(payload) === 48) { native[register] = manual; feed(register, manual); }
   } });
   t.after(() => r.controller.close());
   await r.controller.setPhase({ phase: 'reduction' });
@@ -877,7 +912,7 @@ test('Preheat returns DHW and AUX to normal service even when it follows a recov
   const r = rig(); t.after(() => r.controller.close());
   await r.controller.setPhase({ phase: 'reduction' });
   await r.controller.setPhase({ phase: 'recovery', holdDhwReduced: true, compressorOnly: true });
-  assert.equal(r.native['0212'], 40); assert.equal(r.native['2201'], 2);
+  assert.equal(r.native['0212'], 44); assert.equal(r.native['2201'], 2);
   await r.controller.setPhase({ phase: 'preheat', roomBoostC: 5 });
   assert.deepEqual(r.native, { ...baselines, '0203': 25 });
 });

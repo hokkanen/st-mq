@@ -127,7 +127,7 @@ test('recovery holds reduced DHW after cold-room fallback releases AUX alone',as
   const result=await r.run('recovery',1800000,hold);
   assert.equal(result.recoveryCompressorOnly,true);
   assert.equal(result.recoveryHoldUntil,r.now+3600000);
-  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':2});
+  assert.deepEqual(r.values,{'0203':19,'0212':45,'0208':50,'2201':2});
   assert.deepEqual(r.log.at(-1).commands,['normal']);
   assert.equal(r.log.slice(first).some(row=>row.native==='2201'&&row.value===1),false);
   assert.ok(r.h66.status().obligations['2201']);
@@ -137,7 +137,7 @@ test('recovery holds reduced DHW after cold-room fallback releases AUX alone',as
   r.advance(15*60000);
   const fallback = await r.run('recovery',1800000,{...hold,recoveryCompressorOnly:false,recoveryFallbackReason:'recovery-comfort-margin'});
   assert.equal(fallback.recoveryHoldUntil,result.recoveryHoldUntil);
-  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':1});
+  assert.deepEqual(r.values,{'0203':19,'0212':45,'0208':50,'2201':1});
   assert.equal(r.h66.status().obligations['2201'],undefined);
   assert.ok(r.h66.status().obligations['0212']);
   assert.ok(r.h66.status().obligations['0208']);
@@ -169,7 +169,7 @@ test('the reduction timer enters recovery without restoring and reapplying DHW o
   await new Promise(resolve=>setImmediate(resolve));
   if(r.executor.pending)await r.executor.pending;
   assert.equal(r.executor.status().phase,'recovery');
-  assert.deepEqual(r.values,{'0203':19,'0212':40,'0208':50,'2201':2});
+  assert.deepEqual(r.values,{'0203':19,'0212':45,'0208':50,'2201':2});
   assert.deepEqual(r.log.slice(before).filter(row=>row.native),[],'No transient native DHW/AUX restore');
   assert.deepEqual(r.log.at(-1).commands,['normal']);
   assert.equal(r.executor.status().recoveryStartedAt,boundary);
@@ -237,7 +237,7 @@ test('ROOM increase preheat restores the exact native baseline before reduction 
   const reduce = r.log.findIndex(entry => entry.commands?.includes('reduction'));
   assert(restore > 0 && reduce > restore);
   assert.equal(r.log.some(entry => typeof entry.dhwr === 'boolean'), false);
-  assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+  assert.deepEqual(r.values, { '0203': 19, '0212': 45, '0208': 50, '2201': 2 });
   await r.run('recovery');
   assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
 });
@@ -584,7 +584,7 @@ test('a new Automatic manual selection gets its own minute for native confirmati
   assert(r.now > previousEnd, 'Native confirmation finishes after the preceding selection expired');
   assert.equal(result.native.status, 'confirmed');
   assert.equal(result.holdUntil, requestedAt + 60_000);
-  assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+  assert.deepEqual(r.values, { '0203': 19, '0212': 45, '0208': 50, '2201': 2 });
 });
 
 for (const scope of ['automatic', 'indefinite-pause', 'scheduled-pause'])
@@ -599,7 +599,7 @@ for (const scope of ['automatic', 'indefinite-pause', 'scheduled-pause'])
     const result = await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: requestedAt, pause });
     assert(r.now > requestedAt, 'ROOM restoration advances the readback clock');
     assert.equal(result.native?.status, 'confirmed', 'Available native restrictions cannot silently fall back to tariff-only');
-    assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+    assert.deepEqual(r.values, { '0203': 19, '0212': 45, '0208': 50, '2201': 2 });
     assert.equal(result.holdUntil, pause ? pause.expiresAt : requestedAt + 60_000);
     await r.executor.execute({ commands: ['normal'] }, { manualTest: true, now: r.now, pause });
     assert.deepEqual(r.values, { '0203': 19, '0212': 47, '0208': 62, '2201': 1 });
@@ -610,7 +610,7 @@ test('manual Reduced applies automatic DHW and AUX settings and remains through 
   const result = await r.executor.execute({ phase: 'reduction', commands: ['reduction'] },
     { manualTest: true, now: r.now, pause });
   assert.equal(result.phase, 'reduction');
-  assert.deepEqual(r.values, { '0203': 19, '0212': 40, '0208': 50, '2201': 2 });
+  assert.deepEqual(r.values, { '0203': 19, '0212': 45, '0208': 50, '2201': 2 });
   assert.equal(r.h66.status().expiresAt, null);
   r.advance(2 * 86_400_000);
   await r.executor.maintainPause(r.now, pause);
@@ -643,7 +643,7 @@ test('manual Reduced waits for an existing circulation service pulse exactly as 
   assert.equal(r.values['0212'], 47);
   assert.equal(r.log.some(row => row.commands?.includes('reduction')), false);
   r.advance(600_001); await r.executor.maintainPause(r.now, pause);
-  assert.equal(r.values['0212'], 40);
+  assert.equal(r.values['0212'], 45);
   assert.deepEqual(r.log.at(-1).commands, ['reduction']);
   assert.equal(r.executor.status().manualRequested.confirmed, true);
 });
