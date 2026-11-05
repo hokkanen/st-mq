@@ -11,6 +11,7 @@ test('current initial-model assumptions and unbounded response ratios match the 
   const initial = display.coefficientEvidenceRows.find(row => row.key === 'Initial model');
   assert.equal(initial.value, 'Calibrated starting estimates');
   assert.match(JSON.stringify(initial.calculation), /0.03.*15.*0.02.*0.8/);
+  assert.match(JSON.stringify(initial.calculation), /starting ratios: reduction 0.4, preheat 1.4/);
   assert.match(JSON.stringify(initial.calculation), /not a passed local.*check/);
   const response = display.coefficientEvidenceRows.find(row => row.key === 'reduction duty response');
   assert.equal(response.value, '3.00 × normal demand');

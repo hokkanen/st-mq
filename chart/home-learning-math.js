@@ -148,6 +148,8 @@ export function initialModelCalculation(model = {}) {
       `Heat loss ${value('lossPerHour')} 1/h; hydronic response ${value('hydronicCPerKwh')} °C/kWh thermal; solar response ${value('solarCPerHourPerKwM2')} °C/h per kW/m². Current fitted or retained responses are listed separately.`),
     equation('Initial weather/runtime curve', 'd_weather = q × max(0, T_balance − T_out)',
       `q = ${value('dutyPerDegree')} duty per °C; T_balance = ${value('balanceTemperatureC')} °C. This curve nudges the current heat-balance duty by at most 0.02; it does not replace it.`),
+    equation('Initial requested-mode response', 'd_phase = clamp(r_initial,phase × d_native, 0, 1)',
+      `Configured starting ratios: reduction ${value('reductionRatio')}, preheat ${value('preheatRatio')}. These estimates apply until an observed response is available for the matching hydraulic treatment. d_native is the Normal-demand prior; the resulting compressor duty remains between zero and one.`),
     equation('Configured internal gain', 'I_internal = configured constant',
       `The initial model supplies ${value('internalCPerHour')} °C/h of internal warming. It is an assumption, not measured household heat or a separately fitted response.`),
     equation('Initial trajectory allowance', 'U_initial(h) = max(0.25, e_initial × √(h / 6))',
