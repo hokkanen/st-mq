@@ -624,7 +624,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
 }
 
 export function chooseCycle({ now, observations, prices, forecast, checkpoint, settings, config = {}, thermalState,
-  equipment = {}, trialBudgetRemainingCents = 0 }) {
+  equipment = {}, trialBudgetRemainingCents = 0, incumbentPlan = null }) {
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model ?? initialAdaptiveModel(c);
   const startupTarget = equipment.observedPhase === 'normal' && settings.occupancy.mode === 'occupied'
     && !(equipment.fireplaceRelevant ?? equipment.fireplaceActive) ? observations.indoor?.value : null;
@@ -704,6 +704,16 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     }
     return option;
   };
+  // A still-valid pending automatic schedule participates in the same fresh
+  // economic and trial-opportunity comparison, even outside the bounded grid.
+  let incumbent = null;
+  if (incumbentPlan && !incumbentPlan.trial && !incumbentPlan.userTrial
+    && Math.min(incumbentPlan.schedule?.preheatStart, incumbentPlan.schedule?.reductionStart) > now) {
+    const checked = revalidatePlan({ plan: incumbentPlan, now, observations, prices, forecast,
+      checkpoint, settings, config: c, thermalState, equipment, trialBudgetRemainingCents });
+    if (checked.valid) incumbent = addCandidate(checked.plan.schedule,
+      (checked.plan.schedule.reductionEnd-checked.plan.schedule.reductionStart)/HOUR);
+  }
   // Evaluate every reduction first. Expand preheat around promising reductions
   // rather than multiplying the entire grid by every duration/boost combination.
   for (const reductionStart of starts) for (const duration of durations) {
@@ -758,6 +768,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   // The same bounded shortlist is used for every savings strategy.
   const economicShortlist=[...qualified.filter(o=>o.schedule.roomBoostC===0).slice(0,16),
     ...qualified.filter(o=>o.schedule.roomBoostC>0).slice(0,16)];
+  if (incumbent && qualified.includes(incumbent) && !economicShortlist.includes(incumbent)) economicShortlist.push(incumbent);
   const assessed = economicShortlist.map(option => {
     option.economics = economicAdmission({ prediction: option.result, referencePrediction: baseline, args, schedule: option.schedule, settings });
     option.risk = option.economics.uncertaintyCents;

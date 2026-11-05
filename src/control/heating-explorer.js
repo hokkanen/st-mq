@@ -280,8 +280,9 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   const frozen = applyExplorerOverrides(input, {}), hypothetical = applyExplorerOverrides(frozen, changes);
   const currentPolicy = policy(frozen), scenarioPolicy = policy(hypothetical);
   const changedKeys = Object.keys(changes).filter(key => scenarioPolicy[key] !== currentPolicy[key]);
-  const freshDecision = chooseCycle(frozen);
-  const scenarioDecision = changedKeys.length ? chooseCycle(hypothetical) : freshDecision;
+  const optimize = candidate => chooseCycle({ ...candidate, incumbentPlan: candidate.currentPlan });
+  const freshDecision = optimize(frozen);
+  const scenarioDecision = changedKeys.length ? optimize(hypothetical) : freshDecision;
   const args = evaluationArgs(frozen), scenarioArgs = evaluationArgs(hypothetical);
   const baseline = args ? evaluateCycle(args) : null;
   const scenarioBaseline = scenarioArgs ? evaluateCycle(scenarioArgs) : null;
@@ -326,7 +327,7 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
     const comfortChanges = currentPolicy.maxDropC < 2 ? { maxDropC: Math.min(2, currentPolicy.maxDropC + .5) } : {};
     const probe = proposal => {
       if (!Object.keys(proposal).length) return false;
-      const candidateInput = applyExplorerOverrides(frozen, proposal), candidate = chooseCycle(candidateInput); plannerRuns++;
+      const candidateInput = applyExplorerOverrides(frozen, proposal), candidate = optimize(candidateInput); plannerRuns++;
       if (!candidate.plan || candidate.plan.trial || !candidate.plan.economics?.admitted) return false;
       const candidateArgs = evaluationArgs(candidateInput), result = summary(candidate, candidateArgs, evaluateCycle(candidateArgs));
       const improvement = compare(refreshedCurrent, result), actualImprovement = compare(current, result);

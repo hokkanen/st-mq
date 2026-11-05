@@ -6,6 +6,11 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Pending automatic heating schedules refresh every 15 minutes and sooner after
+  meaningful input changes, with bounded background work. Fresh comparisons keep
+  the existing valid schedule among the alternatives. Manual approvals retain
+  their reviewed timing, and active cycles keep their continuation checks.
+
 - Thermal equipment assumptions preserve the occupied temperature reference and
   room measurement continuity. Changing them no longer starts sensor settling.
   The heating planner shows the actual normal reference separately from the

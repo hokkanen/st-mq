@@ -6,10 +6,14 @@ const unavailable = () => new Error('Home heating planning is temporarily unavai
 // boundary. The planner receives only its current calculation inputs.
 function planningInput(input) {
   const { now, observations, prices, forecast, settings, config, thermalState, equipment, trialBudgetRemainingCents } = input;
+  const incumbentPlan = input.incumbentPlan && !input.incumbentPlan.trial && !input.incumbentPlan.userTrial
+    ? { schedule: input.incumbentPlan.schedule, reference: input.incumbentPlan.reference,
+      targetC: input.incumbentPlan.targetC,
+      equipment: { externalChangeRevision: input.incumbentPlan.equipment?.externalChangeRevision } } : null;
   const checkpoint = input.checkpoint ? { model: input.checkpoint.model, baselineC: input.checkpoint.baselineC,
     health: { usableSamples: input.checkpoint.health?.usableSamples } } : null;
   return structuredClone({ now, observations: { indoor: observations?.indoor }, prices, forecast,
-    checkpoint, settings, config, thermalState, equipment, trialBudgetRemainingCents });
+    checkpoint, settings, config, thermalState, equipment, trialBudgetRemainingCents, incumbentPlan });
 }
 
 /** One pure calculation worker, one running request and only the newest queued

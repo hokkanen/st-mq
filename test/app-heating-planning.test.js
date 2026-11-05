@@ -95,3 +95,90 @@ test('worker failure keeps Normal and cannot trigger an immediate retry loop', a
   assert.deepEqual(r.planner.choose(r.input).reasons, ['heating-planning-unavailable']);
   assert.equal(r.requests.length, 1);
 });
+
+test('pending schedules remain available while periodic fresh searches replace them', async t => {
+  const r = rig(t);
+  r.input.prices.forEach((row, i) => { row.allInCentsPerKWh = i >= 8 && i < 12 ? 100 : 1; });
+  const first = chooseCycle(r.input);
+  assert.ok(first.plan.schedule.reductionStart > r.input.now);
+  r.planner.choose(r.input);
+  await r.complete(first);
+  let incumbent = r.planner.choose(r.input).plan;
+  for (let minute = 1; minute < 15; minute++) {
+    const current = { ...r.input, now: r.input.now + minute * 60_000 };
+    assert.equal(r.planner.choose(current, incumbent).plan, incumbent);
+  }
+  assert.equal(r.requests.length, 1, 'Ordinary controller ticks do not repeat the search');
+  const fresh = structuredClone(r.input);
+  fresh.now += 15 * 60_000;
+  fresh.prices.forEach((row, i) => { if (i >= 16 && i < 20) row.allInCentsPerKWh = 300; });
+  assert.equal(r.planner.choose(fresh, incumbent).plan, incumbent);
+  assert.equal(r.requests.length, 2);
+  assert.equal(r.requests[1].input.incumbentPlan, incumbent);
+  const replacement = chooseCycle({ ...fresh, incumbentPlan: incumbent });
+  await r.complete(replacement);
+  const adopted = r.planner.choose(fresh, incumbent);
+  assert.ok(adopted.plan);
+  assert.notDeepEqual(adopted.plan.schedule, incumbent.schedule, 'A better new opportunity replaces the waiting schedule');
+  assert.equal(adopted.plan.generatedAt, fresh.now);
+  assert.equal(r.requests.length, 2);
+});
+
+test('numerical source revisions refresh early with a bounded rate; receipt clocks and native chatter do not', async t => {
+  const r = rig(t);
+  r.planner.choose(r.input);
+  await r.complete({ action: 'normal', phase: 'normal', reasons: ['normal-operation-preferred'], plan: null });
+  r.planner.choose(r.input);
+  const current = structuredClone(r.input);
+  current.now += 60_000;
+  current.prices.forEach(row => { row.fetchedAt = current.now; row.issuedAt = current.now; });
+  current.forecast.forEach(row => { row.fetchedAt = current.now; row.issuedAt = current.now; });
+  current.equipment.integral = -50; current.equipment.supplyC = 36;
+  current.checkpoint.baselineC += .001;
+  r.planner.choose(current);
+  assert.equal(r.requests.length, 1);
+  current.prices[2].allInCentsPerKWh += 10;
+  r.planner.choose(current);
+  assert.equal(r.requests.length, 2);
+  await r.complete({ action: 'normal', phase: 'normal', reasons: ['normal-operation-preferred'], plan: null });
+  r.planner.choose(current);
+  current.now += 1000; current.forecast[2].outdoorC -= 1;
+  r.planner.choose(current);
+  assert.equal(r.requests.length, 2, 'Changed snapshots cannot create a per-tick search loop');
+  current.now += 59_000;
+  r.planner.choose(current);
+  assert.equal(r.requests.length, 3);
+});
+
+test('no-plan results use the periodic cadence and failures retry after a minute', async t => {
+  const r = rig(t);
+  const none = { action: 'normal', phase: 'normal', reasons: ['normal-operation-preferred'], plan: null };
+  r.planner.choose(r.input); await r.complete(none); r.planner.choose(r.input);
+  r.planner.choose({ ...r.input, now: r.input.now + 3 * 60_000 });
+  assert.equal(r.requests.length, 1, 'An empty result does not run a search every two minutes');
+  const later = { ...r.input, now: r.input.now + 15 * 60_000 };
+  r.planner.choose(later);
+  r.requests[1].reject(new Error('Synthetic worker failure')); await r.planner.pending.promise;
+  assert.deepEqual(r.planner.choose(later).reasons, ['heating-planning-unavailable']);
+  r.planner.choose({ ...later, now: later.now + 59_999 });
+  assert.equal(r.requests.length, 2);
+  r.planner.choose({ ...later, now: later.now + 60_000 });
+  assert.equal(r.requests.length, 3);
+});
+
+test('changed tariff snapshots fence completed results before adoption', async t => {
+  const r = rig(t);
+  r.planner.choose(r.input); await r.complete();
+  const current = structuredClone(r.input);
+  current.prices[0].allInCentsPerKWh += 1;
+  assert.equal(r.planner.choose(current).plan, null);
+});
+
+test('a failed refresh preserves the still-valid pending schedule', async t => {
+  const r = rig(t);
+  r.input.prices.forEach((row, i) => { row.allInCentsPerKWh = i >= 8 && i < 12 ? 100 : 1; });
+  const incumbent = chooseCycle(r.input).plan;
+  assert.equal(r.planner.choose(r.input, incumbent).plan, incumbent);
+  r.requests[0].reject(new Error('Synthetic refresh failure')); await r.planner.pending.promise;
+  assert.equal(r.planner.choose(r.input, incumbent).plan, incumbent);
+});

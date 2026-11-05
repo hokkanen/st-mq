@@ -1776,11 +1776,11 @@ export class Engine {
       if (due) {
         decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
-      } else if (!this.pendingPlan) {
+      } else if (!this.pendingPlan || !scopedTrial) {
         decision = this.heatingPlanning.choose({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
           thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
-          trialBudgetRemainingCents: planningBudget });
-        if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;
+          trialBudgetRemainingCents: planningBudget }, this.pendingPlan);
+        this.pendingPlan = decision.plan && decision.phase === 'normal' ? decision.plan : null;
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
     }
     if (!this.automationEnabled('home') && !reviewedCycle && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }

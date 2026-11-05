@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createHeatingPlannerService } from '../src/control/planner-service.js';
-import { chooseCycle } from '../src/control/planner.js';
+import { chooseCycle, revalidatePlan } from '../src/control/planner.js';
 import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 
 class ControlledWorker extends EventEmitter {
@@ -84,4 +84,26 @@ test('failed or timed-out Home planning terminates its worker and a later reques
   const retry = service.request(heatingExplorerFixture()), current = ControlledWorker.instances.at(-1);
   current.complete();
   assert.deepEqual(await retry, { action: 'normal' });
+});
+
+test('refresh includes a revalidated incumbent in the economic comparison without transferring its history', async t => {
+  const input = heatingExplorerFixture({ hours: 12, validatedHours: 4 });
+  input.settings.savingsStrategy = 'savings';
+  input.prices.forEach((row, i) => { row.allInCentsPerKWh = i >= 8 && i < 20 ? 100 : 1; });
+  const incumbent = chooseCycle(input).plan;
+  assert.ok(incumbent.schedule.reductionStart > input.now);
+  input.now += 15 * 60_000;
+  input.incumbentPlan = incumbent;
+  const checked = revalidatePlan({ ...input, plan: incumbent });
+  assert.equal(checked.valid, true);
+  const expected = chooseCycle(input);
+  assert.ok(expected.plan.economics.lowerBenefitCents >= checked.plan.economics.lowerBenefitCents - 1e-8,
+    'The grid cannot lose a better still-valid automatic schedule');
+  const service = createHeatingPlannerService(); t.after(() => service.close());
+  assert.deepEqual(await service.request(input), expected);
+  const controlled = createHeatingPlannerService({ WorkerClass: ControlledWorker }); t.after(() => controlled.close());
+  const pending = controlled.request(input), worker = ControlledWorker.instances.at(-1);
+  assert.deepEqual(Object.keys(worker.requests[0].input.incumbentPlan).sort(), ['equipment', 'reference', 'schedule', 'targetC']);
+  assert.equal(worker.requests[0].input.incumbentPlan.prediction, undefined);
+  worker.complete(); await pending;
 });

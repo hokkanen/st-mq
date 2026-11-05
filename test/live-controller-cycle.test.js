@@ -6,7 +6,7 @@ import { replayLearningJournal, LEARNING_ALGORITHM } from '../src/app/committed-
 import { Engine } from '../src/app/engine.js';
 import { validateSettings, CONTROL_DEFAULTS } from '../src/app/config.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
-import { evaluateCycle } from '../src/control/planner.js';
+import { chooseCycle, evaluateCycle } from '../src/control/planner.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/telemetry.js';
 
@@ -126,6 +126,57 @@ test('a background heating search is adopted only by a later current controller 
   assert.equal(adopted.decision.phase, 'reduction');
   await r.settle();
   assert.equal(r.engine.cycles.active().plan.initialState.indoorC, 21.2);
+});
+
+test('the controller refreshes a future automatic schedule without dropping it while search runs', async t => {
+  const r = setup(t), plan = r.plan();
+  // Isolate pending-plan lifecycle from this fixture's unobserved pump costs.
+  r.engine.control.minimumHomeBenefitCents = -1000;
+  for (const key of ['preheatStart','preheatEnd','reductionStart','reductionEnd']) plan.schedule[key] += HOUR;
+  const market = r.store.getState('provider:market');
+  market.intervals.forEach((row, i) => { row.spotCtPerKwh = i >= 4 && i < 8 ? 2000 : 1; });
+  r.store.setState('provider:market', market);
+  const requests = [];
+  r.engine.heatingPlanning.service = {
+    request: input => new Promise(resolve => requests.push({ input, resolve })), async close() {},
+  };
+  r.engine.tick(); await r.settle();
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].input.incumbentPlan, JSON.stringify(r.store.events().filter(row => row.type === 'scheduled-cycle-rejected')));
+  assert.deepEqual(requests[0].input.incumbentPlan.schedule, plan.schedule);
+  assert.deepEqual(r.engine.pendingPlan.schedule, plan.schedule);
+  assert.equal(r.engine.status().decision.reasons[0], 'waiting-for-scheduled-cycle');
+  assert.equal(r.engine.cycles.active(), null);
+  requests[0].resolve(chooseCycle(requests[0].input));
+  await r.engine.heatingPlanning.pending.promise;
+  r.engine.tick(); await r.settle();
+  assert.ok(r.engine.pendingPlan);
+  r.advance(14 * 60_000); r.engine.tick(); await r.settle();
+  assert.equal(requests.length, 1);
+  r.advance(60_000); r.engine.tick(); await r.settle();
+  assert.equal(requests.length, 2);
+  assert.ok(r.engine.pendingPlan, 'The pending plan is retained during the next refresh');
+});
+
+test('periodic optimization preserves the exact future manually approved schedule', async t => {
+  const r = setup(t), plan = r.plan(), explorer = r.engine.heatingExplorer;
+  for (const key of ['preheatStart','preheatEnd','reductionStart','reductionEnd']) plan.schedule[key] += HOUR;
+  explorer.capture({ now:r.now,settings:r.engine.settings,config:r.engine.control,
+    checkpoint:r.engine.checkpoint,observations:{},equipment:{} }, { phase:'normal',reasons:[],plan:null });
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run() { return {version:1,executablePlan:plan}; }, async close() {} };
+  const view = await explorer.view(), preview = await explorer.simulate({snapshotId:view.snapshotId,
+    limits:{maxReductionHours:8,minimumHomeBenefitCents:-1000}});
+  assert.equal(preview.application.allowed, true);
+  explorer.apply({previewId:preview.previewId});
+  let searches = 0;
+  r.engine.heatingPlanning.service = { async request() { searches++; return null; }, async close() {} };
+  r.engine.tick(); await r.settle();
+  const reviewed = structuredClone(r.engine.pendingPlan.schedule);
+  r.advance(15 * 60_000); r.engine.tick(); await r.settle();
+  assert.equal(searches, 0);
+  assert.deepEqual(r.engine.pendingPlan.schedule, reviewed);
+  assert.equal(r.engine.pendingPlan.userTrial.id, explorer.publicTrial().id);
 });
 
 test('a due base cycle remains intent until broker acknowledgement, then pause restores normal', async t=>{

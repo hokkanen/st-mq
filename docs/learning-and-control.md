@@ -377,8 +377,18 @@ Equipment readiness, bounded trial costs and restoration remain required.
 Lower service during Away is not counted as evidence of occupied-operation savings.
 
 The complete schedule search runs in one background worker with one running
-request and only the newest waiting snapshot. Until a result is ready, heating
-stays Normal. Results older than two minutes or from changed model, configuration,
+request and only the newest waiting snapshot. Pending automatic schedules are
+searched again every 15 minutes, or sooner after changed numerical prices,
+weather, model, settings, equipment capability or a material room/reference change.
+New searches start at most once per minute; repeated provider receipt clocks and
+ordinary water-temperature or counter updates do not trigger full searches.
+The still-valid pending schedule participates in the fresh comparison and remains
+available while the worker runs or fails. A fresh result uses the same economic
+and learning-opportunity rules, including the cost of displacing that schedule.
+Empty results also use this bounded cadence. Manually approved schedules retain
+their reviewed timing; active cycles retain their continuation rules.
+Without an existing valid schedule, heating stays Normal until a result is ready.
+Results older than two minutes or from changed model, configuration,
 source corrections, native settings or control ownership are discarded. The
 controller rechecks current temperatures, prices, weather, evidence and trial
 allowance before adopting a plan. Active cycles keep their existing continuation
