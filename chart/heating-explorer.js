@@ -453,7 +453,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-comparison-section').hidden = !result.previewId;
     if (!result.previewId) return;
     $('heating-explorer-comparison-summary').textContent = result.comparison?.changed
-      ? 'The changed limits produce a different evaluated plan. Compare the benefit, indoor average and recovery together.'
+      ? 'This calculation selects a different cycle from the current plan. Compare the benefit, indoor average and recovery together.'
       : 'These limits do not change the selected plan in this comparison. Other constraints, evidence or the economic trade-off may still determine the choice.';
     $('heating-explorer-metrics').replaceChildren();
     for (const metric of heatingComparisonMetrics(result)) {
