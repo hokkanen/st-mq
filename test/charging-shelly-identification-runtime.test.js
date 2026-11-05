@@ -643,6 +643,23 @@ test('Shelly manual Identify can recheck an identified vehicle without dropping 
   assert.equal(f.item().identification.phase, 'completed'); assert.equal(stops(f).length, 2);
 });
 
+test('Shelly can explicitly retry idle ordinary identification without replacing the charging program', async t => {
+  const f = await fixture(t, { charging: false });
+  const plan = { id: 'synthetic-ordinary-passive-wait', feasible: true, startAt: START,
+    deadlineAt: FUTURE, periods: [{ startAt: START, endAt: null }] };
+  f.setPlan(plan); f.setNow(f.now + 1000); await f.update();
+  assert.equal(f.item().identification.phase, 'waiting');
+  assert.equal(f.item().identification.probe, null);
+  assert.equal(f.card().identification.retryAvailable, true);
+  const before = structuredClone(f.item().identification), writes = f.writes.length;
+  f.setNow(f.now + 1000);
+  await f.runtime.identifyVehicle('charger2', f.input());
+  assert.equal(f.item().identification.attempt, before.attempt + 1);
+  assert.equal(f.item().identification.probe, null);
+  assert.deepEqual(f.item().plan.periods, plan.periods);
+  assert.equal(f.writes.length, writes);
+});
+
 test('Shelly unplug cancels its scope and the next connection gets one fresh attempt', async t => {
   const f = await fixture(t); f.setNow(START + 1000); await f.update();
   const before = f.item().identification.id;

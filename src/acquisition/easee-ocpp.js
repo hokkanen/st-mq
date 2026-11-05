@@ -1044,6 +1044,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // authorize control. Callers may wait once, then read and fence normally.
       return remaining > 0 && remaining <= MAX_FUTURE_MS ? remaining : 0;
     },
+    controlPending() {
+      return [...pendingCalls.values(), ...callQueue].some(call =>
+        !['GetCompositeSchedule', 'GetConfiguration', 'TriggerMessage'].includes(call.action));
+    },
     controlSnapshot() {
       if (!refreshAuthority() || !transportFresh() || connectorStatusAt === null
         || clock() < connectorStatusAt) return null;

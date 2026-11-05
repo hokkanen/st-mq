@@ -2247,6 +2247,17 @@ export class ChargingRuntime {
         : identificationPauseOutstanding ? 'awaiting-stop-confirmation'
           : currentTestOutstanding ? 'current-test-restoration-pending'
             : this.identificationControlReason(item, now) ?? this.identificationFeedReason(item, now);
+      const power = telemetry[id]?.powerKw;
+      // Explicitly restarting an unarmed observer fences its old correlations;
+      // it must never replace an owned physical test or pending native command.
+      const retryAvailable = identificationAvailabilityReason === null && identification?.phase === 'waiting'
+        && !identification.probe && !identification.candidate && !identification.pause
+        && identification.chargingStartedAt === null && !control.pending && !control.takeoverPending && !control.automaticTakeover
+        && (!control.errorCode || control.errorCode === 'transaction-unconfirmed')
+        && power?.available === true && power.value === 0 && Number.isSafeInteger(power.measuredAt)
+        && power.measuredAt <= now && now - power.measuredAt <= MINUTE
+        && (control.snapshot?.transport !== 'ocpp' || item.adapter?.controlPending?.() === false)
+        && this.identificationTurn(item) && this.identificationChargingChoice(item, now).normalCharging === true;
       const currentTest = currentTestOutstanding || control.currentTest?.id === identification?.id
         && control.currentTest?.sessionId === control.session?.sessionId
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
@@ -2263,6 +2274,7 @@ export class ChargingRuntime {
           // previous attempt's reason. Waiting for a peer does not block retry.
           availabilityReason: identificationAvailabilityReason,
           available: identificationAvailabilityReason === null,
+          retryAvailable,
           active: ['waiting', 'charging', 'pausing'].includes(identification?.phase),
           attempted: Boolean(identification?.chargingStartedAt) },
         request: telemetry[id]?.vehicle?.sessionId ? request : null, vehicle: telemetry[id]?.vehicle ?? null,
@@ -3663,7 +3675,8 @@ export class ChargingRuntime {
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
       throw new Error('Identify requires the displayed charging connection.');
     const { item, view } = this.checkedSession(id, input);
-    if (view.identification.active) throw new Error('Identification is already in progress for this connection.');
+    if (view.identification.active && !view.identification.retryAvailable)
+      throw new Error('Identification is already in progress for this connection.');
     if (!view.identification.available) {
       throw new Error(identificationBlockerDetail(view.identification.availabilityReason));
     }

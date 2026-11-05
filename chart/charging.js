@@ -1009,11 +1009,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
           : chargeNowActive ? 'Charge now is on until unplugging. Turn off to use automatic charging.' : 'Turn on immediate charging until unplugging.';
       const identification = identificationPresentation(charger, { now: status?.now, timezone: status?.charging?.timezone });
       const connected = charger.values?.connected?.value, pauseOutstanding = charger.identification?.pauseOutstanding === true;
+      const retryAvailable = charger.identification?.retryAvailable === true;
+      device.identify.textContent = retryAvailable ? 'Retry Identify' : 'Identify';
       device.identify.disabled = locked || charger.readOnly === true || !connectedSession(charger)
-        || charger.identification?.available !== true || charger.identification?.active === true || pauseOutstanding || currentTestOutstanding(charger);
+        || charger.identification?.available !== true || charger.identification?.active === true && !retryAvailable || pauseOutstanding || currentTestOutstanding(charger);
       device.identify.title = !writable() || charger.readOnly ? 'View only'
         : identification?.recovery ? 'Waiting for the temporary identification settings to be restored'
           : connected === false ? 'Connect a vehicle' : !connectedSession(charger) ? 'Waiting for charger readings'
+          : retryAvailable ? 'Restart passive identification for this connection. The current charging program still applies.'
           : charger.identification?.active ? 'Identification is already in progress'
             : charger.identification?.available !== true ? identificationBlockerDetail(charger.identification?.availabilityReason) : 'Check which vehicle is connected. This may briefly pause charging.';
       device.identificationState.textContent = identification?.state ?? (connected === false ? 'Not connected'

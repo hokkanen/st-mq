@@ -164,7 +164,7 @@ async function handoverOperation(step, operation) {
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
   readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback,
-  controlAttempt = () => createControlAttempt() } = {}) {
+  controlAttempt = () => createControlAttempt(), controlPending = () => null } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function', controlAttempt,
@@ -173,7 +173,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     ...(typeof requestMeterReadback === 'function' ? { requestMeterReadback(snapshot, { signal, guard = () => false } = {}) {
       return requestMeterReadback({ signal, guard: () => canControl() && guard() && isCurrent(snapshot) });
     } } : {}),
-    setStartPermission,
+    setStartPermission, controlPending,
     deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {

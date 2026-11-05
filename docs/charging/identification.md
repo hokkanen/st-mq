@@ -7,6 +7,13 @@ This contract owns positive vehicle matching, bounded identification attempts an
 An explicit Identify retry reports its current availability separately from the
 previous attempt's outcome. An active attempt, unavailable vehicle feed and
 unready charger have distinct explanations; retry keeps the same admission rules.
+An idle passive wait can offer **Retry Identify** while the attempt remains
+pending. This explicit action starts a new observation boundary for the same
+physical connection; it does not end the wait automatically. It requires fresh
+zero power, ordinary charging permission, current vehicle/readiness checks and
+no probe, candidate, pause, current-setting test, restoration or pending native
+command. Active physical work keeps its original owner and bounds. A restart
+does not itself authorize a retry, and ordinary charging periods remain in force.
 A later dashboard Pause keeps a completed, inconclusive or observing attempt's
 recorded result. Its current retry blocker explains the Pause separately.
 

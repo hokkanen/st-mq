@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, holdRemoteStart = false } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -64,11 +64,12 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
-  const pending = new Map();
+  const pending = new Map(), pendingStarts = [];
   ws.on('message', raw => {
     const frame = JSON.parse(raw);
     if (frame[0] === 2) {
       calls.push({ action: frame[2], payload: frame[3] });
+      if (holdRemoteStart && frame[2] === 'RemoteStartTransaction') { pendingStarts.push(frame); return; }
       ws.send(JSON.stringify([3, frame[1], { status: 'Accepted' }]));
     } else { const resolve = pending.get(frame[1]); pending.delete(frame[1]); resolve?.(frame); }
   });
@@ -88,6 +89,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   await status('Preparing'); await meter(0);
   await adapter.read({ forceAppRefresh: true });
   return { provider, adapter, controller, calls, requests, installation, states, call, status, meter, observe,
+    answerStart() { const frame = pendingStarts.shift(); assert(frame); ws.send(JSON.stringify([3, frame[1], { status: 'Accepted' }])); },
     admission(value) { admitted = value; }, authority(value) { authority = value; },
     get now() { return now; }, advance(ms) { now += ms; } };
 }
@@ -122,6 +124,18 @@ async function rejectedAutomaticStart(f, { reason = 'DeAuthorized', power = 0 } 
 }
 const openPlan = f => ({ startAt: f.now, feasible: true, periods: [{ startAt: f.now, endAt: null }] });
 const starts = f => f.calls.filter(row => row.action === 'RemoteStartTransaction');
+
+test('passive retry readiness observes the actual native command queue until Start acknowledgement', async t => {
+  const f = await fixture(t, { holdRemoteStart: true });
+  await rejectedAutomaticStart(f);
+  assert.equal(f.adapter.controlPending(), false, 'Read-only native queries do not own physical work');
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  assert.equal(f.adapter.controlPending(), true);
+  f.answerStart(); await f.call('Heartbeat', {});
+  assert.equal(f.adapter.controlPending(), false);
+});
 
 test('an explicit passive Identify retry gets one new refused-start attempt without overriding the economic period', async t => {
   let retry = null;

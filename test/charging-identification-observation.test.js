@@ -77,6 +77,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     },
   };
   const native = createOcppScheduleAdapter({ scope, clock: () => now, canControl: () => true,
+    controlPending: () => physical.nativeCommandPending === true,
     isCurrent: (snapshot, { requireTransaction = true, unchangedStatus = false } = {}) => snapshot.connectionId === connectionId
       && (!requireTransaction || snapshot.transactionId === physical.transactionId)
       && (!unchangedStatus || snapshot.statusAt === physical.at
@@ -88,7 +89,8 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       transactionStartedAt: physical.pluggedIn ? physical.transactionStartedAt : null,
       transactionConfirmed: physical.pluggedIn,
       limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] },
-      powerKw: physical.charging ? physical.powerKw : 0, powerAt: now, appControl: { readAt: now, enabled: physical.enabled, enabledAt: physical.enabledAt,
+      powerKw: physical.charging ? physical.powerKw : 0, powerAt: physical.powerAt === undefined ? now : physical.powerAt,
+      appControl: { readAt: now, enabled: physical.enabled, enabledAt: physical.enabledAt,
         stopped: !physical.enabled, stopAt: physical.enabledAt, controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null } }); },
     request: async (action, payload, options) => {
       assert.equal(options.guard(), true);
@@ -510,6 +512,52 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(attempt(f).phase, 'pausing');
     await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), /already in progress for this connection/);
   });
+
+  test(`${transport}: explicit retry can replace unarmed passive waiting without changing ordinary charging`, async t => {
+    const f = await fixture(t, transport, 'bmw', { normalCharging: true, charging: false });
+    f.setNow(START + 1000); await f.update();
+    assert.equal(attempt(f).phase, 'waiting'); assert.equal(attempt(f).probe, null);
+    assert.equal(card(f).identification.active, true);
+    assert.equal(card(f).identification.retryAvailable, true);
+    const before = structuredClone(attempt(f)), input = sessionInput(f), writes = f.writes.length;
+    const controls = structuredClone(f.runtime.chargers.charger1.controls);
+    const periods = structuredClone(f.runtime.chargers.charger1.plan.periods);
+    f.setNow(f.now + 1000);
+    await f.runtime.identifyVehicle('charger1', input);
+    assert.notEqual(attempt(f).id, before.id);
+    assert.equal(attempt(f).attempt, before.attempt + 1);
+    assert.equal(attempt(f).probe, null); assert.equal(attempt(f).chargeDeadlineAt, null);
+    assert.deepEqual(f.runtime.chargers.charger1.controls, controls);
+    assert.deepEqual(f.runtime.chargers.charger1.plan.periods, periods);
+    assert.equal(f.writes.length, writes, 'Replacing passive observation creates no temporary charging instruction');
+    await assert.rejects(f.runtime.identifyVehicle('charger1', input), /changed/);
+    const current = structuredClone(attempt(f)), nonce = structuredClone(f.runtime.chargers.charger1.startRecoveryContext);
+    f.failPersistence(true);
+    await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), /storage/);
+    assert.deepEqual(attempt(f), current);
+    assert.deepEqual(f.runtime.chargers.charger1.startRecoveryContext, nonce);
+    if (transport === 'ocpp') {
+      f.failPersistence(false); f.physical.nativeCommandPending = true;
+      assert.equal(card(f).identification.retryAvailable, false);
+      await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), /already in progress/);
+    }
+  });
+
+  if (transport === 'ocpp') for (const boundary of ['missing power', 'stale power', 'future power', 'charging'])
+    test(`OCPP: passive retry preserves the ${boundary} evidence boundary`, async t => {
+      const f = await fixture(t, transport, 'bmw', { normalCharging: true, charging: false });
+      f.setNow(START + 1000); await f.update();
+      assert.equal(card(f).identification.retryAvailable, true);
+      if (boundary === 'missing power') { f.physical.charging = true; f.physical.powerKw = null; }
+      if (boundary === 'stale power') f.physical.powerAt = f.now - 61_000;
+      if (boundary === 'future power') f.physical.powerAt = f.now + 1000;
+      if (boundary === 'charging') f.physical.charging = true;
+      await f.update();
+      assert.equal(card(f).identification.retryAvailable, false);
+      const writes = f.writes.length;
+      await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), /already in progress/);
+      assert.equal(f.writes.length, writes);
+    });
 
   test(`${transport}: fresh Tesla evidence avoids an unnecessary identification pause`, async t => {
     const f = await fixture(t, transport, 'tesla', { normalCharging: true }); await f.update();

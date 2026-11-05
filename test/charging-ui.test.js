@@ -2649,6 +2649,24 @@ test('identification remains pending while waiting and an inconclusive result st
   assert(!$('charger1-identify').disabled); panel.close();
 });
 
+for (const id of ['charger1', 'charger2']) test(`${id}: idle passive identification offers an explicit fenced retry`, async () => {
+  const document = documentFixture(), $ = key => document.getElementById(key), calls = [];
+  const item = connected(id);
+  const panel = createChargingPanel({ document, request: async (url, input) => {
+    calls.push([url, input]);
+    return status({ ...item, identification: { phase: 'waiting', active: true, available: true, retryAvailable: false } });
+  } });
+  panel.update(status({ ...item, identification: { phase: 'waiting', active: true, available: true, retryAvailable: true } }));
+  const button = $(`${id}-identify`);
+  assert.equal(button.textContent, 'Retry Identify'); assert.equal(button.disabled, false);
+  assert.match(button.title, /Restart passive identification/);
+  await clickAction(button);
+  assert.deepEqual(calls, [[`/api/charging/chargers/${id}/identify`, { association: item.association,
+    sessionId: item.request.sessionId, revision: item.request.revision }]]);
+  assert.equal(button.textContent, 'Identify'); assert.equal(button.disabled, true);
+  panel.close();
+});
+
 test('identification exhaustion explains passive matching without implying a confirmed pause failed', () => {
   for (const [reason, explanation] of [['interrupted', /test ended without identifying this vehicle/],
     ['pause-timeout', /vehicle was not identified within the brief pause deadline/]]) {
