@@ -4,6 +4,7 @@ import { validateChargingPhysicalTestState } from './physical-tests.js';
 import { validateChargingOwnershipState } from './controller.js';
 import { validateOcppChargingOwnershipState } from './ocpp.js';
 import { validateShellyAcquisitionState, validateShellyOwnershipState } from './shelly-evse.js';
+import { validateOcppTransactionState } from '../domain/ocpp-transaction-state.js';
 
 /** Read-only startup/preflight gate. These are the same validators used by the
  * corresponding runtime readers, including state for inactive associations.
@@ -15,13 +16,14 @@ export function validateSavedChargingState(db) {
   const diagnostic = /^charging:(?:(?:simulated|offline|mqtt|providers):)?session-diagnostics$/;
   const physical = /^charging:(?:(?:simulated|offline|mqtt|providers):)?physical-tests$/;
   const ownership = /^charging:(?:simulated|offline|mqtt|providers):(charger[12]):([^:]+):ownership(:ocpp)?$/;
-  for (const row of db.prepare("SELECT key,value FROM state WHERE key GLOB 'charging:*'").iterate()) {
+  for (const row of db.prepare("SELECT key,value FROM state WHERE key GLOB 'charging:*' OR key='easee:ocpp'").iterate()) {
     const native = row.key.match(ownership);
     if (!diagnostic.test(row.key) && !physical.test(row.key)
-      && !row.key.startsWith('charging:shelly:') && !native) continue;
+      && !row.key.startsWith('charging:shelly:') && !native && row.key !== 'easee:ocpp') continue;
     try {
       const saved = JSON.parse(row.value);
-      if (diagnostic.test(row.key)) readChargingDiagnosticState(db, row.key, saved);
+      if (row.key === 'easee:ocpp') validateOcppTransactionState(saved);
+      else if (diagnostic.test(row.key)) readChargingDiagnosticState(db, row.key, saved);
       else if (physical.test(row.key)) { if (saved != null) validateChargingPhysicalTestState(saved); }
       else if (row.key.startsWith('charging:shelly:'))
         validateShellyAcquisitionState(saved, row.key.slice('charging:shelly:'.length));

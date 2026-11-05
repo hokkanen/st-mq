@@ -6,8 +6,10 @@ import { chargingDeviceInfo } from '../charging/device-info.js';
 import { MAX_SOURCE_AHEAD_MS } from '../domain/time-evidence.js';
 import { createOcppStartupDiagnostics } from './ocpp-startup-diagnostics.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
+import { validOcppTransactionState, OCPP_RECOVERY_ATTEMPT_LIMIT, OCPP_TRANSACTION_MAX_AGE_MS,
+  OCPP_NO_TRANSACTION_STATUSES, OCPP_EXTERNAL_STOP_REASONS } from '../domain/ocpp-transaction-state.js';
 
-const MAX_AGE_MS = 60_000;
+const MAX_AGE_MS = OCPP_TRANSACTION_MAX_AGE_MS;
 const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
 const CALL_TIMEOUT_MS = 15_000;
 const SNAPSHOT_ADMISSION_MS = 1000;
@@ -17,9 +19,9 @@ const METER_REFRESH_MS = 30_000;
 // whole-second timestamp while measuring slightly different values.
 const METER_REFRESH_AGE_MS = 45_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
-const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
+const NO_TRANSACTION_STATUSES = OCPP_NO_TRANSACTION_STATUSES;
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
-const EXTERNAL_STOP_REASONS = new Set(['Remote', 'Local', 'DeAuthorized']);
+const EXTERNAL_STOP_REASONS = OCPP_EXTERNAL_STOP_REASONS;
 const METER_CONTEXTS = new Set(['Interruption.Begin', 'Interruption.End', 'Sample.Clock', 'Sample.Periodic',
   'Transaction.Begin', 'Transaction.End', 'Trigger', 'Other']);
 const AUTHORIZATION_KEYS = Object.freeze(['AuthorizationCacheEnabled', 'AuthorizeRemoteTxRequests',
@@ -218,112 +220,6 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     }
   }
   const configurationFailures = new Set();
-  const validLedger = value => value && value.version === 4 && value.scope === scope
-    && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered', 'automaticStartRecovery'].includes(key))
-    && (value.automaticStartRecovery === undefined || value.automaticStartRecovery
-      && Object.keys(value.automaticStartRecovery).sort().join(',') === 'at,key'
-      && /^[a-f0-9]{64}$/.test(value.automaticStartRecovery.key)
-      && Number.isSafeInteger(value.automaticStartRecovery.at) && value.automaticStartRecovery.at >= 0)
-    && Number.isSafeInteger(value.nextId) && value.nextId > 0 && value.nextId < 2147483647
-    && Number.isSafeInteger(value.latestStartAt) && value.latestStartAt >= 0
-    && (value.activeId === null || Number.isSafeInteger(value.activeId))
-    && Array.isArray(value.transactions) && value.transactions.length <= 128
-    && new Set(value.transactions.map(row => row.id)).size === value.transactions.length
-    && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'status', 'startedAt', 'startReceivedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
-      && Number.isSafeInteger(row.id) && row.id > 0 && row.id < value.nextId
-      && /^[a-f0-9]{64}$/.test(row.fingerprint) && /^[a-f0-9]{64}$/.test(row.tagHash) && ['Accepted', 'Blocked', 'Invalid'].includes(row.status)
-      && Number.isSafeInteger(row.startedAt) && row.startedAt >= 0 && row.startedAt <= value.latestStartAt
-      && (row.startReceivedAt === undefined || Number.isSafeInteger(row.startReceivedAt) && row.startReceivedAt >= 0
-        && row.startedAt - row.startReceivedAt <= MAX_FUTURE_MS)
-      && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.startedAt
-      && Number.isSafeInteger(row.meterStart) && row.meterStart >= 0
-      && (row.stopReason === undefined && row.stopReceivedAt === undefined || EXTERNAL_STOP_REASONS.has(row.stopReason)
-        && Number.isSafeInteger(row.stopReceivedAt) && row.stopReceivedAt >= 0 && row.stoppedAt - row.stopReceivedAt <= MAX_FUTURE_MS)
-      && (row.modeDisableIntent === undefined || row.status === 'Accepted' && row.modeDisableIntent
-        && Object.keys(row.modeDisableIntent).every(key => ['requestedAt', 'connectionId', 'attemptedAt'].includes(key))
-        && Number.isSafeInteger(row.modeDisableIntent.requestedAt) && row.modeDisableIntent.requestedAt >= row.startedAt
-        && (row.modeDisableIntent.connectionId === null || typeof row.modeDisableIntent.connectionId === 'string'
-          && row.modeDisableIntent.connectionId.length > 0 && row.modeDisableIntent.connectionId.length <= 100)
-        && (row.modeDisableIntent.attemptedAt === undefined || Number.isSafeInteger(row.modeDisableIntent.attemptedAt)
-          && row.modeDisableIntent.attemptedAt >= row.modeDisableIntent.requestedAt))
-      && (row.endedByNewStart === undefined || row.status === 'Accepted' && row.modeDisableIntent && row.endedByNewStart
-        && Object.keys(row.endedByNewStart).length === 2
-        && Object.keys(row.endedByNewStart).every(key => ['transactionId', 'startedAt'].includes(key))
-        && Number.isSafeInteger(row.endedByNewStart.transactionId) && row.endedByNewStart.transactionId > row.id
-        && row.endedByNewStart.transactionId < value.nextId
-        && Number.isSafeInteger(row.endedByNewStart.startedAt)
-        && row.endedByNewStart.startedAt > Math.max(row.lastEvidenceAt, row.modeDisableIntent.requestedAt)
-        && value.transactions.some(next => next.id === row.endedByNewStart.transactionId && next.status === 'Accepted'
-          && next.startedAt === row.endedByNewStart.startedAt))
-      && (row.endedByStatus === undefined || row.status === 'Accepted' && row.endedByStatus
-        && row.endedByNewStart === undefined
-        && Object.keys(row.endedByStatus).length === 3
-        && Object.keys(row.endedByStatus).every(key => ['status', 'at', 'receivedAt'].includes(key))
-        && NO_TRANSACTION_STATUSES.has(row.endedByStatus.status)
-        && Number.isSafeInteger(row.endedByStatus.at) && row.endedByStatus.at > row.lastEvidenceAt
-        && Number.isSafeInteger(row.endedByStatus.receivedAt) && row.endedByStatus.receivedAt >= 0
-        && row.endedByStatus.at - row.endedByStatus.receivedAt <= MAX_FUTURE_MS
-        && row.endedByStatus.receivedAt - row.endedByStatus.at <= MAX_AGE_MS)
-      && (row.stopFingerprint === undefined && row.stoppedAt === undefined && row.meterStop === undefined
-        || /^[a-f0-9]{64}$/.test(row.stopFingerprint) && Number.isSafeInteger(row.stoppedAt) && row.stoppedAt >= row.startedAt
-          && (!row.endedByStatus || row.stoppedAt <= row.endedByStatus.at)
-          && Number.isSafeInteger(row.meterStop) && row.meterStop >= 0))
-    && value.transactions.filter(row => row.status === 'Accepted' && row.stoppedAt === undefined && !row.endedByStatus && !row.endedByNewStart).every(row => row.id === value.activeId)
-    && (value.activeId === null || value.transactions.some(row => row.id === value.activeId && row.status === 'Accepted'
-      && row.stoppedAt === undefined && !row.endedByStatus && !row.endedByNewStart))
-    && (value.recovered === undefined || validRecovered(value));
-  const validRecovered = value => {
-    const recovered = value.recovered;
-    return recovered && Object.keys(recovered).length === 2
-      && Object.keys(recovered).every(key => ['activeId', 'transactions'].includes(key))
-      && (recovered.activeId === null || Number.isSafeInteger(recovered.activeId))
-      && !(recovered.activeId !== null && value.activeId !== null)
-      && Array.isArray(recovered.transactions) && recovered.transactions.length <= 128
-      && new Set(recovered.transactions.map(row => row?.id)).size === recovered.transactions.length
-      && recovered.transactions.every(row => row && Object.keys(row).every(key => ['id', 'observedAt', 'confirmedAt', 'lastEvidenceAt',
-        'endedByStatus', 'endedByNewStart', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'stopFingerprint', 'modeDisableIntent'].includes(key))
-        && Number.isSafeInteger(row.id) && row.id > 0 && row.id < 2147483647
-        && !value.transactions.some(known => known.id === row.id)
-        && Number.isSafeInteger(row.observedAt) && row.observedAt >= 0
-        && Number.isSafeInteger(row.confirmedAt) && row.confirmedAt - row.observedAt >= 1000
-        && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.confirmedAt
-        && (row.stopReason === undefined && row.stopReceivedAt === undefined || EXTERNAL_STOP_REASONS.has(row.stopReason)
-          && Number.isSafeInteger(row.stopReceivedAt) && row.stopReceivedAt >= 0 && row.stoppedAt - row.stopReceivedAt <= MAX_FUTURE_MS)
-        && (row.endedByStatus === undefined || row.endedByStatus
-          && row.endedByNewStart === undefined
-          && Object.keys(row.endedByStatus).length === 3
-          && Object.keys(row.endedByStatus).every(key => ['status', 'at', 'receivedAt'].includes(key))
-          && NO_TRANSACTION_STATUSES.has(row.endedByStatus.status)
-          && Number.isSafeInteger(row.endedByStatus.at) && row.endedByStatus.at > row.lastEvidenceAt
-          && Number.isSafeInteger(row.endedByStatus.receivedAt) && row.endedByStatus.receivedAt >= 0
-          && row.endedByStatus.at - row.endedByStatus.receivedAt <= MAX_FUTURE_MS
-          && row.endedByStatus.receivedAt - row.endedByStatus.at <= MAX_AGE_MS)
-        && (row.endedByNewStart === undefined || row.endedByNewStart
-          && Object.keys(row.endedByNewStart).length === 2
-          && Object.keys(row.endedByNewStart).every(key => ['transactionId', 'startedAt'].includes(key))
-          && Number.isSafeInteger(row.endedByNewStart.startedAt) && row.endedByNewStart.startedAt > row.lastEvidenceAt
-          && row.endedByNewStart.startedAt > (row.modeDisableIntent?.requestedAt ?? 0)
-          && row.endedByNewStart.startedAt <= value.latestStartAt
-          && Number.isSafeInteger(row.endedByNewStart.transactionId) && row.endedByNewStart.transactionId > 0
-          && row.endedByNewStart.transactionId < value.nextId
-          && value.transactions.filter(next => next.id === row.endedByNewStart.transactionId)
-            .every(next => next.status === 'Accepted' && next.startedAt === row.endedByNewStart.startedAt))
-        && (row.modeDisableIntent === undefined || row.modeDisableIntent
-          && Object.keys(row.modeDisableIntent).every(key => ['requestedAt', 'connectionId', 'attemptedAt'].includes(key))
-          && Number.isSafeInteger(row.modeDisableIntent.requestedAt) && row.modeDisableIntent.requestedAt >= row.observedAt
-          && (row.modeDisableIntent.connectionId === null || typeof row.modeDisableIntent.connectionId === 'string'
-            && row.modeDisableIntent.connectionId.length > 0 && row.modeDisableIntent.connectionId.length <= 100)
-          && (row.modeDisableIntent.attemptedAt === undefined || Number.isSafeInteger(row.modeDisableIntent.attemptedAt)
-            && row.modeDisableIntent.attemptedAt >= row.modeDisableIntent.requestedAt))
-        && (row.stopFingerprint === undefined && row.stoppedAt === undefined && row.meterStop === undefined
-          || /^[a-f0-9]{64}$/.test(row.stopFingerprint) && Number.isSafeInteger(row.stoppedAt)
-            && row.stoppedAt >= row.observedAt && Number.isSafeInteger(row.meterStop) && row.meterStop >= 0
-            && (!row.endedByStatus || row.stoppedAt <= row.endedByStatus.at)))
-      && recovered.transactions.filter(row => !row.endedByStatus && !row.endedByNewStart && row.stoppedAt === undefined)
-        .every(row => row.id === recovered.activeId)
-      && (recovered.activeId === null || recovered.transactions.some(row => row.id === recovered.activeId
-        && !row.endedByStatus && !row.endedByNewStart && row.stoppedAt === undefined));
-  };
   const persist = (next, attempt) => {
     if (!stateReady || !state?.set) throw new Error('OCPP state unavailable');
     try { state.set(structuredClone(next)); ledger = next; }
@@ -412,11 +308,22 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       && !futureReadings.some(pending => Number.isSafeInteger(pending.transactionId) && pending.transactionId > 0
         && instant(pending.row.timestamp) >= intent.requestedAt);
   }
+  function recoveryAttempts(context) {
+    if (!ledger || !context || !Number.isSafeInteger(context.connectedAt) || context.connectedAt < 0
+      || context.connectedAt > clock() || typeof context.key !== 'string' || !/^[a-f0-9]{64}$/.test(context.key)) return null;
+    const history = ledger?.automaticStartRecoveries;
+    if (!history || history.connectedAt < context.connectedAt) return [];
+    return history.connectedAt === context.connectedAt ? history.attempts : null;
+  }
   function blockedStartRecovery(allowedAttempt = null) {
     const context = startRecoveryScope(), now = clock();
-    if (!context || !Number.isSafeInteger(context.connectedAt) || context.connectedAt > now
-      || !/^[a-f0-9]{64}$/.test(context.key) || activeTransaction() || recoveryConflict
-      || ledger.automaticStartRecovery?.key === context.key && context.key !== allowedAttempt) return null;
+    const attempts = recoveryAttempts(context);
+    if (!attempts || activeTransaction() || recoveryConflict || attempts.at(-1)?.at > now) return null;
+    const consumed = attempts.some(row => row.key === context.key);
+    if (consumed && context.key !== allowedAttempt) return null;
+    if (!consumed && attempts.length >= OCPP_RECOVERY_ATTEMPT_LIMIT) {
+      remoteStartStatus = 'recovery-capacity'; return null;
+    }
     const row = ledger.transactions.at(-1), power = values.get(120), powerAt = instant(power?.timestamp);
     // Recover only our own refused automatic start, never an accepted session's
     // external Stop or an unexplained native suspension. Original source clocks
@@ -428,7 +335,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       || connectorStatusAt < row.stoppedAt || connectorReceivedAt < row.stopReceivedAt
       || connectorStatusAt > now || power?.value !== 0 || powerAt < row.stoppedAt
       || !Number.isFinite(powerAt) || powerAt > now || now - powerAt > MAX_AGE_MS) return null;
-    return { row, key: context.key };
+    return { row, key: context.key, connectedAt: context.connectedAt, attempts };
   }
   const remoteStartStateReady = call => call.recoveryKey
     ? blockedStartRecovery(call.recoveryCommitted ? call.recoveryKey : null)?.key === call.recoveryKey
@@ -463,7 +370,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const active = activeTransaction();
       try {
         const recovery = call.recoveryKey ? blockedStartRecovery() : null;
-        persist(recovery ? { ...ledger, automaticStartRecovery: { key: recovery.key, at: clock() } }
+        persist(recovery ? { ...ledger, automaticStartRecoveries: { connectedAt: recovery.connectedAt,
+          attempts: [...recovery.attempts, { key: recovery.key, at: clock() }] } }
           : active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger, call.attempt);
         if (recovery) call.recoveryCommitted = true;
       }
@@ -502,7 +410,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   function requestRemoteStart() {
     reconcileTransactionStatus();
     const context = startRecoveryScope();
-    if (context && ledger?.automaticStartRecovery?.key === context.key) return;
+    if (recoveryAttempts(context)?.some(row => row.key === context.key)) return;
     const recovery = connectorStatus === 'SuspendedEVSE' && blockedStartRecovery();
     if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted && !recovery
       || [...pendingCalls.values(), ...callQueue].some(call => call.action === 'RemoteStartTransaction')
@@ -676,8 +584,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (!state?.get || !state?.set) { error = 'transaction-state-unavailable'; stateReady = false; return false; }
     try {
       const saved = state.get();
-      if (saved !== null && saved !== undefined && !validLedger(saved)) { error = 'incompatible-transaction-state'; stateReady = false; return false; }
-      ledger = saved ?? { version: 4, scope, nextId: randomInt(1, 1000000000), latestStartAt: 0, activeId: null, transactions: [] };
+      if (saved !== null && saved !== undefined && !validOcppTransactionState(saved, scope)) { error = 'incompatible-transaction-state'; stateReady = false; return false; }
+      ledger = saved ?? { version: 5, automaticStartRecoveries: null, scope, nextId: randomInt(1, 1000000000), latestStartAt: 0, activeId: null, transactions: [] };
       stateReady = true; persist(ledger); error = null; return true;
     } catch { error = 'transaction-state-unavailable'; stateReady = false; return false; }
   }

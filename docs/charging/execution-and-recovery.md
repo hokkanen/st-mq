@@ -18,6 +18,17 @@ can also show proposed periods alongside pending approval, without claiming a
 profile was accepted. Plug-and-charge approval requires the price plan or a
 permitted charging action to call for charging.
 
+An explicit Identify retry can supply a new once-only recovery context for our
+own refused automatic Start. Passive identification still waits for the ordinary
+charging program; the retry itself does not override its periods or independent
+native instructions. Consent becomes usable only after the Identify action
+commits and expires when that attempt ends, its adapter changes or the process
+restarts. All consumed contexts remain recorded for that physical connection,
+including uncertain dispatch, so ending a retry cannot rearm an older attempt.
+The bounded history fails closed when full; only a confirmed newer physical
+connection can replace it. Ordinary authority, fresh evidence, native protection
+and dispatch-time checks remain required.
+
 A newly selected, current-session identification current preparation or probe
 can interrupt an older native controller wait for an economic plan, just like
 its due Stop or return. Current preparation alone grants no Start permission.

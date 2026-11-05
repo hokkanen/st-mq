@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -60,7 +60,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
   controller = adapter.createController({ clock: () => now, initialState: controllerState, canControl: () => authority && admitted,
-    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification });
+    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification, getStartRecoveryContext });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
@@ -123,6 +123,43 @@ async function rejectedAutomaticStart(f, { reason = 'DeAuthorized', power = 0 } 
 const openPlan = f => ({ startAt: f.now, feasible: true, periods: [{ startAt: f.now, endAt: null }] });
 const starts = f => f.calls.filter(row => row.action === 'RemoteStartTransaction');
 
+test('an explicit passive Identify retry gets one new refused-start attempt without overriding the economic period', async t => {
+  let retry = null;
+  const f = await fixture(t, { getStartRecoveryContext: () => retry });
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  const prior = structuredClone(f.states.get('transactions').automaticStartRecoveries.attempts.at(-1));
+  retry = { id: 'synthetic-explicit-identify', connectedAt: f.controller.status().session.connectedAt };
+  f.advance(1000); await f.meter(0);
+  const future = f.now + 30 * MINUTE;
+  await f.controller.update({ enabled: true, plan: { startAt: future, feasible: true,
+    periods: [{ startAt: future, endAt: null }] } });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1, 'Passive retry cannot grant charging outside the ordinary program');
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 2, 'Explicit retry has its own once-only recovery context');
+  assert.notEqual(f.states.get('transactions').automaticStartRecoveries.attempts.at(-1).key, prior.key);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 2, 'Routine refresh cannot repeat the explicit attempt');
+  retry = null;
+  assert.equal((await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status, 'Blocked',
+    'Ending the explicit context revokes its retained lease before another reconcile');
+  f.advance(1000); await f.meter(0);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 2, 'Ending the explicit attempt cannot rearm the consumed ordinary context');
+  const restarted = await fixture(t, { transactionState: f.states.get('transactions'),
+    controllerState: f.states.get('controller') });
+  restarted.advance(5000); await restarted.status('SuspendedEVSE'); await restarted.meter(0);
+  await restarted.controller.update({ enabled: true, plan: openPlan(restarted) });
+  await restarted.status('SuspendedEVSE');
+  assert.equal(starts(restarted).length, 0, 'Restart preserves every consumed context without replaying consent');
+});
+
 test('a refused automatic transaction recovers from fresh suspension once current permission returns', async t => {
   const f = await fixture(t);
   await rejectedAutomaticStart(f);
@@ -131,7 +168,7 @@ test('a refused automatic transaction recovers from fresh suspension once curren
   await f.status('SuspendedEVSE');
   assert.equal(starts(f).length, 1);
   const saved = f.states.get('transactions');
-  assert.equal(saved.automaticStartRecovery.at, f.now);
+  assert.equal(saved.automaticStartRecoveries.attempts.at(-1).at, f.now);
   f.advance(1000);
   const reply = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
     timestamp: new Date(f.now).toISOString(), meterStart: 0 });
@@ -141,6 +178,90 @@ test('a refused automatic transaction recovers from fresh suspension once curren
   assert.equal(current.snapshot.transactionConfirmed, true);
   assert.equal(f.adapter.normalize(current.snapshot, { now: f.now }).powerKw.value, 6.9);
   assert.equal(f.requests.filter(row => row.method === 'POST' && row.path.startsWith('/api/')).length, 0);
+});
+
+test('ending Identify during durable reservation consumes the attempt without sending a late Start', async t => {
+  let retry = null;
+  const f = await fixture(t, { getStartRecoveryContext: () => retry,
+    beforeTransactionSave: value => {
+      if (value.automaticStartRecoveries?.attempts.length === 2) retry = null;
+    } });
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1);
+  const explicit = { id: 'synthetic-ending-identify', connectedAt: f.controller.status().session.connectedAt };
+  retry = explicit;
+  f.advance(1000); await f.meter(0);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(f.states.get('transactions').automaticStartRecoveries.attempts.length, 2);
+  assert.equal(starts(f).length, 1, 'Actual dispatch checks the still-current explicit context after persistence');
+  retry = explicit;
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1, 'An uncertain reserved attempt is never replayed');
+});
+
+test('full consumed-context storage fails closed without forgetting earlier attempts', async t => {
+  const original = await fixture(t);
+  await rejectedAutomaticStart(original);
+  await original.controller.update({ enabled: true, plan: openPlan(original) });
+  await original.status('SuspendedEVSE');
+  const saved = structuredClone(original.states.get('transactions'));
+  const history = saved.automaticStartRecoveries;
+  while (history.attempts.length < 256) history.attempts.push({
+    key: history.attempts.length.toString(16).padStart(64, '0'), at: history.attempts[0].at });
+  const f = await fixture(t, { transactionState: saved, controllerState: original.states.get('controller'),
+    getStartRecoveryContext: () => ({ id: 'synthetic-at-capacity', connectedAt: history.connectedAt }) });
+  f.advance(5000); await f.status('SuspendedEVSE'); await f.meter(0);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 0);
+  assert.deepEqual(f.states.get('transactions').automaticStartRecoveries, history);
+  assert.equal(f.provider.localOcppStatus().remoteStartStatus, 'recovery-capacity');
+});
+
+test('only a current explicit Identify context can add a refused-start attempt', async t => {
+  for (const invalid of ['old physical session', 'future physical session', 'missing identity', 'oversized identity'])
+    await t.test(invalid, async t => {
+      let retry = null;
+      const f = await fixture(t, { getStartRecoveryContext: () => retry });
+      await rejectedAutomaticStart(f);
+      await f.controller.update({ enabled: true, plan: openPlan(f) });
+      await f.status('SuspendedEVSE');
+      assert.equal(starts(f).length, 1);
+      retry = { id: 'synthetic-explicit-retry', connectedAt: f.controller.status().session.connectedAt };
+      if (invalid === 'old physical session') retry.connectedAt--;
+      if (invalid === 'future physical session') retry.connectedAt++;
+      if (invalid === 'missing identity') delete retry.id;
+      if (invalid === 'oversized identity') retry.id = 'x'.repeat(129);
+      f.advance(1000); await f.meter(0);
+      await f.controller.update({ enabled: true, plan: openPlan(f) });
+      await f.status('SuspendedEVSE');
+      assert.equal(starts(f).length, 1);
+      assert.equal(f.states.get('transactions').automaticStartRecoveries.attempts.length, 1);
+    });
+});
+
+test('a confirmed newer physical session starts its own recovery history without removing transaction evidence', async t => {
+  const f = await fixture(t); await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  const original = structuredClone(f.states.get('transactions'));
+  assert.equal(starts(f).length, 1);
+  await f.status('Available');
+  await f.controller.update({ enabled: true, plan: { startAt: f.now + 30 * MINUTE,
+    feasible: true, periods: [{ startAt: f.now + 30 * MINUTE, endAt: null }] } });
+  f.advance(1000); await f.status('Preparing'); await f.meter(0);
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 2);
+  const saved = f.states.get('transactions');
+  assert(saved.automaticStartRecoveries.connectedAt > original.automaticStartRecoveries.connectedAt);
+  assert.equal(saved.automaticStartRecoveries.attempts.length, 1);
+  assert.deepEqual(saved.transactions[0], original.transactions[0]);
 });
 
 test('refused-start recovery preserves evidence, instruction and physical-connection fences', async t => {
@@ -181,7 +302,7 @@ test('an accepted transaction ending with DeAuthorized cannot supply refused-sta
   f.advance(1000); await f.status('SuspendedEVSE'); await f.meter(0);
   await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');
   assert.equal(starts(f).length, 0);
-  assert.equal(f.states.get('transactions').automaticStartRecovery, undefined);
+  assert.equal(f.states.get('transactions').automaticStartRecoveries, null);
 });
 
 test('a second refused start cannot loop and the recovery budget survives receiver restart', async t => {
@@ -210,7 +331,7 @@ test('a second refused start cannot loop and the recovery budget survives receiv
 
 test('refused-start recovery cannot dispatch before its durable attempt is saved', async t => {
   const f = await fixture(t, { beforeTransactionSave: value => {
-    if (value.automaticStartRecovery) throw new Error('Synthetic recovery storage failure');
+    if (value.automaticStartRecoveries) throw new Error('Synthetic recovery storage failure');
   } });
   await rejectedAutomaticStart(f);
   await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');

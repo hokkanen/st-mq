@@ -616,6 +616,8 @@ for (const transport of ['cloud', 'ocpp']) {
     await assert.rejects(f.runtime.identifyVehicle('charger1', input), /storage/);
     assert.deepEqual(attempt(f), before); assert.equal(f.view().id, 'bmw');
     assert.equal(card(f).request.revision, input.revision); assert.equal(f.writes.length, count);
+    assert.equal(f.runtime.chargers.charger1.startRecoveryContext, undefined,
+      'A failed Identify commit creates no start-recovery nonce');
   });
 
   test(`${transport}: a pending normal-charge recheck cannot declare success from the previous confirmed identity`, async t => {
@@ -623,6 +625,9 @@ for (const transport of ['cloud', 'ocpp']) {
     const stopAt = f.physical.at;
     f.setNow(stopAt + 4000); f.publish({ charging: false }, stopAt + 2000); await f.update();
     await f.runtime.identifyVehicle('charger1', sessionInput(f));
+    const item = f.runtime.chargers.charger1;
+    assert.deepEqual(item.startRecoveryContext, { id: attempt(f).id,
+      connectedAt: attempt(f).connectedAt, adapterGeneration: item.adapterGeneration });
     f.setNow(f.now + 1000); Object.assign(f.physical, { charging: true, at: f.now });
     await f.update();
     f.setNow(f.now + 78 * MINUTE); f.publish({ soc: 46 }, f.now); await f.update();
@@ -631,6 +636,8 @@ for (const transport of ['cloud', 'ocpp']) {
     await f.update(); assert.equal(attempt(f).phase, 'charging');
     await f.restart(); await f.update();
     assert.equal(attempt(f).phase, 'charging'); assert.equal(f.view().id, 'bmw');
+    assert.equal(f.runtime.chargers.charger1.startRecoveryContext, undefined,
+      'Restart retains identification evidence without replaying explicit retry consent');
   });
 }
 

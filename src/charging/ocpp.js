@@ -459,7 +459,7 @@ export function validateOcppChargingOwnershipState(state, scope = state?.scope) 
 
 /** Current transaction only; no cloud schedule is presented as native readback. */
 export function createOcppChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
-  canControl = () => false, hasAuthority = canControl, getPlan, getIdentification } = {}) {
+  canControl = () => false, hasAuthority = canControl, getPlan, getIdentification, getStartRecoveryContext } = {}) {
   if (!adapter || !scopeValid(adapter.scope)) throw fail('invalid-ocpp-adapter');
   validateOcppChargingOwnershipState(initialState, adapter.scope);
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
@@ -627,9 +627,16 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     const until = Math.min(now + MAX_AGE_MS,
       desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
       identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
-    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current),
+    const retry = getStartRecoveryContext?.();
+    const retryId = retry?.connectedAt === state.session.connectedAt && text(retry.id) && retry.id.length <= 128
+      ? retry.id : null;
+    const retryCurrent = () => {
+      const next = getStartRecoveryContext?.();
+      return next?.id === retryId && next?.connectedAt === state.session.connectedAt;
+    };
+    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
       recovery: { connectedAt: state.session.connectedAt,
-        key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id]) } });
+        key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) } });
   }
   function observePause() {
     ownsInstruction = ownsInstruction && snapshot.online && fresh(snapshot.readAt, clock()) && snapshot.transactionConfirmed

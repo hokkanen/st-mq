@@ -741,6 +741,15 @@ export class ChargingRuntime {
         canControl: () => !this.streamPersistencePending && hasAuthority(),
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
+        // A passive Identify retry supplies only a new once-only start context.
+        // Ordinary permission still owns whether charging may start at all.
+        getStartRecoveryContext: () => {
+          const retry = item.startRecoveryContext, identification = item.identification;
+          return generation === item.adapterGeneration && retry?.id === identification?.id
+            && retry?.adapterGeneration === generation
+            && retry?.connectedAt === identification?.connectedAt
+            && ['waiting', 'charging'].includes(identification?.phase) ? retry : null;
+        },
         getPlan: async (snapshot, { refresh = true, takeover = false, signal } = {}) => {
           const selected = this.controlPlan(item, this.pricesInitialized ? item.plan : null);
           // A bounded probe already selected its return program. Even a
@@ -3675,6 +3684,9 @@ export class ChargingRuntime {
       for (const [key, state] of Object.entries(consumed)) Object.assign(this.vehicleFeeds[key], state);
       this.consumedTeslaPower = previousTesla; this.revision = previousRevision; throw error;
     }
+    const retry = { id: item.identification.id, connectedAt: item.identification.connectedAt,
+      adapterGeneration: item.adapterGeneration };
+    this.store.afterCommit(() => { item.startRecoveryContext = retry; });
     return item;
     }, { priority: 'control', isCurrent: () => this.canControl() });
     item.controller.invalidate?.();

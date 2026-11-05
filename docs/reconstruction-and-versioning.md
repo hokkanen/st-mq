@@ -423,6 +423,12 @@ interpretation. Startup rejects incompatible physical schemas before mutation;
 there is no older-schema branch, alternate journal decoder or automatic reset.
 A pair cannot mirror or hand over between incompatible physical schemas.
 
+The current Direct OCPP transaction state is version 5. Its bounded consumed
+Start-recovery contexts belong to one physical connection and survive restart;
+an older or malformed transaction state is rejected before database mutation,
+including during read-only inspection and full verification. This state contract
+does not change physical schema 37 or journaled layout 32.
+
 Home cycle storage separates one immutable frozen definition, immutable sample
 provenance groups and ordered interval evidence from a compact mutable execution
 header. The active-cycle state holds only its identifier. Ordinary updates append
@@ -506,6 +512,12 @@ remain required.
   coordinated activation; retain verified original backups. Operational replication
   history remains retained in the original backups when the new row layout is
   anchored. This grants no automatic migration or future upgrade ladder.
+  The same overnight approval covers external conversion of Direct OCPP
+  transaction state version 4 to version 5. Preserve original transaction
+  evidence and every evidenced consumed recovery context without inventing
+  attempts or connection boundaries. Keep verified originals and rehearse the
+  current-state, unchanged-history and rollback checks before paired activation.
+  There is no runtime older-state decoder or repository conversion tool.
 
 ## Version discipline
 

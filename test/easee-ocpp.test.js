@@ -1493,8 +1493,8 @@ test('current supply keeps conflicting phase evidence invalid and quarantines fu
 
 test('old transaction ledgers are rejected before mutation and native reboot revokes prior control evidence', async t => {
   const f = await fixture(t), client = await f.connect();
-  assert.equal(f.saved.version, 4);
-  const old = { ...f.saved, version: 3 }; let writes = 0;
+  assert.equal(f.saved.version, 5);
+  const old = { ...f.saved, version: 4 }; let writes = 0;
   const stale = createEaseeOcpp({ config: { ...config, port: await freePort() }, chargerId: 'fixture-charger', canControl: () => true,
     state: { get: () => old, set() { writes++; } } });
   await stale.start(); t.after(() => stale.close());
