@@ -5,6 +5,35 @@ import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 const HOUR = 3600000;
 const finite = Number.isFinite;
+
+// Forecast derivatives belong to consecutive native reports in one treatment
+// epoch. The controller's polling interval is not their report interval.
+// These compact points stay on Engine.lastSample, outside committed learning.
+export function applyNativeControlTrends(sample, equipment, previous, contextRevision) {
+  const current = sample.nativeControl;
+  current.contextRevision = contextRevision;
+  current.slopes = { integralPerHour: null, shortfallCPerHour: null };
+  equipment.integralTrendPerHour = equipment.supplyShortfallTrendPerHour = null;
+  const before = previous?.nativeControl;
+  if (!before || before.contextRevision !== contextRevision
+    || !['compressorOn', 'dhwRouting', 'operatingMode'].every(key => finite(current[key]) && current[key] === before[key])) return;
+  const sameSource = (a, b) => a && b && a.source === b.source && a.device === b.device;
+  // A target step changes the integral and water shortfall by instruction;
+  // neither change establishes continuing cooling or a sustained demand slope.
+  if (!sameSource(current.target, before.target) || current.target.value !== before.target.value) return;
+  const slope = (point, prior, retained, direction = 1) => {
+    if (!sameSource(point, prior)) return null;
+    // A routine poll preserves the same dated derivative, without extending
+    // either point's freshness. A same-clock changed value is contradictory.
+    if (point.at === prior.at && point.value === prior.value) return finite(retained) ? retained : null;
+    if (!(point.at > prior.at && point.at - prior.at <= HOUR / 2)) return null;
+    return point.value === prior.value ? 0 : direction * (point.value - prior.value) * HOUR / (point.at - prior.at);
+  };
+  current.slopes.integralPerHour = equipment.integralTrendPerHour = slope(current.integral, before.integral, before.slopes?.integralPerHour);
+  current.slopes.shortfallCPerHour = equipment.supplyShortfallTrendPerHour = slope(current.supply, before.supply,
+    before.slopes?.shortfallCPerHour, -1);
+}
+
 export function controlObservations({ latest, now, observations, outlook, checkpoint, phase, roomBoostC = 0, config, h66 }) {
   const fresh = (signal, age = 300000) => {
     const o = latest[signal];
@@ -42,6 +71,11 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     integral, supplyShortfallC: finite(supply) && finite(targetSupply) ? targetSupply - supply : null,
     compressorOn: compressor, dhwRouting: route, alarmActive: connected && value('alarm_active') === 1,
     operatingMode: connected ? value('operating_mode') : null };
+  const nativePoint = signal => {
+    const point = connected ? fresh(signal) : null;
+    return point && typeof point.source === 'string' && typeof point.device === 'string'
+      ? { value: point.value, at: point.sourceTime, source: point.source, device: point.device } : null;
+  };
   if (observations.actual?.source === 'simulation') Object.assign(equipment, {
     h66Available:true,preheatAvailable:true,compressorOn:observations.actual.compressorDuty,
     dhwRouting:observations.actual.auxRoute==='dhw'?1:0,nativeAuxAllowed:true,roomSettingC:20,roomSettingMaximumC:35,
@@ -68,6 +102,8 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const priceRow = outlook.prices.find(row => row.start <= now && row.end > now);
   const price = priceRow?.allInCentsPerKWh ?? null;
   const sample = { timestamp: now, indoorC, outdoorC, supplyC: supply, brineC: equipment.brineC, solarRadiationWm2: radiation, phase, roomBoostC,
+    nativeControl: { integral: nativePoint('heating_integral'), target: nativePoint('heating_setpoint'),
+      supply: nativePoint('supply_temperature'), compressorOn: compressor, dhwRouting: route, operatingMode: currentMode },
     indoorEstimated: indoor?.estimated === true, indoorUncertaintyC: indoor?.uncertaintyC ?? 0,
     targetC: checkpoint.baselineC, quality: finite(indoorC) && finite(outdoorC) ? [] : ['missing'],
     powerKw: observations.actual?.source === 'simulation' ? observations.actual.powerKw : powerKw,

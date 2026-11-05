@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { controlObservations } from '../src/app/control-observations.js';
+import { controlObservations, applyNativeControlTrends } from '../src/app/control-observations.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { timingEvidenceSource } from '../src/app/timing-evidence.js';
 import { Engine } from '../src/app/engine.js';
@@ -81,4 +81,58 @@ test('current timing source names cannot expose arbitrary provenance', () => {
     assert.equal(evidence, 'unknown');
     assert(!JSON.stringify(evidence).includes('private-not-for-display'));
   }
+});
+
+test('native trend points retain their report clocks and zero values through controller polling', () => {
+  const capture = (at, sourceAt, changes = {}) => controlObservations({ now: at, config, phase: 'normal',
+    h66: { connected: true }, observations: { indoor: { value: 21 }, outdoor: { value: 0 } },
+    outlook: { forecast: [], prices: [] }, checkpoint: { model: initialAdaptiveModel(config), baselineC: 21 },
+    latest: Object.fromEntries(Object.entries({ heating_integral: -10, heating_setpoint: 35, supply_temperature: 30,
+      compressor_active: 0, dhw_routing: 0, operating_mode: 1, ...changes }).map(([signal, value]) =>
+      [signal, reading(value, { device: 'fixture-native-trend', sourceTime: sourceAt, receivedAt: sourceAt })])) });
+  const first = capture(now, now);
+  applyNativeControlTrends(first.sample, first.equipment, null, 1);
+  assert.equal(first.equipment.integralTrendPerHour, null);
+  const poll = capture(now + 59_900, now);
+  applyNativeControlTrends(poll.sample, poll.equipment, first.sample, 1);
+  assert.equal(poll.equipment.integralTrendPerHour, null, 'A repeated report has no positive time separation');
+  const next = capture(now + MINUTE, now + MINUTE, { heating_integral: 0, supply_temperature: 29 });
+  applyNativeControlTrends(next.sample, next.equipment, poll.sample, 1);
+  assert.equal(next.equipment.integralTrendPerHour, 600, 'A valid reported zero remains a measurement');
+  assert.equal(next.equipment.supplyShortfallTrendPerHour, 60, 'The native minute, not the final 100 ms poll, owns the slope');
+  assert.equal(next.sample.nativeControl.integral.at, now + MINUTE);
+  assert.equal(next.sample.nativeControl.compressorOn, 0);
+  const held = capture(now + MINUTE + 100, now + MINUTE, { heating_integral: 0, supply_temperature: 29 });
+  applyNativeControlTrends(held.sample, held.equipment, next.sample, 1);
+  assert.equal(held.equipment.integralTrendPerHour, 600, 'Polling identical evidence retains the dated slope');
+  assert.equal(held.equipment.supplyShortfallTrendPerHour, 60);
+  assert.equal(held.sample.nativeControl.integral.at, next.sample.nativeControl.integral.at);
+  const stale = capture(now + 7 * MINUTE, now + MINUTE, { heating_integral: 0, supply_temperature: 29 });
+  applyNativeControlTrends(stale.sample, stale.equipment, held.sample, 1);
+  assert.equal(stale.equipment.integralTrendPerHour, null, 'The original points still expire');
+  assert.equal(stale.equipment.supplyShortfallTrendPerHour, null);
+});
+
+for (const boundary of ['treatment epoch', 'target step', 'compressor', 'routing', 'operating mode',
+  'unknown native state', 'missing target', 'nonmonotone clock', 'contradictory clock', 'changed integral source', 'changed supply source'])
+test(`native forecast derivatives retain the ${boundary} boundary`, () => {
+  const point = (value, at) => ({ value, at, source: 'fixture-native', device: 'fixture-pump' });
+  const before = { nativeControl: { contextRevision: 1, integral: point(-10, now), supply: point(30, now),
+    target: point(35, now), compressorOn: 0, dhwRouting: 0, operatingMode: 1 } };
+  const sample = structuredClone(before), equipment = {};
+  sample.nativeControl.integral = point(-20, now + MINUTE);
+  sample.nativeControl.supply = point(29, now + MINUTE);
+  if (boundary === 'target step') sample.nativeControl.target.value += 9;
+  if (boundary === 'compressor') sample.nativeControl.compressorOn = 1;
+  if (boundary === 'routing') sample.nativeControl.dhwRouting = 1;
+  if (boundary === 'operating mode') sample.nativeControl.operatingMode = 2;
+  if (boundary === 'unknown native state') before.nativeControl.compressorOn = sample.nativeControl.compressorOn = null;
+  if (boundary === 'missing target') sample.nativeControl.target = null;
+  if (boundary === 'nonmonotone clock') sample.nativeControl.integral.at = sample.nativeControl.supply.at = now - 1;
+  if (boundary === 'contradictory clock') sample.nativeControl.integral.at = sample.nativeControl.supply.at = now;
+  if (boundary === 'changed integral source') sample.nativeControl.integral.device = 'fixture-replaced-pump';
+  if (boundary === 'changed supply source') sample.nativeControl.supply.source = 'fixture-replaced-feed';
+  applyNativeControlTrends(sample, equipment, before, boundary === 'treatment epoch' ? 2 : 1);
+  assert.equal(equipment.integralTrendPerHour, boundary === 'changed supply source' ? -600 : null);
+  assert.equal(equipment.supplyShortfallTrendPerHour, boundary === 'changed integral source' ? 60 : null);
 });

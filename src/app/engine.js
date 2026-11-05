@@ -15,7 +15,7 @@ import { LiveLearning } from './live-learning.js';
 import { sensorRevision } from './sensor-inputs.js';
 import { publishCorrection } from './learning-publication.js';
 import { CycleTracker } from './cycles.js';
-import { controlObservations } from './control-observations.js';
+import { controlObservations, applyNativeControlTrends } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
@@ -1592,8 +1592,6 @@ export class Engine {
     if (prev && now > prev.timestamp && now - prev.timestamp <= 1800000) {
       const hours = (now-prev.timestamp)/3600000;
       sample.indoorTrendCPerHour = (sample.indoorC-prev.indoorC)/hours;
-      equipment.integralTrendPerHour = Number.isFinite(equipment.integral) && Number.isFinite(prev.integral) ? (equipment.integral-prev.integral)/hours : null;
-      equipment.supplyShortfallTrendPerHour = Number.isFinite(equipment.supplyShortfallC) && Number.isFinite(prev.supplyShortfallC) ? (equipment.supplyShortfallC-prev.supplyShortfallC)/hours : null;
     }
     sample.integral = equipment.integral; sample.supplyShortfallC = equipment.supplyShortfallC;
     const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
@@ -1602,7 +1600,8 @@ export class Engine {
         ? (this.floorOverrideMode(now) === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : currentPhase === 'reduction' ? 'reduction-only-v1' : 'normal'),
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime,
       episodeId: this.cycles.active()?.id ?? this.store.getState(`manual-learning:${input}`)?.id ?? null };
-    recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
+    const contextRevision = recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
+    applyNativeControlTrends(sample, equipment, prev, contextRevision);
     checkpoint=yield* this.learningReplayStep(checkpoint);this.checkpoint=checkpoint;
     this.temperatureObservations(observations, now, checkpoint, true, source);
     if (this.cycles.active() && Number.isFinite(checkpoint.measurementEpochAt)

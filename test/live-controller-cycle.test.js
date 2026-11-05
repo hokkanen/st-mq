@@ -12,6 +12,36 @@ import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/teleme
 
 const HOUR = 3_600_000;
 
+test('native forecast slopes do not extrapolate a preheat target step or controller polling interval', async t => {
+  const r = setup(t, { automationEnabled: false }); r.native();
+  const native = (integral, target, supply) => {
+    for (const [signal, value] of [['heating_integral', integral], ['heating_setpoint', target],
+      ['supply_temperature', supply], ['compressor_active', 0], ['dhw_routing', 0]]) r.ingest(signal, value);
+  };
+  native(90, 30, 28); r.engine.tick(); await r.settle();
+  r.advance(13_000);
+  // The fixture supplies a confirmed applied phase; only the real Engine's
+  // forecast assembly is under test, without changing comfort or model limits.
+  r.engine.applied = { ...r.engine.applied, phase: 'preheat', roomBoostC: 3, at: r.now };
+  native(0, 39, 28); r.engine.tick(); await r.settle();
+  let equipment = r.engine.heatingExplorer.input.equipment;
+  assert.equal(equipment.integral, 0);
+  assert.equal(equipment.supplyShortfallC, 11, 'The current native point remains available');
+  assert.equal(equipment.integralTrendPerHour ?? null, null);
+  assert.equal(equipment.supplyShortfallTrendPerHour ?? null, null, 'The commanded step is not continuing water cooling');
+
+  r.advance(60_000); native(-10, 39, 27); r.engine.tick(); await r.settle();
+  r.advance(1000); r.engine.tick(); await r.settle();
+  r.advance(1000); native(-20, 39, 26); r.engine.tick(); await r.settle();
+  equipment = r.engine.heatingExplorer.input.equipment;
+  assert.equal(equipment.integralTrendPerHour, -18_000, 'Use the two-second native report separation');
+  assert.equal(equipment.supplyShortfallTrendPerHour, 1800, 'An extra controller tick cannot halve the native time span');
+  r.advance(100); r.engine.tick(); await r.settle();
+  equipment = r.engine.heatingExplorer.input.equipment;
+  assert.equal(equipment.integralTrendPerHour, -18_000, 'A later poll of the same dated reports retains their slope');
+  assert.equal(equipment.supplyShortfallTrendPerHour, 1800);
+});
+
 test('a completed live receipt publishes the bounded cycle summary instead of working learning inputs', async t => {
   const r = setup(t, { delayed: true }); r.plan();
   r.engine.tick();
@@ -77,6 +107,47 @@ test('a live trial continues after exposure grows beyond its initial estimate an
   assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
 });
 
+test('a confirmed preheat trial survives its native target step and still ends at a real comfort limit', async t => {
+  const r = setup(t), native = r.native({ tariffFeedback: () => ({
+    mode: 'normal', verified: true, stale: false, identity: 'c'.repeat(64) }) }), plan = r.plan();
+  Object.assign(r.engine.control, { learningTrials: true, maxTrialCostCents: 150, preheatRoomBoostC: 1 });
+  Object.assign(plan.schedule, { preheatEnd: r.now + HOUR / 4, reductionStart: r.now + HOUR / 4,
+    reductionEnd: r.now + 2 * HOUR, roomBoostC: 1, roomSettingC: 20, treatmentKey: 'room-boost-v1' });
+  plan.trial = true;
+  plan.equipment = { externalChangeRevision: native.h66.status().externalChangeRevision };
+  const observe = (integral, target) => {
+    for (const [signal, value] of Object.entries({ compressor_active: 1, dhw_routing: 0,
+      auxiliary_output: 0, supply_temperature: 30, heating_setpoint: target,
+      heating_integral: integral, brine_in_temperature: 0 })) r.ingest(signal, value);
+  };
+  r.advance(1); native.receive('0203', 19);
+  const market = r.store.getState('provider:market');
+  // Cover the delayed preheat peak and enough Normal demand for a useful
+  // trial; the ordinary six-hour delivery fixture intentionally lacks both.
+  market.intervals = Array.from({ length: 96 }, (_, i) => ({ ...market.intervals[0],
+    start: r.now + i * HOUR / 4, end: r.now + (i + 1) * HOUR / 4, spotCtPerKwh: 5 }));
+  r.store.setState('provider:market', market);
+  const weather = r.store.getState('provider:weather');
+  weather.forecast[0].end = r.now + 24 * HOUR; r.store.setState('provider:weather', weather);
+  plan.intervals = market.intervals.map(row => ({ start: row.start, end: row.end, price: 5, outdoorC: 10, solarRadiationWm2: 0 }));
+  observe(-200, 30); r.engine.tick(); await r.settle();
+  const cycle = r.engine.cycles.active();
+  assert.ok(cycle, JSON.stringify({ decision: r.engine.status().decision.reasons,
+    events: r.store.events().filter(row => ['scheduled-cycle-rejected', 'control-execution-failed'].includes(row.type)).map(row => row.payload) }));
+  assert.equal(r.engine.applied.phase, 'preheat');
+  assert.equal(native.values['0203'], 20, 'The real H66 fixture confirms the requested ROOM increase');
+  const original = structuredClone(cycle.plan);
+  r.advance(117); observe(0, 33); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'preheat', JSON.stringify(r.engine.cycles.active()?.adjustments));
+  assert.equal(r.engine.cycles.active().id, cycle.id);
+  assert.equal(r.engine.cycles.active().adjustments?.length ?? 0, 0);
+  assert.deepEqual(r.engine.cycles.active().plan, original, 'The recorded original forecast remains immutable');
+  r.advance(1000); r.ingest('indoor_temperature', 24); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'recovery');
+  assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'indoor-comfort-limit');
+  assert.equal(native.values['0203'], 19, 'A real comfort limit still restores normal ROOM');
+});
+
 function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {
   let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
   const commands = [], config = { input:'mqtt', settings:validateSettings({comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
@@ -111,10 +182,13 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
       const args={intervals,model,initialState:{indoorC:21.2,reserveC:21.2},targetC:21,config:CONTROL_DEFAULTS};
       engine.pendingPlan={schedule,model,initialState:args.initialState,targetC:21,intervals,reference:null,referenceLabel:'continuous normal operation',
         prediction:evaluateCycle({...args,schedule}),referencePrediction:evaluateCycle(args),trial:false}; return engine.pendingPlan; },
-    native(){const values={'0203':19,'0212':47,'0208':62,'2201':1},decoder=createH66Decoder({deviceId:'synthetic'});
+    native({ tariffFeedback } = {}){const values={'0203':19,'0212':47,'0208':62,'2201':1},decoder=createH66Decoder({deviceId:'synthetic'});
       const receive=(index,value)=>{values[index]=value;const decoded=decoder.decode({topic:`synthetic/HP/${index}`,payload:String(value),receivedAt:now});
         h66.ingest(decoded);engine.ingest({source:'husdata-h66',device:'synthetic',signal:decoded.signal,value:decoded.value,unit:decoded.unit,sourceTime:now,receivedAt:now,quality:decoded.issues,raw:{usableForControl:decoded.usableForControl,verified:true}});};
-      const h66=createH66Controller({deviceId:'synthetic',store,clock:()=>now,config:{writeEnabled:true,readbackTimeoutMs:30},publish:async(topic,payload,options)=>{options.beforePublish(); options.onFirstWrite?.();queueMicrotask(()=>receive(topic.split('/').at(-1),Number(payload)));}});
+      const h66=createH66Controller({deviceId:'synthetic',store,clock:()=>now,tariffFeedback,
+        requestSnapshot: () => { if (tariffFeedback) queueMicrotask(() => receive('0203', values['0203'])); },
+        config:{writeEnabled:true,readbackTimeoutMs:30,...(tariffFeedback ? { preheatPreparationMs: 300 } : {})},
+        publish:async(topic,payload,options)=>{options.beforePublish(); options.onFirstWrite?.();queueMicrotask(()=>receive(topic.split('/').at(-1),Number(payload)));}});
       h66.setConnected(true);for(const[index,value]of Object.entries(values))receive(index,value);engine.setH66(h66);
       return {values,receive,h66}; }
   };

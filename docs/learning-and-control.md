@@ -308,6 +308,10 @@ reduction. Current integral and supply-target readings apply only to the current
 observed phase and a short projection. Unknown tariff response starts from unchanged
 normal demand with explicit uncertainty. Episode evidence can subsequently change
 that response. A stored pending schedule is re-evaluated before it starts.
+Native demand trends use advancing native report clocks within the same treatment
+and unchanged water target. A commanded target step, changed native operating
+state or repeated controller poll supplies no new derivative; current point
+readings and all comfort checks remain available.
 
 Preheating requests one configured **ROOM increase above the saved normal setting**,
 default **+5 °C** (`controller.preheat_room_boost_c`), and one pooled override across

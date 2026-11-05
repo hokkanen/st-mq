@@ -33,7 +33,7 @@ test('failed outer controller commit restores complete learning, observations an
   const { store, engine, advance } = fixture(t);
   await engine.update();
   await engine.charging.planningFlight?.catch(() => {});
-  const before = structuredClone({ checkpoint: engine.checkpoint, status: engine.latestStatus, plant: engine.plant.state,
+  const before = structuredClone({ checkpoint: engine.checkpoint, status: engine.latestStatus, plant: engine.plant.state, lastSample: engine.lastSample,
     observations: engine.ingestionCheckpoint(), cycleContext: engine.cycles.fireplaceContext, explorer: engine.heatingExplorer.input });
   const checkpoint = store.getState('adaptive:simulated');
   const cursor = store.learningJournal({ input: 'simulated' }).at(-1)?.id;
@@ -45,7 +45,7 @@ test('failed outer controller commit restores complete learning, observations an
       assert.ok(engine.checkpoint.journalCursor > before.checkpoint.journalCursor, 'the attempted tick really advanced learning before commit');
     }), { errcode: 10 });
   } finally { restore(); }
-  assert.deepEqual({ checkpoint: engine.checkpoint, status: engine.latestStatus, plant: engine.plant.state,
+  assert.deepEqual({ checkpoint: engine.checkpoint, status: engine.latestStatus, plant: engine.plant.state, lastSample: engine.lastSample,
     observations: engine.ingestionCheckpoint(), cycleContext: engine.cycles.fireplaceContext, explorer: engine.heatingExplorer.input }, before);
   assert.deepEqual(store.getState('adaptive:simulated'), checkpoint);
   assert.equal(store.learningJournal({ input: 'simulated' }).at(-1)?.id, cursor);
