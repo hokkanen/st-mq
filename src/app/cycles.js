@@ -73,7 +73,33 @@ export class CycleTracker {
     const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
     if (previous && !number(previous.endedAt)) return 0;
     const state = this.store.getState(`trials:${this.input}`);
+    if (state && (!number(state.reservedCents) || state.reservedCents < 0)) return null;
     return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
+  }
+  /** Keep the original forecast immutable. Decreases may represent exposure
+   * already incurred, so only increases in the remaining estimate reserve more.
+   * This also prevents repeatedly spending the same cap as a trial progresses. */
+  reserveTrialExposure(exposureCents) {
+    const cycle = this.active(), budget = cycle?.trialBudget;
+    const cap = cycle?.plan.config?.maxTrialCostCents ?? this.config.maxTrialCostCents;
+    if (!cycle?.plan.trial || !budget || ![exposureCents, cap, budget.reservedCents, budget.lastExposureCents]
+      .every(value => number(value) && value >= 0)) return false;
+    const additional = Math.max(0, exposureCents - budget.lastExposureCents);
+    const reservedCents = budget.reservedCents + additional;
+    if (reservedCents > cap) return false;
+    const automatic = cycle.plan.userTrial?.limits?.maxTrialCostCents === undefined;
+    const ledger = automatic ? this.store.getState(`trials:${this.input}`) : null;
+    if (automatic && (!ledger || ledger.date !== dateKey(cycle.startedAt)
+      || !number(ledger.reservedCents) || ledger.reservedCents < budget.reservedCents
+      || ledger.reservedCents + additional > this.config.trialBudgetCentsPerDay)) return false;
+    if (exposureCents === budget.lastExposureCents) return true;
+    this.store.transaction(() => {
+      if (automatic && additional > 0) this.store.setState(`trials:${this.input}`, {
+        ...ledger, reservedCents: ledger.reservedCents + additional });
+      cycle.trialBudget = { reservedCents, lastExposureCents: exposureCents };
+      this.save(cycle);
+    });
+    return true;
   }
   trialProgress(now) {
     // A Finnish day is at most 25 hours. Seek a bounded recent suffix instead
@@ -107,12 +133,16 @@ export class CycleTracker {
         dhwCostCents:0,dhwKwh:0,routeCoveredHours:0,routeMissingHours:0 },
       originalPrediction: { costCents: plan.prediction.costCents, recoveryCostCents: plan.prediction.recoveryCostCents,
         electricityKwh: plan.prediction.electricityKwh }, stableSince: null };
-    if (plan.trial && plan.userTrial?.limits?.maxTrialCostCents === undefined) {
-      const old = this.store.getState(`trials:${this.input}`);
-      this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
-    }
-    this.save(cycle);
-    this.store.event('cycle-started', { id: cycle.id, input: this.input, trial: plan.trial, reference: plan.referenceLabel }, now);
+    if (plan.trial) cycle.trialBudget = { reservedCents: plan.trialAllowanceCents,
+      lastExposureCents: plan.trialSafety?.costExposureCents ?? plan.trialAllowanceCents };
+    this.store.transaction(() => {
+      if (plan.trial && plan.userTrial?.limits?.maxTrialCostCents === undefined) {
+        const old = this.store.getState(`trials:${this.input}`);
+        this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
+      }
+      this.save(cycle);
+      this.store.event('cycle-started', { id: cycle.id, input: this.input, trial: plan.trial, reference: plan.referenceLabel }, now);
+    });
     return cycle;
   }
   cancel(now, reason) {

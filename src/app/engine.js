@@ -1756,7 +1756,7 @@ export class Engine {
           const economics = stress ? null : economicAdmission({ prediction: continued, referencePrediction: restored, args, schedule,
             reference: { ...schedule, preheatEnd: Math.min(schedule.preheatEnd, now), reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: now },
             settings, continuing: true });
-          const uneconomic=stress?!Number.isFinite(stress.costExposureCents)||stress.costExposureCents>cycle.plan.trialAllowanceCents:!economics.admitted;
+          const uneconomic=stress?unsafe||!this.cycles.reserveTrialExposure(stress.costExposureCents):!economics.admitted;
           if (unsafe || uneconomic) {
             const reason=unsafe?'predicted-comfort-limit':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
             this.cycles.shorten(now,reason);

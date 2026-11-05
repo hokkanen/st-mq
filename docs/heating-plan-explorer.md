@@ -106,8 +106,12 @@ heat, model, weather, prices, occupancy and equipment evidence. Polling does not
 silently replace the baseline or discard edits. Refresh the comparison when it
 becomes stale. **Refresh conditions** keeps explicitly edited limits, updates
 untouched defaults and requires a new comparison before approval. **Reset to
-configured limits** discards those edits. A retained current schedule remains distinct from a fresh planner
-choice under unchanged settings.
+captured baseline** discards those edits and restores the captured plan, limits
+and automatic allowance context locally, without a refresh or optimization.
+A retained current schedule remains distinct from a fresh planner choice under
+unchanged settings. When they differ, the comparison explicitly labels its
+additional saving as a fresh calculation with unchanged limits; that difference
+does not arise from edited limits.
 
 Compare the additional estimated saving against the current plan first. The
 comparison with normal heating is also available. Cost and energy cover modeled

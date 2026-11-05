@@ -11,6 +11,45 @@ import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/telemetry.js';
 
 const HOUR = 3_600_000;
+
+test('a live trial continues after exposure grows beyond its initial estimate and stops at the actual budget cap', async t => {
+  const r = setup(t), native = r.native(), plan = r.plan();
+  native.receive('2201', 2);
+  Object.assign(r.engine.control, { learningTrials: true, maxTrialCostCents: 150 });
+  plan.equipment = { externalChangeRevision: native.h66.status().externalChangeRevision };
+  plan.schedule.reductionEnd = r.now + 2 * HOUR;
+  for (const [signal, value] of Object.entries({ compressor_active: 1, dhw_routing: 0,
+    auxiliary_output: 0, supply_temperature: 30, heating_setpoint: 30, brine_in_temperature: 0 })) r.ingest(signal, value);
+  const initialMarket = r.store.getState('provider:market');
+  initialMarket.intervals.forEach(row => { row.spotCtPerKwh = 5; });
+  r.store.setState('provider:market', initialMarket);
+  plan.trial = true;
+  r.engine.tick(); await r.settle();
+  const original = r.engine.cycles.active();
+  assert.equal(original?.plan.trial, true, JSON.stringify(r.engine.status().decision.reasons));
+  const originalPlan = structuredClone(original.plan);
+  r.advance(60_000);
+  r.ingest('indoor_temperature', 21.19);
+  const market = r.store.getState('provider:market');
+  market.intervals.forEach((row, i) => { if (i > 0) row.spotCtPerKwh = 10; });
+  r.store.setState('provider:market', market);
+  r.engine.tick(); await r.settle();
+  const continued = r.engine.cycles.active();
+  assert.equal(r.engine.status().decision.phase, 'reduction', JSON.stringify(continued?.adjustments));
+  assert.equal(continued.id, original.id);
+  assert.ok(continued.trialBudget.reservedCents > originalPlan.trialAllowanceCents,
+    JSON.stringify({ original: originalPlan.trialAllowanceCents, current: continued.trialBudget }));
+  assert.ok(continued.trialBudget.reservedCents < 150);
+  assert.deepEqual(continued.plan, originalPlan);
+  // The same real controller path still ends a trial when its authorized cap
+  // cannot fund the updated exposure; the fix does not bypass the budget gate.
+  const capped = r.engine.cycles.active(); capped.plan.config.maxTrialCostCents = 0;
+  r.engine.cycles.save(capped);
+  r.advance(60_000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'recovery');
+  assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
+});
+
 function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {
   let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
   const commands = [], config = { input:'mqtt', settings:validateSettings({comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };

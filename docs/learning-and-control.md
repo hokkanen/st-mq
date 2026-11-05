@@ -456,7 +456,24 @@ heat debt, rather than charging the entire rated-power recovery as extra spendin
 Native AUX restrictions and included circulation are respected. A nominal zero
 does not remove scenario uncertainty, but alternatives consuming nothing in every
 scenario have no arbitrary minimum charge. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Weighted-average upper limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
-guarantees that fallback costs cannot exceed the allowance. Disabling learning
+guarantees that fallback costs cannot exceed the allowance.
+
+During an active trial, the initial exposure estimate is a reservation, not the
+per-cycle spending cap. The cycle retains that original forecast and keeps its
+current reservation and last remaining-exposure estimate separately. An increase
+in that estimate reserves the increase within the configured per-cycle cap and
+available daily allowance. Decreases do not refund exposure that may already
+have been incurred; a later increase needs additional allowance. Repeating the
+same estimate does not charge it twice. The reservation and daily ledger commit
+together, including at initial cycle recording. An automatic trial spanning
+midnight remains funded by its Finnish start day. An explicitly edited reviewed
+one-cycle budget remains separate from the automatic daily ledger; unchanged
+reviewed budgets retain automatic restrictions. Unknown exposure cannot authorize
+continuation. These are conservative estimated exposure reservations, not measured
+additional electricity bills. Comfort, native protection and restoration checks
+still apply independently.
+
+Disabling learning
 trials disables additional experimentation; ordinary economic plans still use
 the initial or learned model. The daily target prioritizes informative learning
 and is not a cap: cheap useful opportunities may continue within the allowance.

@@ -8,9 +8,17 @@ const endpoint = '/api/heating/explorer';
 const hour = 3_600_000;
 const timeFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const clockFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit' });
-const decimal = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value) : 'Unavailable';
-const money = value => Number.isFinite(value) ? `${value < 0 ? '−' : ''}€${(Math.abs(value) / 100).toFixed(2)}` : 'Unavailable';
-const signed = (value, unit) => Number.isFinite(value) ? `${value > 0 ? '+' : ''}${decimal(value)}${unit}` : 'Unavailable';
+const decimal = value => {
+  if (!Number.isFinite(value)) return 'Unavailable';
+  const text = new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value);
+  return text === '-0' ? '0' : text;
+};
+const money = value => {
+  if (!Number.isFinite(value)) return 'Unavailable';
+  const amount = (Math.abs(value) / 100).toFixed(2);
+  return `${value < 0 && Number(amount) > 0 ? '−' : ''}€${amount}`;
+};
+const signed = (value, unit) => Number.isFinite(value) ? `${value > 0 && decimal(value) !== '0' ? '+' : ''}${decimal(value)}${unit}` : 'Unavailable';
 const atTime = value => Number.isFinite(value) ? timeFormat.format(value) : 'Time unavailable';
 const phaseName = phase => ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduction', recovery: 'Recovery', hold: 'Normal heating' })[phase] ?? 'Heating';
 const humanize = value => String(value ?? '').replace(/[-_]/g, ' ');
@@ -186,14 +194,16 @@ export function heatingApprovalText(result) {
 
 export function heatingComparisonMetrics(result) {
   const current = result.current ?? {}, scenario = result.scenario ?? {}, comparison = result.comparison ?? {};
+  const sameLimitsReplanned = result.changedKeys?.length === 0 && result.currentDiffersFromRecalculation;
   return [
     { label: 'Additional estimated saving', value: money(comparison.additionalBenefitCents),
-      detail: 'Compared with the current plan, from the captured time onward.' },
+      detail: sameLimitsReplanned ? 'Fresh calculation with unchanged limits, compared with the selected plan.'
+        : 'Compared with the current plan, from the captured time onward.' },
     { label: 'Maximum drop below Normal', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
       detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
       ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
-      detail: scenario.trial ? 'Learning trial within the reviewed budget and temperature limits.' : 'A maximum is permission, not a requested duration.' },
+      detail: scenario.trial ? 'Learning trial within the scenario budget and temperature limits.' : 'A maximum is permission, not a requested duration.' },
   ];
 }
 
@@ -482,7 +492,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const automaticPermission = result.learningContext?.automaticEnabled;
     $('heating-explorer-learning-context').textContent = [
       typeof automaticPermission === 'boolean' ? `Automatic trial permission: ${automaticPermission ? 'enabled' : 'disabled'}.` : 'Captured automatic trial permission is unavailable.',
-      Number.isFinite(contextBudget) ? `Captured automatic allowance remaining: ${money(contextBudget)}.` : 'Captured remaining automatic allowance is unavailable.',
+      Number.isFinite(contextBudget) ? `Captured allowance available for a new automatic trial: ${money(contextBudget)}.` : 'Captured automatic allowance is unavailable.',
       Number.isFinite(capturedLimit) ? `Automatic per-cycle limit: ${money(capturedLimit)}.` : '',
       state.limits.learningTrials !== true ? 'These values are retained but are not used while trials are disabled.'
         : budgetEdited ? 'The edited budget supplies a separate allowance for this reviewed cycle.' : 'An unchanged budget retains the captured automatic allowance.',

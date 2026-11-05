@@ -3,6 +3,18 @@ import assert from 'node:assert/strict';
 import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
+test('comparison labels distinguish unchanged-limit replanning and suppress rounded signed zero', () => {
+  for (const change of [-.0001, .0001, -0]) {
+    const metrics = heatingComparisonMetrics({ changedKeys: [], currentDiffersFromRecalculation: true,
+      current: { outcomes: { maxIndoorDropC: .2 } }, scenario: { trial: true, outcomes: { maxIndoorDropC: .2 } },
+      comparison: { additionalBenefitCents: -.01, additionalIndoorDropC: change } });
+    assert.equal(metrics[0].value, '€0.00');
+    assert.match(metrics[0].detail, /Fresh calculation with unchanged limits/);
+    assert.match(metrics[1].detail, /change 0 °C$/);
+    assert.doesNotMatch(metrics[2].detail, /reviewed/);
+  }
+  assert.equal(heatingComparisonMetrics({ comparison: { additionalBenefitCents: -8 } })[0].value, '−€0.08');
+});
 test('strategy changes preserve independent monetary fields, zero and the manual budget',async()=>{
   const requests=[],controls=[{key:'savingsStrategy',value:'balanced'},
     {key:'minimumHomeBenefitCents',value:0,usesStrategyDefault:true},
