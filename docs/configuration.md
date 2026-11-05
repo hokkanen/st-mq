@@ -713,7 +713,8 @@ not change saved automatic settings.
 Home's Heating strategy & comfort panel explains the effective policy and independent limits.
 Shared reduction ceilings default to 12 hours occupied and 24 hours away; explicit
 installation overrides retain their values. These are maxima, not requested
-durations. Without pump telemetry the separate default ceiling remains 0.5 hours.
+durations. Without pump telemetry an additional default ceiling of 0.5 hours
+applies; the shorter of this ceiling and the occupied or away ceiling governs.
 Garage has no savings strategy or economic temperature changes.
 
 `controller.learning_trials` enables bounded learning experiments.

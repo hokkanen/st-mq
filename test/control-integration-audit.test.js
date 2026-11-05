@@ -12,10 +12,11 @@ import { createH66Decoder } from '../src/domain/telemetry.js';
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(t, { delayed = false, automationEnabled = true, startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
+function setup(t, { delayed = false, automationEnabled = true, occupancyMode = 'occupied', startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
   const store = new Store(':memory:'), commands = [], pending = [], circulation = [];
   let now = startAt, indoorC = 21.2;
-  const config = { input: 'mqtt', settings: validateSettings({ comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 } }),
+  const config = { input: 'mqtt', settings: validateSettings({ comfort: { targetC: 21, maxDropC: 2, maxRiseC: 2 },
+    occupancy: { mode: occupancyMode, returnAt: null } }),
     control: { ...CONTROL_DEFAULTS, learningTrials: false } };
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish(batch) {
     commands.push({ at: now, batch: [...batch] });
@@ -253,6 +254,39 @@ test('old algorithm history is refused both at startup and when a background see
   assert.equal(r.engine.checkpoint.model.validation, null);
   assert.equal(r.store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })
     .some(entry => entry.payload.value.historySeed), false);
+});
+
+for (const mode of ['occupied', 'away']) test(`actual Engine honors a tightened ${mode} reduction limit without native telemetry`, async t => {
+  const r = setup(t, { occupancyMode: mode });
+  r.plan();
+  r.engine.pendingPlan.schedule.reductionEnd = r.now + 30 * MINUTE;
+  const admitted = r.engine.tick(); await r.settle();
+  assert.equal(admitted.decision.phase, 'reduction');
+  assert(r.engine.cycles.active(), 'Confirmed tariff delivery starts the reduction');
+  r.engine.control[mode === 'away' ? 'maxAwayReductionHours' : 'maxReductionHours'] = .25;
+  r.advance(MINUTE);
+  const continued = r.engine.tick(); await r.settle();
+  assert.equal(continued.decision.phase, 'recovery');
+  assert(continued.decision.reasons.includes('control-or-forecast-coverage-lost'));
+  assert.equal(r.commands.at(-1).batch.at(-1), 'normal');
+});
+
+test('telemetry fallback screens the remaining reduction without rejecting its already executed duration', async t => {
+  const r = setup(t);
+  // Isolate duration handling from the cost of recovering inside this long peak.
+  r.engine.control.minimumHomeBenefitCents = -100_000;
+  const market = r.store.getState('provider:market');
+  market.intervals.forEach((row, i) => { row.spotCtPerKwh = i < 3 ? 2000 : 1; });
+  r.store.setState('provider:market', market);
+  r.plan(); r.engine.pendingPlan.schedule.reductionEnd = r.now + 30 * MINUTE;
+  r.engine.tick(); await r.settle();
+  assert(r.engine.cycles.active());
+  r.advance(20 * MINUTE);
+  r.engine.control.maxUnobservedReductionHours = .25;
+  const continued = r.engine.tick(); await r.settle();
+  assert.equal(continued.decision.phase, 'reduction');
+  assert(continued.decision.reasons.includes('complete-cycle-in-progress'));
+  assert.equal(r.engine.cycles.active().plan.schedule.reductionEnd - r.now, 10 * MINUTE);
 });
 
 for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine ends ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {

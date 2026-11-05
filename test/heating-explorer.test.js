@@ -187,7 +187,7 @@ test('missing or stale observations remain unknown and never produce numerical p
   }
 });
 
-test('unavailable native telemetry uses its separate ceiling rather than the ordinary reduction ceiling', () => {
+test('unavailable native telemetry adds its separate ceiling within the ordinary reduction ceiling', () => {
   const input = heatingExplorerFixture({ validatedHours: .5 });
   input.equipment.h66Available = false;
   const result = exploreHeatingPlan(input, { maxReductionHours: 8 });

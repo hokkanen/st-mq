@@ -14,6 +14,10 @@ const HOUR = 3600000, STEP = 900000;
 const number = Number.isFinite;
 const at = value => typeof value === 'number' ? value : Date.parse(value);
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+function reductionDurationCeiling(config, settings, equipment) {
+  const maximum = settings.occupancy.mode === 'away' ? config.maxAwayReductionHours : config.maxReductionHours;
+  return equipment.h66Available ? maximum : Math.min(maximum, config.maxUnobservedReductionHours);
+}
 const settledAgainst = (state, reference, sourceUncertaintyC) => number(sourceUncertaintyC)
   && state.indoorC - sourceUncertaintyC >= reference.indoorC - 0.15
   && state.reserveC - sourceUncertaintyC >= reference.reserveC - 0.15
@@ -622,7 +626,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const targetC = settings.comfort.targetC ?? checkpoint.baselineC ?? plan.targetC;
   if (!number(targetC)) return rejected('scheduled-cycle-target-unavailable');
   const readiness = learningReadiness(checkpoint,c,equipment), duration = (plan.schedule.reductionEnd-plan.schedule.reductionStart)/HOUR;
-  const configuredMaximum = equipment.h66Available ? settings.occupancy.mode === 'away' ? c.maxAwayReductionHours : c.maxReductionHours : c.maxUnobservedReductionHours;
+  const configuredMaximum = reductionDurationCeiling(c, settings, equipment);
   const requestedRoom = preheatRoomRequest(equipment, c);
   if (duration > configuredMaximum || plan.schedule.preheatEnd - plan.schedule.preheatStart > c.maxPreheatHours * HOUR
     || plan.schedule.roomSettingC != null
@@ -694,7 +698,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const readiness = learningReadiness(checkpoint, c, equipment);
   const targetReached = (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay;
   const canTrial = readiness.trialReady && number(trialBudgetRemainingCents) && trialBudgetRemainingCents >= 0;
-  const configuredMaximum = equipment.h66Available ? (away ? c.maxAwayReductionHours : c.maxReductionHours) : c.maxUnobservedReductionHours;
+  const configuredMaximum = reductionDurationCeiling(c, settings, equipment);
   const testedMaximum = validatedReductionHours(model);
   const economicMaximum = readiness.initialReady ? configuredMaximum : readiness.actionValidated ? Math.min(configuredMaximum, testedMaximum) : 0;
   const trialMaximum = configuredMaximum;

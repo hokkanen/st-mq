@@ -1764,7 +1764,15 @@ export class Engine {
         const args = { intervals, model: checkpoint.model, initialState: { ...initialState,
           reserveC: this.fireplaceReserveOverride ?? initialState.reserveC, integral: equipment.integral },
           targetC, config: planningConfig, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
-        if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > planningConfig.maxUnobservedReductionHours*3600000) {
+        const ordinaryMaximum = settings.occupancy.mode === 'away' ? planningConfig.maxAwayReductionHours : planningConfig.maxReductionHours;
+        const reductionHours = (schedule.reductionEnd - schedule.reductionStart) / 3600000;
+        // A new ordinary limit constrains the retained reduction as a whole.
+        // After telemetry loss, the additional ceiling bounds future reduction,
+        // without counting already executed time or future preheat as reduction.
+        const remainingReductionHours = (schedule.reductionEnd - Math.max(now, schedule.reductionStart)) / 3600000;
+        const outsideDurationLimits = reductionHours > ordinaryMaximum || !equipment.h66Available
+          && remainingReductionHours > Math.min(ordinaryMaximum, planningConfig.maxUnobservedReductionHours);
+        if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || outsideDurationLimits) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
         } else {
           const continued = evaluateCycle({ ...args, schedule });

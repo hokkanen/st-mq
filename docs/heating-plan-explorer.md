@@ -82,7 +82,7 @@ Closing and reopening the window retains the capture and draft until Refresh.
 | --- | --- | --- |
 | Maximum reduction | `controller.max_reduction_hours` | 0.25–46 hours |
 | Maximum reduction while away | `controller.max_away_reduction_hours` | 0.25–46 hours |
-| Reduction limit without pump telemetry | `controller.max_unobserved_reduction_hours` | 0.25–46 hours |
+| Reduction limit without pump telemetry | `controller.max_unobserved_reduction_hours` | 0.25–46 hours; an additional ceiling within the ordinary reduction limit |
 | Allowed average temperature drop | `controller.max_drop_c` | 0–35 °C |
 | Allowed average temperature rise | `controller.max_rise_c` | 0.25–35 °C |
 | Maximum preheat | `controller.max_preheat_hours` | 0.25–24 hours |

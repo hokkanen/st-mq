@@ -18,6 +18,42 @@ function preheatFixture() {
   return input;
 }
 
+test('selection honors both reduction ceilings when native telemetry is unavailable, occupied and away', () => {
+  for (const mode of ['occupied', 'away']) for (const [ordinary, unobserved, available, expected] of [
+    [.25, .5, false, .25], [.5, .25, false, .25], [.5, .25, true, .5],
+  ]) {
+    const input = heatingExplorerFixture();
+    input.settings.occupancy.mode = mode;
+    Object.assign(input.config, { maxReductionHours: ordinary, maxAwayReductionHours: ordinary,
+      maxUnobservedReductionHours: unobserved });
+    input.equipment.h66Available = available;
+    const plan = chooseCycle(input).plan;
+    assert.ok(plan, `${mode}: synthetic opportunity produces a plan`);
+    assert.equal((plan.schedule.reductionEnd - plan.schedule.reductionStart) / 3_600_000, expected,
+      `${mode}: telemetry ${available}, ordinary ${ordinary}, fallback ${unobserved}`);
+  }
+});
+
+test('dispatch rejects a retained reduction beyond either current duration ceiling, occupied and away', () => {
+  for (const mode of ['occupied', 'away']) {
+    const input = heatingExplorerFixture({ maxReductionHours: .5 });
+    input.settings.occupancy.mode = mode;
+    Object.assign(input.config, { maxAwayReductionHours: .5, maxUnobservedReductionHours: .5 });
+    const plan = chooseCycle(input).plan;
+    assert.equal((plan.schedule.reductionEnd - plan.schedule.reductionStart) / 3_600_000, .5);
+    input.equipment.h66Available = false;
+    assert.equal(revalidatePlan({ ...input, plan }).valid, true);
+    for (const config of [
+      { ...input.config, [mode === 'away' ? 'maxAwayReductionHours' : 'maxReductionHours']: .25 },
+      { ...input.config, maxUnobservedReductionHours: .25 },
+    ]) {
+      const checked = revalidatePlan({ ...input, plan, config });
+      assert.equal(checked.valid, false);
+      assert.equal(checked.reason, 'scheduled-cycle-outside-current-limits');
+    }
+  }
+});
+
 test('initial estimates permit configured ROOM boosts without manufacturing demonstrated support', () => {
   const input = preheatFixture();
   const supported = chooseCycle(input);
