@@ -61,7 +61,7 @@ export class HeatingPlanning {
           Number.isFinite(issuedAt) && issuedAt <= input.now && input.now-issuedAt <= 6 * 3_600_000];
       }),
       referenceAvailable: Number.isFinite(input.checkpoint?.baselineC),
-      capability: [input.equipment?.h66Available, input.equipment?.preheatAvailable,
+      capability: [input.equipment?.h66Available, input.equipment?.reductionTelemetryAvailable, input.equipment?.preheatAvailable,
         input.equipment?.floorOverrideAvailable, input.equipment?.nativeAuxAllowed],
     })).digest('hex');
     const incumbentDue = incumbentPlan

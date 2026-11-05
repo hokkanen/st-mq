@@ -289,6 +289,29 @@ test('telemetry fallback screens the remaining reduction without rejecting its a
   assert.equal(r.engine.cycles.active().plan.schedule.reductionEnd - r.now, 10 * MINUTE);
 });
 
+test('an owned native restoration does not turn fresh reduction telemetry into an outage', async t => {
+  const r = setup(t), native = r.native();
+  r.engine.control.minimumHomeBenefitCents = -100_000;
+  r.engine.control.maxUnobservedReductionHours = .25;
+  r.plan(); r.engine.pendingPlan.schedule.reductionEnd = r.now + 30 * MINUTE;
+  r.engine.tick(); await r.settle();
+  assert(r.engine.cycles.active());
+  r.advance(MINUTE); native.refresh();
+  const restoring = native.h66.restore({ reason: 'synthetic-owned-phase-boundary' });
+  const transition = native.h66.status();
+  assert.equal(transition.controlsReady, false);
+  assert(Object.values(transition.readings).every(reading => reading.available));
+  const continued = r.engine.tick();
+  await restoring; await r.settle();
+  assert.equal(continued.decision.phase, 'reduction');
+  assert(continued.decision.reasons.includes('complete-cycle-in-progress'));
+  assert.equal(r.engine.cycles.active().plan.schedule.reductionEnd - r.now, 29 * MINUTE);
+  r.advance(MINUTE); native.h66.setConnected(false);
+  const disconnected = r.engine.tick(); await r.settle();
+  assert.equal(disconnected.decision.phase, 'recovery', 'A real native outage still applies the remaining-duration ceiling');
+  assert(disconnected.decision.reasons.includes('control-or-forecast-coverage-lost'));
+});
+
 for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine ends ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {
   const r = setup(t); if (trial) r.native(); r.plan();
   if (trial) {

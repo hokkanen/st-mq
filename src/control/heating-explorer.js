@@ -232,7 +232,7 @@ function constraints(input, decision, evidence, selected) {
       ? 'learning' : finite(input.checkpoint?.baselineC) ? 'available' : 'unknown',
     value: input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? decision.comfort?.targetC ?? null, unit: '°C',
     detail: 'The reference temperature used for planning the weighted indoor average. The allowed drop and rise are shown separately. An initial measured Normal reference can be used while the occupied reference is learning.' });
-  if (!input.equipment?.h66Available) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
+  if (!(input.equipment?.reductionTelemetryAvailable ?? input.equipment?.h66Available)) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
     detail: 'The shorter of the ordinary and unavailable-telemetry duration limits applies; an explicit one-cycle override can change either limit. Device authority and restoration remain required.' });
   if (!input.equipment?.preheatAvailable || violations.some(row => row.code === 'preheat-source-range'))

@@ -19,19 +19,32 @@ function preheatFixture() {
 }
 
 test('selection honors both reduction ceilings when native telemetry is unavailable, occupied and away', () => {
-  for (const mode of ['occupied', 'away']) for (const [ordinary, unobserved, available, expected] of [
+  for (const mode of ['occupied', 'away']) for (const [ordinary, unobserved, available, expected, telemetry] of [
     [.25, .5, false, .25], [.5, .25, false, .25], [.5, .25, true, .5],
+    [.5, .25, false, .5, true], [.5, .25, true, .25, false],
   ]) {
     const input = heatingExplorerFixture();
     input.settings.occupancy.mode = mode;
     Object.assign(input.config, { maxReductionHours: ordinary, maxAwayReductionHours: ordinary,
       maxUnobservedReductionHours: unobserved });
     input.equipment.h66Available = available;
+    if (telemetry !== undefined) input.equipment.reductionTelemetryAvailable = telemetry;
     const plan = chooseCycle(input).plan;
     assert.ok(plan, `${mode}: synthetic opportunity produces a plan`);
     assert.equal((plan.schedule.reductionEnd - plan.schedule.reductionStart) / 3_600_000, expected,
       `${mode}: telemetry ${available}, ordinary ${ordinary}, fallback ${unobserved}`);
   }
+});
+
+test('retained dispatch uses fresh native observations independently of a serialized setting transition', () => {
+  const input = heatingExplorerFixture({ maxReductionHours: .5 });
+  Object.assign(input.config, { maxUnobservedReductionHours: .25 });
+  const plan = chooseCycle(input).plan;
+  assert.equal((plan.schedule.reductionEnd - plan.schedule.reductionStart) / 3_600_000, .5);
+  Object.assign(input.equipment, { h66Available: false, reductionTelemetryAvailable: true });
+  assert.equal(revalidatePlan({ ...input, plan }).valid, true);
+  input.equipment.reductionTelemetryAvailable = false;
+  assert.equal(revalidatePlan({ ...input, plan }).reason, 'scheduled-cycle-outside-current-limits');
 });
 
 test('dispatch rejects a retained reduction beyond either current duration ceiling, occupied and away', () => {

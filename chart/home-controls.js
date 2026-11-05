@@ -77,7 +77,7 @@ export function homePolicyValues(status = {}) {
       ? `Latest cycle comparison: ${money(economics.lowerBenefitCents)} conservative space-heating benefit against a ${money(economics.hurdleCents)} required benefit. Both are estimates; the current checks still determine execution.` : '';
   const durations = ['maxPreheatHours', 'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours']
     .every(key => Number.isFinite(parameters[key]))
-    ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without ready native heat-pump control, reduction is capped at ${amount(parameters.maxUnobservedReductionHours)} h. Comfort, equipment and forecast coverage can shorten these limits. Demonstrated durations describe independent validation coverage.`
+    ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without fresh native setting observations and enabled native writes, reduction is additionally capped at ${amount(parameters.maxUnobservedReductionHours)} h. Comfort, equipment and forecast coverage can shorten these limits. Demonstrated durations describe independent validation coverage.`
     : 'Configured duration limits are unavailable.';
   return {
     strategy: strategy ? `${strategy.label} (${strategy.retainedBenefitFraction * 100}%)` : 'Unavailable', strategyId: strategy?.id ?? null,

@@ -2,6 +2,7 @@ import { predictThermalStep } from '../control/adaptive-learning.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
+import { H66_SETTING_LIMITS } from '../domain/heating-control-state.js';
 
 const HOUR = 3600000;
 const finite = Number.isFinite;
@@ -61,6 +62,10 @@ export function controlObservations({ latest, now, observations, outlook, checkp
     indoorEstimateValidUntil: indoor?.validUntil ?? null,
     comfortReferenceProvisional: checkpoint.comfortReference?.provisional === true,
     h66Available: h.controlsReady === true && h.writesEnabled === true,
+    // Our own preparation/restoration serializes setting writes. It does not
+    // remove fresh native observations or impose the telemetry-outage ceiling.
+    reductionTelemetryAvailable: connected === true && h.writesEnabled === true
+      && Object.keys(H66_SETTING_LIMITS).every(index => h.readings?.[index]?.available === true),
     preheatAvailable: h.controlsReady === true && h.writesEnabled === true,
     nativeAuxAllowed: nativeMode === 2 ? false : nativeMode === 1 ? true : null,
     roomSettingC: h.baseline?.['0203'] ?? h.readings?.['0203']?.value ?? null,
@@ -77,7 +82,7 @@ export function controlObservations({ latest, now, observations, outlook, checkp
       ? { value: point.value, at: point.sourceTime, source: point.source, device: point.device } : null;
   };
   if (observations.actual?.source === 'simulation') Object.assign(equipment, {
-    h66Available:true,preheatAvailable:true,compressorOn:observations.actual.compressorDuty,
+    h66Available:true,reductionTelemetryAvailable:true,preheatAvailable:true,compressorOn:observations.actual.compressorDuty,
     dhwRouting:observations.actual.auxRoute==='dhw'?1:0,nativeAuxAllowed:true,roomSettingC:20,roomSettingMaximumC:35,
   });
   let predicted = null;

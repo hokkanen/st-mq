@@ -100,6 +100,11 @@ Closing and reopening the window retains the capture and draft until Refresh.
 Duration ranges fit the bounded 48-hour forecast and its recovery coverage; they
 are not promises that forecasts or the selected schedule cover the full range.
 Native overrides retain bounded leases and refresh only with current authority.
+The telemetry ceiling uses fresh native setting observations, separately from
+readiness to issue another setting change. The controller's own preparation or
+restoration does not create a telemetry outage. Disconnected, stale or missing
+native settings, and disabled native writes, retain the additional ceiling;
+actuator readiness and restoration still constrain execution independently.
 
 The current plan and alternatives share one captured set of temperatures, stored
 heat, model, weather, prices, occupancy and equipment evidence. Polling does not

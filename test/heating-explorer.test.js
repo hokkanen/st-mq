@@ -198,6 +198,13 @@ test('unavailable native telemetry adds its separate ceiling within the ordinary
   assert.equal(JSON.stringify(result).includes('equipmentResponse'), false);
 });
 
+test('fresh native telemetry does not display an outage ceiling during an owned setting transition', () => {
+  const input = heatingExplorerFixture();
+  Object.assign(input.equipment, { h66Available: false, reductionTelemetryAvailable: true });
+  const result = exploreHeatingPlan(input, {});
+  assert.equal(result.constraints.some(row => row.key === 'unobservedEquipment'), false);
+});
+
 test('shared evaluator reports the weighted indoor boundary and conservative temperature at rejection', () => {
   const input = heatingExplorerFixture();
   const schedule = { preheatStart: input.now, preheatEnd: input.now, reductionStart: input.now,

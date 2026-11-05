@@ -83,6 +83,25 @@ test('current timing source names cannot expose arbitrary provenance', () => {
   }
 });
 
+test('fresh native reduction telemetry remains distinct from readiness to write settings', () => {
+  const native = { connected: true, controlsReady: false, writesEnabled: true,
+    restorationPending: true, readings: Object.fromEntries(['0203', '0212', '0208', '2201']
+      .map(index => [index, { value: 1, available: true }])) };
+  const capture = (h66, observations = { indoor: { value: 21 }, outdoor: { value: 0 } }) =>
+    controlObservations({ now, latest: {}, config, phase: 'reduction', h66, observations,
+      outlook: { forecast: [], prices: [] }, checkpoint: { model: initialAdaptiveModel(config), baselineC: 21 } }).equipment;
+  const transition = capture(native);
+  assert.equal(transition.reductionTelemetryAvailable, true);
+  assert.equal(transition.h66Available, false, 'Restoration still prevents new actuator assumptions');
+  assert.equal(transition.preheatAvailable, false);
+  for (const change of [h => { h.connected = false; }, h => { h.writesEnabled = false; },
+    h => { h.readings['0203'].available = false; }, h => { delete h.readings['2201']; }]) {
+    const unavailable = structuredClone(native); change(unavailable);
+    assert.equal(capture(unavailable).reductionTelemetryAvailable, false);
+  }
+  assert.equal(capture({}, { actual: { source: 'simulation', compressorDuty: 0 } }).reductionTelemetryAvailable, true);
+});
+
 test('native trend points retain their report clocks and zero values through controller polling', () => {
   const capture = (at, sourceAt, changes = {}) => controlObservations({ now: at, config, phase: 'normal',
     h66: { connected: true }, observations: { indoor: { value: 21 }, outdoor: { value: 0 } },

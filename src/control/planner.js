@@ -16,7 +16,8 @@ const at = value => typeof value === 'number' ? value : Date.parse(value);
 const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 function reductionDurationCeiling(config, settings, equipment) {
   const maximum = settings.occupancy.mode === 'away' ? config.maxAwayReductionHours : config.maxReductionHours;
-  return equipment.h66Available ? maximum : Math.min(maximum, config.maxUnobservedReductionHours);
+  return (equipment.reductionTelemetryAvailable ?? equipment.h66Available)
+    ? maximum : Math.min(maximum, config.maxUnobservedReductionHours);
 }
 const settledAgainst = (state, reference, sourceUncertaintyC) => number(sourceUncertaintyC)
   && state.indoorC - sourceUncertaintyC >= reference.indoorC - 0.15

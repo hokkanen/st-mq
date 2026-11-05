@@ -1770,7 +1770,7 @@ export class Engine {
         // After telemetry loss, the additional ceiling bounds future reduction,
         // without counting already executed time or future preheat as reduction.
         const remainingReductionHours = (schedule.reductionEnd - Math.max(now, schedule.reductionStart)) / 3600000;
-        const outsideDurationLimits = reductionHours > ordinaryMaximum || !equipment.h66Available
+        const outsideDurationLimits = reductionHours > ordinaryMaximum || !(equipment.reductionTelemetryAvailable ?? equipment.h66Available)
           && remainingReductionHours > Math.min(ordinaryMaximum, planningConfig.maxUnobservedReductionHours);
         if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || outsideDurationLimits) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
@@ -1808,7 +1808,7 @@ export class Engine {
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan || !scopedTrial) {
         decision = this.heatingPlanning.choose({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
-          thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
+          thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, reductionTelemetryAvailable:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: planningBudget }, this.pendingPlan);
         this.pendingPlan = decision.plan && decision.phase === 'normal' ? decision.plan : null;
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
@@ -1823,7 +1823,7 @@ export class Engine {
     this.heatingExplorer.capture({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
       currentSettings: currentScopeActive ? settings : baseSettings, currentConfig: currentScopeActive ? planningConfig : this.control,
       thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride },
-      equipment: this.plant ? { ...equipment, h66Available: true, preheatAvailable: true } : equipment,
+      equipment: this.plant ? { ...equipment, h66Available: true, reductionTelemetryAvailable: true, preheatAvailable: true } : equipment,
       trialBudgetRemainingCents: automaticTrialBudget },
     { ...decision, plan: actualPlan && actualSchedule ? { ...actualPlan, schedule: actualSchedule } : actualPlan }, forceNormal);
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
