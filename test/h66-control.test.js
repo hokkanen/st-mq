@@ -92,6 +92,30 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; }, elapse(ms) { elapsed += ms; } };
 }
 
+for (const boundary of ['new live reports', 'disconnected', 'stale reports'])
+test(`native phase admission uses current dispatch evidence after ${boundary}`, async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  const capturedAt = r.now;
+  r.setNow(r.now + 1000);
+  for (const index of Object.keys(baselines)) r.feed(index);
+  assert.equal(r.controller.status(capturedAt).controlsReady, false);
+  assert.equal(r.controller.status().controlsReady, true);
+  if (boundary === 'disconnected') r.controller.setConnected(false);
+  if (boundary === 'stale reports') r.setNow(r.now + 10 * 60_000);
+  const action = r.controller.setPhase({ phase: 'reduction', now: capturedAt, expiresAt: r.now + 60_000 });
+  if (boundary !== 'new live reports') {
+    await assert.rejects(action, { code: 'H66_UNAVAILABLE' });
+    assert.equal(r.sent.length, 0);
+    assert.deepEqual(r.controller.status().obligations, {});
+  } else {
+    await action;
+    assert.equal(r.native['0208'], 50);
+    assert.deepEqual(r.controller.status().baseline, baselines);
+    await r.controller.restore();
+    assert.deepEqual(r.native, baselines);
+  }
+});
+
 for (const normalStart of [40, 45, 48]) for (const manual of [false, true])
 test(`${manual ? 'manual' : 'automatic'} reduction preserves Normal ${normalStart} C start within the 45/50 C policy`, async t => {
   const original = { ...baselines, '0212': normalStart, '0208': 55 };

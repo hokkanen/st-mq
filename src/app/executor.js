@@ -579,8 +579,11 @@ export class Executor {
     }
     if (['preheat', 'reduction'].includes(phase) && actionExpired())
       return this.restoreInternal({ now: this.clock(), reason: 'expired-before-activation' });
+    // A dated planning view must not borrow later observations. Physical
+    // dispatch instead needs the current view after its preceding awaits.
+    const phaseReadiness = this.h66?.status(this.clock());
     if (phase === 'recovery' && decision.recoveryHoldActive === true
-      && this.h66?.status(now).controlsReady && this.h66.status(now).writesEnabled === true) {
+      && phaseReadiness?.controlsReady && phaseReadiness.writesEnabled === true) {
       const refresh = this.state.phase !== phase || this.state.legacyOutstanding
         || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
       if (refresh) await this.publish(['normal'], now);
@@ -618,7 +621,7 @@ export class Executor {
         ?? (decision.recoveryCompressorOnly ? 'native-settings-unavailable' : null) } : {}),
     }, decision.commands);
     if (phase === 'preheat') {
-      const status = this.h66?.status(now);
+      const status = phaseReadiness;
       if (!status?.controlsReady || status.writesEnabled !== true)
         return this.normal(now, 'normal', { reason: 'Coupled preheat requires fresh writable H66 native settings.' });
       if (this.state.phase === 'reduction') {

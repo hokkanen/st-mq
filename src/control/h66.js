@@ -662,14 +662,15 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     return exclusive(async () => {
       if (state.manualMode && (!manual || state.pauseId !== pauseId))
         throw failure('H66_MANUAL_CONFLICT', 'Restore the current manual settings before changing control ownership.');
-      requireConnection(now);
+      const checkedAt = clock();
+      requireConnection(checkedAt);
       if (restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
       if (phase === 'preheat' && !state.obligations['0203'] && (!normalRoomReady()
         || normalRoomC !== undefined && !equal(current('0203', clock())?.value, normalRoomC)))
         throw failure('H66_NORMAL_ROOM_UNCONFIRMED', 'Waiting for normal ROOM setting.');
       // A cycle starts from current normal settings, never from a reduced ROOM value.
       if (!SETTINGS.every(index => Object.hasOwn(state.baseline, index))) {
-        captureBaselines(SETTINGS, now);
+        captureBaselines(SETTINGS, checkedAt);
         if (![config.normalMode ?? 1, config.compressorOnlyMode ?? 2].includes(state.baseline['2201'])) {
           state.baseline = {};
           throw failure('H66_NATIVE_MODE', 'The pump is in a manually selected operating mode.');

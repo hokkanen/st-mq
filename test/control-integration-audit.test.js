@@ -194,6 +194,32 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
   assert.deepEqual(r.circulation,[{at:deadline,on:true}]);
 });
 
+test('a newer live native report while dispatch waits does not release the active recovery hold', async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const native = r.native(); r.advance(MINUTE); native.refresh();
+  r.engine.cycles.shorten(r.now, 'synthetic-recovery-transition');
+  const recovery = r.engine.tick(); await r.settle();
+  const capturedAt = r.now, deadline = recovery.decision.recoveryHoldUntil;
+  assert.equal(native.values['0208'], 50);
+  assert.equal(recovery.decision.recoveryHoldActive, true);
+  r.advance(1000); native.refresh();
+  assert.equal(native.h66.status(capturedAt).controlsReady, false, 'The original dated view cannot borrow future reports');
+  assert.equal(native.h66.status().controlsReady, true, 'Actual dispatch has fresh native evidence');
+  const writes = native.writes.length;
+  const baseline = structuredClone(native.h66.status().baseline);
+  const result = await r.engine.executor.execute(recovery.decision, { now: capturedAt, automationEnabled: true });
+  assert.equal(result.recoveryHoldActive, true);
+  assert.equal(result.recoveryHoldUntil, deadline);
+  assert.equal(native.values['0208'], 50, 'A fresh report does not justify a restore/reapply gap');
+  assert.equal(native.writes.length, writes);
+  assert.deepEqual(native.h66.status().baseline, baseline);
+  r.advance(deadline - r.now + 1); native.refresh();
+  const expired = await r.engine.executor.execute(recovery.decision, { now: capturedAt, automationEnabled: true });
+  assert.equal(expired.recoveryHoldActive, false, 'Current readiness cannot extend an expired original hold');
+  assert.equal(native.values['0208'], baseline['0208']);
+  assert.deepEqual(native.h66.status().obligations, {});
+});
+
 test('pausing price control during recovery restores native DHW settings for an explicit hot-water override', async t=>{
   const r=setup(t);r.plan();r.engine.tick();await r.settle();
   const native=r.native();r.advance(MINUTE);native.refresh();
