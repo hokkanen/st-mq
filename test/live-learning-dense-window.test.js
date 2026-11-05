@@ -102,3 +102,28 @@ test('a learning append rejected before admission preserves its journal and mode
   assert.equal(store.db.prepare("SELECT COUNT(*) count FROM learning_journal WHERE input='mqtt' AND kind='sample' AND at=?")
     .get(START + WINDOW).count, 0);
 });
+
+test('a superseded read closes its snapshot before the next sample calculation', async t => {
+  const { store, engine } = await fixture(t);
+  await engine.update(); await engine.dispatchPending;
+  const service = engine.liveLearning, worker = service.worker, before = store.checkpoint();
+  let current = true, cancelledAfterBegin = false;
+  const cancel = message => {
+    // The warmed worker's first sample storage turn executes BEGIN. Invalidate
+    // the result after that turn, while the read snapshot still needs cleanup.
+    if (service.active?.operation === 'sample' && message.storage === 'release' && !cancelledAfterBegin) {
+      cancelledAfterBegin = true; current = false;
+    }
+  };
+  worker.on('message', cancel);
+  const options = { at: START, config: engine.control };
+  try {
+    await assert.rejects(service.calculate('sample', options, null, { isCurrent: () => current }),
+      { code: 'LIVE_LEARNING_FAILED' }, 'a superseded read never publishes its result');
+  } finally { worker.off('message', cancel); }
+  assert(cancelledAfterBegin, 'the cancellation occurred after snapshot entry');
+  const next = await service.calculate('sample', options);
+  assert.strictEqual(service.worker, worker, 'the same worker remains usable without a restart');
+  assert.deepEqual(next, committedLearningSample({ ...options, store, input: 'mqtt' }));
+  assert.deepEqual(store.checkpoint(), before, 'both read calculations leave committed learning unchanged');
+});

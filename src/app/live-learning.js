@@ -51,7 +51,11 @@ export class LiveLearning {
         managedCheckpoints: Boolean(this.store.walMaintenance) },
     });
     attachStorageAdmission(worker, storageSignal, operation => this.store.runStorageTask(operation, {
-      kind: 'live-learning', isCurrent: () => !this.closed && (!this.active || this.active.isCurrent()),
+      // A stale read still needs admission to close its snapshot/cursors. Its
+      // result is rejected below. Only the journal append must be refused
+      // before native work starts when its captured conditions have changed.
+      kind: 'live-learning', isCurrent: () => !this.closed
+        && (this.active?.operation !== 'append-sample' || this.active.isCurrent()),
     }));
     worker.on('message', message => {
       if (worker !== this.worker || this.closed) return;
