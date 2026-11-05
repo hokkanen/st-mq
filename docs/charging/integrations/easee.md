@@ -1076,3 +1076,10 @@ marked explicitly, and an accepted remote command does not establish that a new
 transaction or power draw followed. These bounded diagnostics contain no
 authorization tags, transaction identifiers or message payloads and clear on
 connection replacement; ordinary status reads do not renew them.
+
+In plug-and-charge mode, connection setup also reads the five native authorization
+and cache flags with `GetConfiguration`. Diagnostics retain only the requested
+boolean values and their receipt time for the current connection. Missing,
+conflicting or unsupported values stay unknown. The read does not change native
+RFID/offline policy or authorize a start; it helps distinguish a cached native
+authorization decision from a new server reply or actual transaction.

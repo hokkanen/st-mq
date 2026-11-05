@@ -22,6 +22,8 @@ const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV'
 const EXTERNAL_STOP_REASONS = new Set(['Remote', 'Local', 'DeAuthorized']);
 const METER_CONTEXTS = new Set(['Interruption.Begin', 'Interruption.End', 'Sample.Clock', 'Sample.Periodic',
   'Transaction.Begin', 'Transaction.End', 'Trigger', 'Other']);
+const AUTHORIZATION_KEYS = Object.freeze(['AuthorizationCacheEnabled', 'AuthorizeRemoteTxRequests',
+  'LocalPreAuthorize', 'LocalAuthorizeOffline', 'ExternalAuthorizationRequired']);
 const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability', 'TriggerMessage']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
@@ -126,6 +128,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   // Process-local, current-connection evidence only. No tags, transaction IDs
   // or message bodies; observation never refreshes these original clocks.
   let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+  let authorizationConfiguration = null;
   const authorizationProgress = (info, receivedAt, replayed = false) => {
     startProgress.authorization = { receivedAt, decidedAt: clock(), status: info.status, replayed };
   };
@@ -372,6 +375,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     currentSupplyBoundaryAt = null; phaseWeightBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+    authorizationConfiguration = null;
     onDisconnect();
   }
   function send(value, beforeSend = () => true, onDispatch = () => {}) {
@@ -431,13 +435,20 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     : connectorStatus === 'Preparing';
   function sendNextCall() {
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
-    // Background sampling has no physical effect. A missing acknowledgement
+    // Background reads have no physical effect. A missing acknowledgement
     // must never keep a control action or an explicitly scoped read waiting.
-    if (callQueue.some(call => !call.meterRefresh)) for (const [id, call] of pendingCalls) {
-      if (call.meterRefresh) { pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked'); }
+    const background = call => call.meterRefresh || call.authorizationRead;
+    if (callQueue.some(call => !background(call))) for (const [id, call] of pendingCalls) {
+      if (background(call)) {
+        pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked');
+        if (call.authorizationRead && authorizationConfiguration?.requestedAt === call.sentAt)
+          authorizationConfiguration = { ...authorizationConfiguration, status: 'cancelled', failedAt: clock() };
+      }
     }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
-    const call = callQueue.shift(), { action, payload, transition } = call, id = `stmq-${++callId}`;
+    const foreground = callQueue.findIndex(call => !background(call));
+    const call = callQueue.splice(foreground < 0 ? 0 : foreground, 1)[0];
+    const { action, payload, transition } = call, id = `stmq-${++callId}`;
     const dispatchReceiptSequence = receivedFrameSequence;
     if (call.resolve && (call.settled || call.connection !== socket || !transportFresh()
       || !permittedBy(call.guard))) {
@@ -484,6 +495,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       return true;
     }, () => {
       if (action === 'RemoteStartTransaction') startProgress.remote = { requestedAt: call.sentAt, respondedAt: null, status: 'pending' };
+      if (call.authorizationRead) authorizationConfiguration = { requestedAt: call.sentAt, respondedAt: null, status: 'pending', values: {} };
       call.attempt?.dispatched();
     });
   }
@@ -510,6 +522,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       ['ClockAlignedDataInterval', '30']]) callQueue.push({ action: 'ChangeConfiguration', payload: { key, value }, attempt: controlAttempt() });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'MeterValues', connectorId: 1 } });
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
+    // Read only the native flags needed to distinguish cached authorization
+    // from a refused or unexecuted start. Never change RFID/offline policy.
+    if (plugAndCharge) callQueue.push({ action: 'GetConfiguration', payload: { key: [...AUTHORIZATION_KEYS] },
+      authorizationRead: true, attempt: createControlAttempt({ kind: 'query' }) });
     sendNextCall();
   }
   function needsMeterReadback() {
@@ -681,7 +697,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     // enrollment. OCPP expiryDate removes it from the authorization cache.
     ? { status: transportFresh() && permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
-  function completeResponse(id, pending, frame, waited = false) {
+  function completeResponse(id, pending, frame, waited = false, receivedAt = clock()) {
     if (pendingCalls.get(id) !== pending) return;
     pendingCalls.delete(id);
     if (pending.action === 'TriggerMessage' && pending.payload.requestedMessage === 'MeterValues'
@@ -695,8 +711,22 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         : frame[0] === 4 ? 'ocpp-request-failed' : null, frame[2]);
     }
     if (pending.action === 'RemoteStartTransaction' && startProgress.remote?.requestedAt === pending.sentAt)
-      startProgress.remote = { ...startProgress.remote, respondedAt: clock(),
+      startProgress.remote = { ...startProgress.remote, respondedAt: receivedAt,
         status: frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected' };
+    if (pending.authorizationRead && authorizationConfiguration?.requestedAt === pending.sentAt) {
+      const rows = frame[0] === 3 && Array.isArray(frame[2]?.configurationKey) ? frame[2].configurationKey : [];
+      const values = Object.fromEntries(AUTHORIZATION_KEYS.map(key => {
+        const unsupported = Array.isArray(frame[2]?.unknownKey) && frame[2].unknownKey.includes(key);
+        const matching = unsupported ? [] : rows.filter(row => row?.key === key);
+        const row = matching.length === 1 ? matching[0] : null;
+        const value = typeof row?.value === 'string' && /^(true|false)$/i.test(row.value)
+          ? row.value.toLowerCase() === 'true' : null;
+        return [key, { value, readOnly: typeof row?.readonly === 'boolean' ? row.readonly : null }];
+      }));
+      const available = Object.values(values).filter(row => row.value !== null).length;
+      authorizationConfiguration = { requestedAt: pending.sentAt, respondedAt: receivedAt,
+        status: available === AUTHORIZATION_KEYS.length ? 'reported' : available ? 'partial' : 'unavailable', values };
+    }
     if (pending.action === 'ChangeConfiguration') {
       const status = frame[0] === 3 ? frame[2]?.status : null;
       if (status === 'Accepted') configurationFailures.delete(pending.key);
@@ -730,10 +760,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         // quarantined once, on the original pending request and deadline. No
         // command is replayed; every original fence is checked after the wait.
         pending.replyId = frame[1];
-        pending.replyTimer = setTimeout(() => completeResponse(frame[1], pending, frame, true), remaining);
+        pending.replyTimer = setTimeout(() => completeResponse(frame[1], pending, frame, true, arrival), remaining);
         pending.replyTimer.unref();
       } else {
-        completeResponse(frame[1], pending, frame);
+        completeResponse(frame[1], pending, frame, false, arrival);
       }
       return;
     }
@@ -1018,6 +1048,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             for (const [id, pending] of pendingCalls) if (now - pending.sentAt >= CALL_TIMEOUT_MS) {
               pendingCalls.delete(id);
               finishRequest(pending, 'ocpp-request-timeout');
+              if (pending.authorizationRead && authorizationConfiguration?.requestedAt === pending.sentAt)
+                authorizationConfiguration = { ...authorizationConfiguration, status: 'timed-out', failedAt: now };
               if (pending.action === 'ChangeConfiguration') configurationFailures.add(pending.key);
               else if (pending.action === 'RemoteStartTransaction' && pending.transition === statusTransition) remoteStartStatus = 'timed-out';
             }
@@ -1178,6 +1210,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         connected: Boolean(canControl() && socket?.readyState === 1 && lastMessageAt !== null), hasBootReported: booted, available,
         error: error ?? (authorizationReady ? null : 'authorization-unavailable'), lastMessageAt, configurationFailures: [...configurationFailures],
         authorizationMode: config.authorization_mode, remoteStartStatus, startProgress: structuredClone(startProgress),
+        authorizationConfiguration: structuredClone(authorizationConfiguration),
         pendingConfiguration: [...pendingCalls.values(), ...callQueue.map(call => ({ action: call.action, key: call.payload.key }))]
           .filter(call => call.action === 'ChangeConfiguration').map(call => call.key),
         controlTransport: configured ? 'ocpp' : null };

@@ -2101,3 +2101,82 @@ test('bounded start diagnostics distinguish charger acknowledgement, authorizati
   await f.connect();
   assert.deepEqual(f.local.status().startProgress,{remote:null,authorization:null,transaction:null,stop:null});
 });
+
+
+test('automatic start diagnostics read only bounded native authorization flags and retain their original receipt', async t => {
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag');
+  const client=await f.connect({autoReply:frame=>frame[2]==='GetConfiguration'?null:'Accepted'});
+  await client.call('Heartbeat',{});await flushCalls(client);
+  const reads=client.calls.filter(frame=>frame[2]==='GetConfiguration');assert.equal(reads.length,1);
+  assert.deepEqual(reads[0][3].key,['AuthorizationCacheEnabled','AuthorizeRemoteTxRequests','LocalPreAuthorize','LocalAuthorizeOffline','ExternalAuthorizationRequired']);
+  assert.equal(f.local.status().authorizationConfiguration.status,'pending');
+  f.now=at+1000;
+  client.ws.send(JSON.stringify([3,reads[0][1],{configurationKey:[
+    {key:'AuthorizationCacheEnabled',value:'True',readonly:false},
+    {key:'AuthorizeRemoteTxRequests',value:'false',readonly:true},
+    {key:'LocalPreAuthorize',value:'true',readonly:false},
+    {key:'LocalPreAuthorize',value:'false',readonly:false},
+    {key:'LocalAuthorizeOffline',value:'unknown-secret',readonly:false},
+    {key:'ExternalAuthorizationRequired',value:'true',readonly:false},
+    {key:'unrequested-private-key',value:'private-response-value',readonly:false},
+  ],unknownKey:['ExternalAuthorizationRequired','unrequested-private-key']} ]));
+  await flushCalls(client);
+  const result=f.local.status().authorizationConfiguration;
+  assert.equal(result.status,'partial');assert.equal(result.requestedAt,at);assert.equal(result.respondedAt,at+1000);
+  assert.deepEqual(result.values.AuthorizationCacheEnabled,{value:true,readOnly:false});
+  assert.deepEqual(result.values.AuthorizeRemoteTxRequests,{value:false,readOnly:true});
+  assert.equal(result.values.LocalPreAuthorize.value,null,'Conflicting duplicates remain unknown');
+  assert.equal(result.values.LocalAuthorizeOffline.value,null,'Unparseable native values remain unknown');
+  assert.equal(result.values.ExternalAuthorizationRequired.value,null);
+  assert.equal(JSON.stringify(result).includes('private'),false);assert.equal(JSON.stringify(result).includes('secret'),false);
+  assert.equal(client.calls.filter(frame=>frame[2]==='ChangeConfiguration').length,4,'Only the existing telemetry settings are written');
+  f.now=at+2000;assert.deepEqual(f.local.status().authorizationConfiguration,result,'Status reads do not refresh the diagnostic');
+  result.values.AuthorizationCacheEnabled.value=false;assert.equal(f.local.status().authorizationConfiguration.values.AuthorizationCacheEnabled.value,true);
+  await f.connect();assert.equal(f.local.status().authorizationConfiguration,null,'A new connection cannot inherit old native flags');
+});
+
+
+test('an unanswered native authorization read cannot delay a permitted start', async t => {
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag');f.startPermitted=false;
+  const client=await f.connect({autoReply:frame=>frame[2]==='GetConfiguration'?null:'Accepted'});
+  await client.call('Heartbeat',{});await flushCalls(client);
+  assert.equal(f.local.status().authorizationConfiguration.status,'pending');
+  f.startPermitted=true;await client.call('StatusNotification',preparing);await flushCalls(client);
+  assert.equal(remoteStarts(client).length,1);assert.equal(f.local.status().authorizationConfiguration.status,'cancelled');
+  assert.equal(f.local.status().authorizationConfiguration.respondedAt,null,'Cancellation is not a native readback');
+});
+
+
+test('a queued native authorization read stays behind an explicit scoped read', async t => {
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag');
+  const client=await f.connect({autoReply:frame=>frame[2]==='ChangeConfiguration'||frame[2]==='GetConfiguration'?null:'Accepted'});
+  await client.call('Heartbeat',{});assert.equal(client.calls[0][2],'ChangeConfiguration');
+  const foreground=f.local.request('GetCompositeSchedule',{connectorId:1,duration:60,chargingRateUnit:'A'});
+  for(let index=0;index<4;index++){
+    const call=client.calls.filter(frame=>frame[2]==='ChangeConfiguration')[index];assert.ok(call);
+    client.ws.send(JSON.stringify([3,call[1],{status:'Accepted'}]));await flushCalls(client);
+  }
+  await foreground;await flushCalls(client);
+  const actions=client.calls.map(frame=>frame[2]);assert.ok(actions.indexOf('GetCompositeSchedule')<actions.indexOf('GetConfiguration'));
+});
+
+
+test('native authorization diagnostics retain TCP receipt clocks across delayed recording admission', async t => {
+  let held=false,entered=Promise.withResolvers(),release=Promise.withResolvers();
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag',undefined,{
+    async runWrite(operation){if(held){entered.resolve();await release.promise;}return operation();},
+  });
+  const client=await f.connect({autoReply:frame=>['GetConfiguration','RemoteStartTransaction'].includes(frame[2])?null:'Accepted'});
+  await client.call('Heartbeat',{});await flushCalls(client);
+  const read=client.calls.find(frame=>frame[2]==='GetConfiguration');assert.ok(read);
+  f.now=at+1000;held=true;
+  client.ws.send(JSON.stringify([3,read[1],{configurationKey:[{key:'AuthorizationCacheEnabled',value:'false',readonly:false}]}]));
+  await entered.promise;f.now=at+2000;held=false;release.resolve();await flushCalls(client);
+  assert.equal(f.local.status().authorizationConfiguration.respondedAt,at+1000,'Recording admission is not a new native receipt');
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  const start=client.calls.find(frame=>frame[2]==='RemoteStartTransaction');assert.ok(start);
+  entered=Promise.withResolvers();release=Promise.withResolvers();held=true;f.now=at+3000;
+  client.ws.send(JSON.stringify([3,start[1],{status:'Accepted'}]));
+  await entered.promise;f.now=at+4000;held=false;release.resolve();await flushCalls(client);
+  assert.equal(f.local.status().startProgress.remote.respondedAt,at+3000,'Start acknowledgement retains its wire receipt too');
+});
