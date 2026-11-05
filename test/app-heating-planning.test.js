@@ -152,9 +152,11 @@ test('numerical source revisions refresh early with a bounded rate; receipt cloc
 
 test('no-plan results use the periodic cadence and failures retry after a minute', async t => {
   const r = rig(t);
-  const none = { action: 'normal', phase: 'normal', reasons: ['normal-operation-preferred'], plan: null };
+  const none = { action: 'normal', phase: 'normal', reasons: ['normal-operation-preferred'], plan: null,
+    evaluation: { baselineCostCents: 123, candidates: 20 } };
   r.planner.choose(r.input); await r.complete(none); r.planner.choose(r.input);
-  r.planner.choose({ ...r.input, now: r.input.now + 3 * 60_000 });
+  const idle = r.planner.choose({ ...r.input, now: r.input.now + 3 * 60_000 });
+  assert.equal(idle.evaluation, undefined, 'The idle cache does not relabel old numerical search results as current');
   assert.equal(r.requests.length, 1, 'An empty result does not run a search every two minutes');
   const later = { ...r.input, now: r.input.now + 15 * 60_000 };
   r.planner.choose(later);

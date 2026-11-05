@@ -62,13 +62,15 @@ export class HeatingPlanning {
     })).digest('hex');
     const waiting = () => incumbentPlan
       ? { ...normal('waiting-for-scheduled-cycle'), plan: incumbentPlan }
-      : this.lastNormal && this.lastNormal.scope === refreshScope
-        ? structuredClone(this.lastNormal.result) : normal('heating-planning-in-progress');
+      : !this.pending && this.lastNormal?.scope === refreshScope && this.lastNormal.sources === sources
+        ? normal(this.lastNormal.reason) : normal('heating-planning-in-progress');
     if (saved && saved.scope === scope && saved.sources === sources && input.now >= saved.at
       && input.now - saved.at <= MAX_RESULT_AGE_MS) {
       this.completed = null;
       if (!saved.result.plan) {
-        this.lastNormal = { scope: refreshScope, result: saved.result };
+        // Retain only an idle explanation. Old search costs, candidate counts
+        // and readiness must not be republished as a fresh evaluation.
+        this.lastNormal = { scope: refreshScope, sources, reason: saved.result.reasons?.[0] ?? 'normal-operation-preferred' };
         return incumbentPlan ? waiting() : structuredClone(saved.result);
       }
       // Source freshness, prices, weather, current comfort, limits and trial
