@@ -47,9 +47,12 @@ export class LiveLearning {
     const storageSignal = new Int32Array(new SharedArrayBuffer(4));
     const worker = this.worker = new Worker(new URL('./live-learning-worker.js', import.meta.url), {
       workerData: { dbPath: this.store.path, input: this.input,
-        databaseId: this.store.checkpoint().databaseId, storageSignal: storageSignal.buffer },
+        databaseId: this.store.checkpoint().databaseId, storageSignal: storageSignal.buffer,
+        managedCheckpoints: Boolean(this.store.walMaintenance) },
     });
-    attachStorageAdmission(worker, storageSignal, operation => this.store.runStorageTask(operation, { kind: 'live-learning' }));
+    attachStorageAdmission(worker, storageSignal, operation => this.store.runStorageTask(operation, {
+      kind: 'live-learning', isCurrent: () => !this.closed && (!this.active || this.active.isCurrent()),
+    }));
     worker.on('message', message => {
       if (worker !== this.worker || this.closed) return;
       if (message?.type === 'ready') { this.ready = true; this.send(); return; }
@@ -130,7 +133,7 @@ export class LiveLearning {
     job.sent = true;
     const digest = job.checkpoint?.checkpointDigest ?? null;
     const message = { type: 'calculate', id: job.id, operation: job.operation, options: job.options };
-    if (job.operation === 'replay') {
+    if (job.operation === 'replay' || job.operation === 'append-sample') {
       message.digest = digest;
       if (this.digest !== digest) message.checkpoint = job.checkpoint;
     }

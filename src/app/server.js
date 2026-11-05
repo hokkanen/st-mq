@@ -954,6 +954,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
                 : code === 'event_log_checkpoint_advanced' ? 'The event-log checkpoint is ahead of its requested snapshot. Previously fetched entries remain available; refresh to try again.'
                 : 'The event log could not be refreshed. Previously fetched entries remain available.' });
         }
+        if (/^\/api\/heating\/explorer(?:[/?]|$)/.test(req.url) && error.code === 'heating_snapshot_unavailable')
+          return json(503, { code: error.code, error: 'The controller has not updated heating conditions. Check Recording status, then refresh conditions.' });
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'

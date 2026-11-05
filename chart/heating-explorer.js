@@ -70,6 +70,8 @@ export function heatingEvidenceText(evidence = {}) {
 }
 const validTrial = trial => ['pending', 'running'].includes(trial?.status);
 const errorMessage = error => error?.status === 401 ? 'Your session ended. Sign in again to continue.'
+  : error?.status === 503 && error?.code === 'heating_snapshot_unavailable'
+    ? 'The controller has not updated heating conditions. Check Recording status, then refresh conditions.'
   : [409, 410].includes(error?.status) ? 'This comparison is no longer current. Refresh conditions and compare again.'
     : error?.status === 429 ? 'Another comparison is running. Please try again in a moment.'
       : error?.status === 403 ? 'This action is unavailable with your current access or control authority.'

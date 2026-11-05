@@ -3,6 +3,14 @@ import assert from 'node:assert/strict';
 import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
+test('a stale controller snapshot directs the user to recording health without exposing raw errors', async () => {
+  const state = createHeatingExplorerState({ request: async () => {
+    throw Object.assign(new Error('sensitive household diagnostic'), { status: 503, code: 'heating_snapshot_unavailable' });
+  } });
+  assert.equal(await state.load(), false);
+  assert.match(state.snapshot().message, /controller has not updated heating conditions.*Check Recording status/);
+  assert.doesNotMatch(state.snapshot().message, /sensitive/);
+});
 test('comparison labels distinguish unchanged-limit replanning and suppress rounded signed zero', () => {
   for (const change of [-.0001, .0001, -0]) {
     const metrics = heatingComparisonMetrics({ changedKeys: [], currentDiffersFromRecalculation: true,

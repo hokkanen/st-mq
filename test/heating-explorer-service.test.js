@@ -54,6 +54,26 @@ test('invalid planning clocks cannot provide fresh comparison snapshots', async 
   }
 });
 
+test('HTTP distinguishes a stale controller snapshot from other unavailable comparisons', async t => {
+  const r = fixture(t); r.engine.status = () => ({ now: r.now });
+  const server = createAppServer({ engine: r.engine, store: r.store, token: 'synthetic-admin', chartService: { overview() {} } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/heating/explorer`;
+  const headers = { Authorization: 'Bearer synthetic-admin' };
+  r.advance(120001);
+  const stale = await fetch(url, { headers });
+  assert.equal(stale.status, 503);
+  assert.deepEqual(await stale.json(), { code: 'heating_snapshot_unavailable',
+    error: 'The controller has not updated heating conditions. Check Recording status, then refresh conditions.' });
+  r.capture();
+  assert.equal((await fetch(url, { headers })).status, 200, 'A fresh controller pass restores comparisons');
+  r.worker.run = async () => { throw Object.assign(new Error('sensitive fixture diagnostic'), { statusCode: 503 }); };
+  const other = await fetch(url, { headers });
+  assert.equal(other.status, 503);
+  assert.deepEqual(await other.json(), { error: 'Request could not be confirmed. Retry shortly.' });
+});
+
 test('reviewed learning permission uses existing plan configuration and leaves persisted limits unchanged', async t => {
   const r = fixture(t), view = await r.service.view();
   const preview = await r.service.simulate({ snapshotId: view.snapshotId,

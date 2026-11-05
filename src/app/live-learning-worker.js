@@ -1,7 +1,7 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
 import { admittedReader, storageStep } from '../storage/worker-admission.js';
-import { committedLearningSample, replayLearningJournalSteps } from './committed-learning.js';
+import { appendLearningRecord, committedLearningSample, replayLearningJournalSteps } from './committed-learning.js';
 import { evaluateThermalModel, restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
 import { withFireplaceInputs } from './fireplace-inputs.js';
 import { takeImmutableValue } from '../domain/immutable.js';
@@ -9,7 +9,7 @@ import { coefficientProjectionAt, readCoefficientCoverage } from '../storage/coe
 import { emptyCoefficientProjection } from '../domain/coefficient-projection.js';
 
 const PAGE = 128;
-let store, checkpoint = null, sequence = 0, messages = Promise.resolve();
+let store, writer, checkpoint = null, sequence = 0, messages = Promise.resolve();
 const acknowledgements = new Map();
 const stage = (id, fields) => new Promise((resolve, reject) => {
   const requestId = ++sequence; acknowledgements.set(requestId, { resolve, reject });
@@ -81,6 +81,16 @@ async function calculate(message) {
       store.db.exec('BEGIN');
       try { answer = { result: committedLearningSample({ ...message.options, store, input: workerData.input }) }; }
       finally { store.db.exec('ROLLBACK'); }
+    } else if (message.operation === 'append-sample') {
+      if (message.checkpoint !== undefined) checkpoint = takeImmutableValue(message.checkpoint);
+      if ((checkpoint?.checkpointDigest ?? null) !== message.digest) throw new Error('Checkpoint ownership changed');
+      const id = storageStep(() => {
+        writer ??= new Store(workerData.dbPath, { managedCheckpoints: workerData.managedCheckpoints });
+        if (writer.checkpoint().databaseId !== workerData.databaseId) throw new Error('Database identity changed');
+        return writer.transaction(() => appendLearningRecord(writer, workerData.input, 'sample', message.options.value,
+          { config: message.options.config, seed: checkpoint }));
+      });
+      answer = { result: { id } };
     } else if (message.operation === 'reserve') {
       const { checkpoint: value, context } = message.options;
       answer = { result: evaluateThermalModel(value.model, value.samples.map(row => withFireplaceInputs(row, context)),
@@ -100,7 +110,7 @@ try {
       else pending?.resolve(message.generation);
     } else if (message?.type === 'calculate') messages = messages.then(() => calculate(message));
   });
-  parentPort.on('close', () => { try { store.close(); } catch {} });
+  parentPort.on('close', () => { try { writer?.close(); store.close(); } catch {} });
   parentPort.postMessage({ type: 'ready' });
 } catch {
   try { store?.close(); } catch {}

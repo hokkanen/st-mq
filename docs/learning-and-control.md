@@ -106,6 +106,10 @@ their role. **Validation & evidence** keeps detailed checks alongside the outcom
 equating conditional temperature, equipment-response and frozen-forecast checks with
 cycle validation. Status refreshes preserve open explanations,
 keyboard focus and the sensor-change forms within Home's temperature inputs.
+Dense completed heating windows retain their complete input segments and original
+clocks. Their journal append uses storage-worker admission, keeping large valid
+windows off the controller's bounded write path without changing their stored
+format, interpretation or reconstruction inputs.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. The current-value display uses the existing learning

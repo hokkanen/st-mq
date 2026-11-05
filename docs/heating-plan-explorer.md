@@ -150,6 +150,11 @@ bounded: the chosen alternative is not proof of a global optimum. Simulation
 does not send commands, change defaults, replace the pending plan, reserve a trial
 budget or update learning.
 
+Comparisons require recently updated controller conditions. If these are unavailable,
+the planner directs you to Recording status before refreshing; repeatedly refreshing
+cannot repair a failing controller update. Other comparison failures retain their
+separate unavailable or retry messages.
+
 ## Use a scenario for one cycle
 
 The admin action applies a reviewed scenario to a specific upcoming opportunity,

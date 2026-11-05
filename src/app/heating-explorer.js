@@ -144,7 +144,7 @@ export class HeatingExplorer {
   snapshot() {
     const now = this.engine.clock();
     if (!this.input || !Number.isFinite(this.input.now) || now - this.input.now > INPUT_MAX_AGE_MS || this.input.now > now)
-      throw failure('Waiting for a fresh heating planning snapshot.', 503);
+      throw Object.assign(failure('Waiting for a fresh heating planning snapshot.', 503), { code: 'heating_snapshot_unavailable' });
     for (const [id, value] of this.snapshots) if (value.expiresAt <= now) this.snapshots.delete(id);
     for (const [id, value] of this.previews) if (value.expiresAt <= now) this.previews.delete(id);
     while (this.snapshots.size >= 8) this.snapshots.delete(this.snapshots.keys().next().value);

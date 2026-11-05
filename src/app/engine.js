@@ -1253,6 +1253,8 @@ export class Engine {
     if (job.kind === 'adaptive') return this.readAdaptive(job.now);
     if (job.kind === 'replay') return this.replayLearning(job.checkpoint, { persistCheckpoint: false });
     if (job.kind === 'sample') return committedLearningSample({ ...job.options, store: this.store, input: this.config.input });
+    if (job.kind === 'append-sample') return appendLearningRecord(this.store, this.config.input, 'sample', job.options.value,
+      { config: job.options.config, seed: job.checkpoint });
     if (job.kind === 'reserve') return evaluateThermalModel(job.options.checkpoint.model,
       job.options.checkpoint.samples.map(row => withFireplaceInputs(row, job.options.context)),
       { rollout: false, observedOnly: false }).state?.reserveC ?? null;
@@ -1609,7 +1611,9 @@ export class Engine {
       const committed = yield { kind: 'sample', options: { at: windowAt, config: this.control,
         measurementEpochAt: checkpoint.measurementEpochAt } };
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
-      appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
+      // A dense completed window can exceed controller-thread journal bounds.
+      // Keep its exact inputs and append under the existing worker admission.
+      yield { kind: 'append-sample', checkpoint, options: { value: committed, config: this.control } };
       // Replay in the same order, but publish the replaceable checkpoint once
       // for this catch-up batch. Journaling every growing intermediate cache
       // can exceed the transaction limit after a long recording gap.
