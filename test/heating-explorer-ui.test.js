@@ -117,6 +117,32 @@ test('busy requests suppress duplicate calculations and edits', async () => {
   finish(makeResult()); await loading;
 });
 
+test('late comparisons and refreshes retain newer plan freshness and active trial updates', async () => {
+  for (const refresh of [false, true]) {
+    let finish, calls = 0;
+    const state = createHeatingExplorerState({ clock: () => now, request: async () => ++calls === 1
+      ? makeResult({ activeTrial: null }) : new Promise(resolve => { finish = resolve; }) });
+    await state.load();
+    if (refresh) state.markStale();
+    const pending = refresh ? state.load() : state.compare();
+    state.markStale();
+    state.updateTrial({ id: 'newer-approved-cycle', status: 'pending' });
+    finish(makeResult({ previewId: 'older-preview', activeTrial: null })); await pending;
+    assert.equal(state.snapshot().stale, true, 'A late response cannot erase a newer plan change');
+    assert.equal(await state.apply(), false);
+    assert.equal(state.snapshot().result.activeTrial.id, 'newer-approved-cycle');
+    state.reset();
+    assert.equal(state.snapshot().stale, true);
+    assert.equal(state.snapshot().result.activeTrial.id, 'newer-approved-cycle');
+  }
+});
+
+test('a completed Refresh clears an earlier stale indication when no newer plan change arrives', async () => {
+  const state = createHeatingExplorerState({ clock: () => now, request: async () => makeResult() });
+  await state.load(); state.markStale(); await state.load();
+  assert.equal(state.snapshot().stale, false);
+});
+
 test('a late read cannot restore private comparison data after sign-out', async () => {
   let finish;
   const state = createHeatingExplorerState({ clock: () => now, request: () => new Promise(resolve => { finish = resolve; }) });

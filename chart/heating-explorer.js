@@ -73,6 +73,7 @@ const errorMessage = error => error?.status === 401 ? 'Your session ended. Sign 
 export function createHeatingExplorerState({ request, clock = Date.now, onChange = () => {} }) {
   let result = null, baseline = null, limits = {}, busy = false, message = '', error = false, dirty = false, stale = false;
   let generation = 0;
+  let freshnessRevision = 0, trialRevision = 0;
   let receipt = null;
   const edited = new Set();
   const snapshot = () => ({ result, limits: { ...limits }, busy, message, error, dirty,
@@ -83,6 +84,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     if (busy) return false;
     const draft = preserveDraft ? new Map([...edited].map(key => [key, limits[key]])) : null;
     const ownGeneration = ++generation;
+    const capturedFreshnessRevision = freshnessRevision, capturedTrialRevision = trialRevision;
     busy = true; error = false; message = mutation ? 'Saving one-cycle limits…' : reset ? 'Reading current conditions…' : 'Comparing the same conditions…'; notify();
     try {
       const next = await request(path, body);
@@ -94,7 +96,9 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
         receipt = { at: clock(), message }; message = '';
         dirty = true;
       } else {
-        result = next; stale = false; dirty = false;
+        const activeTrial = result?.activeTrial;
+        result = capturedTrialRevision === trialRevision ? next : { ...next, activeTrial };
+        stale = capturedFreshnessRevision !== freshnessRevision; dirty = false;
         if (reset) {
           baseline = structuredClone(next);
           limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value])); edited.clear();
@@ -149,9 +153,10 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       return run(`${endpoint}/apply`, { previewId: result.previewId }, { mutation: true });
     },
     cancel: () => validTrial(result?.activeTrial) ? run(`${endpoint}/cancel`, {}, { mutation: true }) : Promise.resolve(false),
-    markStale() { if (result && !stale) { stale = true; notify(); } },
+    markStale() { if (result) { ++freshnessRevision; stale = true; notify(); } },
     updateTrial(trial) {
       if (result && JSON.stringify(trial) !== JSON.stringify(result.activeTrial)) {
+        ++trialRevision;
         result = { ...result, activeTrial: trial }; notify();
       }
     },
