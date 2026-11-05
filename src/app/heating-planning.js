@@ -17,8 +17,12 @@ export class HeatingPlanning {
   }
   scope(input, includeBaseline = true) {
     const e = this.engine;
+    // The effective target also carries the continuously learned reference.
+    // Only the owner's configured target belongs in the early-refresh identity.
+    const settings = includeBaseline || !e.settings ? input.settings : { ...input.settings,
+      comfort: { ...input.settings.comfort, targetC: e.settings.comfort.targetC } };
     return createHash('sha256').update(JSON.stringify({
-      config: input.config, settings: input.settings, model: input.checkpoint?.model,
+      config: input.config, settings, model: input.checkpoint?.model,
       baselineC: includeBaseline ? input.checkpoint?.baselineC : undefined, authority: e.automation.features.home,
       target: e.automationTarget('home'), canControl: e.canControl(),
       measurementEpochAt: input.checkpoint?.measurementEpochAt,
@@ -92,7 +96,7 @@ export class HeatingPlanning {
     const previous = this.lastSearch, elapsed = previous ? input.now - previous.at : Infinity;
     const changed = previous && (previous.scope !== refreshScope || previous.sources !== sources
       || Math.abs(input.observations.indoor.value - previous.indoorC) >= .25
-      || Math.abs(input.checkpoint?.baselineC - previous.baselineC) >= .25);
+      || Math.abs(input.settings.comfort.targetC - previous.targetC) >= .25);
     const due = !previous || elapsed < 0 || elapsed >= REFRESH_MS
       || (changed || saved && input.now-saved.at > MAX_RESULT_AGE_MS) && elapsed >= MIN_SEARCH_INTERVAL_MS;
     if (due && !this.pending && !incumbentDue) {
@@ -100,7 +104,7 @@ export class HeatingPlanning {
       this.pending = request;
       this.completed = null;
       this.lastSearch = { at: input.now, scope: refreshScope, sources, indoorC: input.observations.indoor.value,
-        baselineC: input.checkpoint?.baselineC };
+        targetC: input.settings.comfort.targetC };
       request.promise = this.service.request({ ...input, incumbentPlan }).then(result => {
         if (this.closed || this.pending !== request || request.generation !== this.generation) return;
         this.pending = null;

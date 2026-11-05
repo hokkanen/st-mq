@@ -203,3 +203,22 @@ test('a due automatic cycle uses an already completed fresh result, but never wa
   assert.equal(due.phase, 'reduction');
   assert.equal(r.requests.length, 1, 'The due cycle starts without launching or waiting for another search');
 });
+
+test('small learned-reference drift in effective settings does not repeatedly search, while explicit edits do', async t => {
+  const r = rig(t);
+  r.engine.settings = { ...r.input.settings, comfort: { ...r.input.settings.comfort, targetC: null } };
+  r.planner.choose(r.input);
+  await r.complete({ action:'normal',phase:'normal',reasons:['normal-operation-preferred'],plan:null });
+  r.planner.choose(r.input);
+  const current = structuredClone(r.input);
+  for (let minute=1;minute<15;minute++) {
+    current.now = r.input.now+minute*60_000;
+    current.checkpoint.baselineC += .001;
+    current.settings.comfort.targetC = current.checkpoint.baselineC;
+    r.planner.choose(current);
+  }
+  assert.equal(r.requests.length, 1, 'The runtime copies its slowly learned reference into the effective target');
+  r.engine.settings.comfort.targetC = current.settings.comfort.targetC = 21.1;
+  r.planner.choose(current);
+  assert.equal(r.requests.length, 2, 'An explicit owner target change still refreshes promptly');
+});
