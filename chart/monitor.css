@@ -576,11 +576,10 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .section-fold > summary > small { min-width: 0; margin-left: auto; font-size: 11px; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; text-align: right; }
 .learning-section-title { font-size: 13px; font-weight: 550; }
 .learning-section-kind { font-size: 11px; color: var(--muted); }
-.section-fold > summary::after, .learning-support > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; font-weight: 400; line-height: 1; }
+.section-fold > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 18px; font-weight: 400; line-height: 1; }
 .section-fold > summary::after { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
 .section-fold[open] > summary { border-bottom: 1px solid var(--border); background: var(--surface-soft); border-radius: 7px 7px 0 0; }
 .section-fold[open] > summary::after { top: calc(50% + .5px); color: var(--accent); transform: translateY(-50%) rotate(90deg); }
-.learning-support[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
 .section-fold > summary::-webkit-details-marker, .learning-support > summary::-webkit-details-marker, .learning-entry > summary::-webkit-details-marker { display: none; }
 .section-fold > summary:hover { background: var(--surface-soft); }
 .section-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -591,8 +590,8 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .learning-entry { min-width: 0; margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
 .learning-entry:last-child { border-bottom: 0; }
 .learning-entry > summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 18px; align-items: start; gap: 6px 14px; padding: 14px 0; list-style: none; }
-.learning-entry > summary::after { content: ''; width: 7px; height: 7px; margin: 5px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); justify-self: end; }
-.learning-entry[open] > summary::after { border-color: var(--accent); transform: rotate(45deg); }
+.learning-entry > summary::after, .learning-support > summary::after, .learning-calculation > summary::after { content: ''; width: 7px; height: 7px; margin: 5px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); justify-self: end; }
+.learning-entry[open] > summary::after, .learning-support[open] > summary::after, .learning-calculation[open] > summary::after { border-color: var(--accent); transform: rotate(45deg); }
 .learning-entry-heading { display: grid; gap: 4px; min-width: 0; }
 .learning-entry-title { font-size: 12px; line-height: 1.5; font-weight: 550; }
 .learning-entry-provenance, .learning-entry-summary { color: var(--muted); font-size: 10px; line-height: 1.6; }
@@ -610,8 +609,7 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .learning-entry-body > .learning-calculation { min-width: 0; margin: 12px 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); }
 .learning-calculation > summary { display: flex; align-items: center; gap: 12px; padding: 10px var(--ui-inset); font-size: 11px; font-weight: 550; list-style: none; }
 .learning-calculation > summary::-webkit-details-marker { display: none; }
-.learning-calculation > summary::after { content: '›'; margin-left: auto; color: var(--muted); font-size: 16px; line-height: 1; }
-.learning-calculation[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
+.learning-support > summary::after, .learning-calculation > summary::after { flex: none; margin-left: auto; }
 .learning-calculation > summary:hover { color: var(--accent); }
 .learning-calculation > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 5px; }
 .learning-calculation-body { min-width: 0; padding: 4px var(--ui-inset) 12px; }

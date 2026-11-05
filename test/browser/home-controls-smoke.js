@@ -290,7 +290,8 @@ try {
       const layout = await evaluate(`(() => {
         const selectors = ['#home-preferences-details .home-preferences-body', '#home-preferences-details .learning-entry',
           '#learning-panel-details .learning-section-body', '#learning-panel-details .learning-entry',
-          '#learning-panel-details .learning-calculation', '#learning-panel-details .learning-equation-expression'];
+          '#learning-panel-details .learning-support', '#learning-panel-details .learning-calculation',
+          '#learning-panel-details .learning-calculation > summary', '#learning-panel-details .learning-equation-expression'];
         return { page: document.documentElement.scrollWidth, viewport: innerWidth,
           overflow: [...document.querySelectorAll(selectors.join(','))]
             .filter(node => node.checkVisibility() && node.clientWidth > 0 && node.scrollWidth > node.clientWidth + 1)
