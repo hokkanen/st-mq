@@ -1773,7 +1773,7 @@ export class Engine {
         if (!checked.valid) this.store.event('scheduled-cycle-rejected',{reason:checked.reason},now);
       }
       const due = this.pendingPlan && Math.min(this.pendingPlan.schedule.preheatStart,this.pendingPlan.schedule.reductionStart) <= now;
-      if (due) {
+      if (due && scopedTrial) {
         decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan || !scopedTrial) {

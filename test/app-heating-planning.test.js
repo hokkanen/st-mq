@@ -184,3 +184,22 @@ test('a failed refresh preserves the still-valid pending schedule', async t => {
   r.requests[0].reject(new Error('Synthetic refresh failure')); await r.planner.pending.promise;
   assert.equal(r.planner.choose(r.input, incumbent).plan, incumbent);
 });
+
+test('a due automatic cycle uses an already completed fresh result, but never waits for search', async t => {
+  const r = rig(t);
+  r.input.prices.forEach((row, i) => { row.allInCentsPerKWh = i >= 8 && i < 12 ? 100 : 1; });
+  const selected = chooseCycle(r.input);
+  const old = structuredClone(selected.plan);
+  // A synthetic due incumbent isolates the controller's ready-result ordering.
+  old.schedule.preheatStart = old.schedule.preheatEnd = old.schedule.reductionStart = r.input.now;
+  old.schedule.reductionEnd = r.input.now + 15 * 60_000;
+  r.planner.choose(r.input); await r.complete(selected);
+  const fresh = r.planner.choose(r.input, old);
+  assert.deepEqual(fresh.plan.schedule, selected.plan.schedule);
+  assert.equal(fresh.phase, 'normal', 'The completed better future choice is adopted before starting the old cycle');
+  r.planner.invalidate();
+  const due = r.planner.choose(r.input, old);
+  assert.equal(due.plan, old);
+  assert.equal(due.phase, 'reduction');
+  assert.equal(r.requests.length, 1, 'The due cycle starts without launching or waiting for another search');
+});

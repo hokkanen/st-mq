@@ -60,10 +60,17 @@ export class HeatingPlanning {
       capability: [input.equipment?.h66Available, input.equipment?.preheatAvailable,
         input.equipment?.floorOverrideAvailable, input.equipment?.nativeAuxAllowed],
     })).digest('hex');
-    const waiting = () => incumbentPlan
-      ? { ...normal('waiting-for-scheduled-cycle'), plan: incumbentPlan }
-      : !this.pending && this.lastNormal?.scope === refreshScope && this.lastNormal.sources === sources
+    const incumbentDue = incumbentPlan
+      && Math.min(incumbentPlan.schedule.preheatStart, incumbentPlan.schedule.reductionStart) <= input.now;
+    const waiting = () => {
+      if (incumbentPlan) {
+        const phase = phaseAt(incumbentPlan.schedule, input.now);
+        return { ...normal(phase === 'normal' ? 'waiting-for-scheduled-cycle' : 'revalidated-scheduled-cycle'),
+          phase, action: phase === 'reduction' ? 'reduction' : 'normal', plan: incumbentPlan };
+      }
+      return !this.pending && this.lastNormal?.scope === refreshScope && this.lastNormal.sources === sources
         ? normal(this.lastNormal.reason) : normal('heating-planning-in-progress');
+    };
     if (saved && saved.scope === scope && saved.sources === sources && input.now >= saved.at
       && input.now - saved.at <= MAX_RESULT_AGE_MS) {
       this.completed = null;
@@ -88,7 +95,7 @@ export class HeatingPlanning {
       || Math.abs(input.checkpoint?.baselineC - previous.baselineC) >= .25);
     const due = !previous || elapsed < 0 || elapsed >= REFRESH_MS
       || (changed || saved && input.now-saved.at > MAX_RESULT_AGE_MS) && elapsed >= MIN_SEARCH_INTERVAL_MS;
-    if (due && !this.pending) {
+    if (due && !this.pending && !incumbentDue) {
       const request = { scope, sources, at: input.now, generation: ++this.generation };
       this.pending = request;
       this.completed = null;
