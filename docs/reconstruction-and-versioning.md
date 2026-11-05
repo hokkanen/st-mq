@@ -428,6 +428,9 @@ Start-recovery contexts belong to one physical connection and survive restart;
 an older or malformed transaction state is rejected before database mutation,
 including during read-only inspection and full verification. This state contract
 does not change physical schema 37 or journaled layout 32.
+Native commissioning state uses its current version 1 codec at the same
+pre-mutation boundary, including intrinsic scope validation; malformed setup
+cannot pass database inspection simply because its adapter is inactive.
 
 Home cycle storage separates one immutable frozen definition, immutable sample
 provenance groups and ordered interval evidence from a compact mutable execution

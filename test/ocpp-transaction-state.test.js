@@ -11,6 +11,9 @@ import { validateOcppTransactionState, OCPP_RECOVERY_ATTEMPT_LIMIT } from '../sr
 const key = n => n.toString(16).padStart(64, '0');
 const current = () => ({ version: 5, scope: 'a'.repeat(64), nextId: 1, latestStartAt: 0,
   activeId: null, transactions: [], automaticStartRecoveries: null });
+const setup = () => ({ version: 1, scope: 'a'.repeat(64), ownedFingerprint: null,
+  appliedFingerprint: null, adoptionFingerprint: null, intent: null,
+  lastAppliedAt: null, lastSuccessAt: null, nextAttemptAt: null, failures: 0 });
 
 test('current transaction state retains unique consumed contexts for one physical session', () => {
   const value = current();
@@ -32,12 +35,16 @@ test('current transaction state retains unique consumed contexts for one physica
   }
 });
 
-test('startup, read-only inspection and full verification reject a retired transaction state without changing its database', async t => {
+for (const [name, stateKey, invalid] of [
+  ['retired transaction state', 'easee:ocpp', { ...current(), version: 4 }],
+  ['unsupported setup version', 'easee:ocpp-setup', { ...setup(), version: 999 }],
+  ['invalid setup scope', 'easee:ocpp-setup', { ...setup(), scope: 'invalid' }],
+  ['unknown setup field', 'easee:ocpp-setup', { ...setup(), retired: true }],
+]) test(`startup, read-only inspection and full verification reject ${name} without changing its database`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-invalid-ocpp-state-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'invented.sqlite'), store = new Store(path);
-  const invalid = { ...current(), version: 4 }; delete invalid.automaticStartRecoveries;
-  store.setState('easee:ocpp', invalid); store.close();
+  store.setState(stateKey, invalid); store.close();
   const digest = () => createHash('sha256').update(readFileSync(path)).digest('hex');
   const before = digest();
   for (const options of [{}, { readOnly: true }]) {
@@ -58,15 +65,22 @@ test('supported backup and restore preserve every consumed current-session conte
   const value = current();
   value.automaticStartRecoveries = { connectedAt: 100,
     attempts: [{ key: key(1), at: 200 }, { key: key(2), at: 300 }] };
+  const commissioning = { ...setup(), ownedFingerprint: key(3), appliedFingerprint: key(4),
+    intent: { fingerprint: key(5), base: key(4), version: 'synthetic-setup-version' },
+    recovery: { attempts: 1, lastAttemptAt: 100 } };
   const store = new Store(join(directory, 'source.sqlite'));
   try {
     store.setState('easee:ocpp', value);
+    store.setState('easee:ocpp-setup', commissioning);
     await store.backup(join(directory, 'backup.sqlite'));
   } finally { store.close(); }
   const destination = join(directory, 'restored.sqlite');
   await Store.restore(join(directory, 'backup.sqlite'), destination);
   const restored = new Store(destination, { readOnly: true });
-  try { assert.deepEqual(restored.getState('easee:ocpp'), value); }
+  try {
+    assert.deepEqual(restored.getState('easee:ocpp'), value);
+    assert.deepEqual(restored.getState('easee:ocpp-setup'), commissioning);
+  }
   finally { restored.close(); }
   await verifyDatabase({ dbPath: destination, origin: 'manual' });
 });

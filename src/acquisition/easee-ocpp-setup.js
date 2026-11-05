@@ -67,7 +67,8 @@ export function ocppInstallation(config, { createCredential = false, detectAddre
 
 function validState(value, scope) {
   return fields(value, ['version', 'scope', 'ownedFingerprint', 'appliedFingerprint', 'adoptionFingerprint',
-    'intent', 'lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt', 'failures', 'recovery']) && value.version === 1 && value.scope === scope
+    'intent', 'lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt', 'failures', 'recovery']) && value.version === 1
+    && typeof value.scope === 'string' && HASH.test(value.scope) && value.scope === scope
     && ['ownedFingerprint', 'appliedFingerprint', 'adoptionFingerprint'].every(key => value[key] === null || HASH.test(value[key]))
     && ['lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt'].every(key => value[key] === null || Number.isSafeInteger(value[key]) && value[key] >= 0)
     && Number.isInteger(value.failures) && value.failures >= 0 && value.failures <= 10
