@@ -811,8 +811,13 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   function status(now = clock()) {
     const live = available(now);
-    if (compressorState && (!live || !current('1A01', now) || now < compressorState.receivedAt
-      || now - compressorState.observedAt > maxAgeMs || now - compressorState.receivedAt > maxAgeMs)) compressorState = null;
+    const compressorCurrent = at => compressorState && available(at) && current('1A01', at)
+      && at >= compressorState.receivedAt && at - compressorState.observedAt <= maxAgeMs
+      && at - compressorState.receivedAt <= maxAgeMs;
+    // Async control work can still hold an earlier context timestamp when a
+    // newer report arrives. Hide that report from the earlier view, but only
+    // the actual clock can expire its observed continuity.
+    if (compressorState && !compressorCurrent(clock())) compressorState = null;
     return { enabled: config.enabled !== false, available: live, connected: live, brokerConnected: connected,
       writesEnabled: config.writeEnabled === true, phase: state.phase,
       externalChangeRevision:state.externalChangeRevision??0,externalChangeAt:state.externalChangeAt??null,
@@ -822,7 +827,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       obligations: copy(state.obligations), lastResult: copy(state.lastResult), lastTest: copy(state.lastTest ?? null), lastManual: copy(state.lastManual ?? null),
       preheatPreparation: copy(preparation), normalRoomReady: normalRoomReady(),
       manualPreheat: copy(state.manualPreheat ?? null),
-      compressorState: compressorState ? { value: compressorState.value, since: compressorState.since,
+      compressorState: compressorCurrent(now) ? { value: compressorState.value, since: compressorState.since,
         transitionObserved: compressorState.transitionObserved } : null,
       controlsReady: live && !closing && !preparation && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),

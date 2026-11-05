@@ -47,6 +47,7 @@ test('economic disclosures keep fractional independent hurdles, negative benefit
   assert.equal(row.value, '-0.25 ct minimum + 1.25 ct start');
   assert.match(JSON.stringify(row.calculation), /cost_floor = 0.5 ct/);
   assert.match(JSON.stringify(row.calculation), /best_B_low −.*\|best_B_low\|/);
+  assert.match(JSON.stringify(row.calculation), /positive minimum.*omitted.*negative minimum remains in force/);
   const missing = learningDisplay({}, { settings: { savingsStrategy: 'gentle' } })
     .policyRows.find(item => item.key === row.key);
   assert.equal(missing.value, 'Current monetary settings unavailable');

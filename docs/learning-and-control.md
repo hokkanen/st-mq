@@ -374,7 +374,9 @@ extra hot/cold °C²-hours of the weighted indoor average compared with Normal.
 These defaults are explicitly overridable through the monetary policy fields in
 [configuration](configuration.md#heating-strategies-and-limits), including zero;
 configured comfort limits and physical stress checks still apply. Continuation excludes
-the already committed start hurdle. Among admitted choices, the mildest retaining
+a positive minimum saving and the cycle start penalty. A reviewed negative minimum
+remains applicable, along with temperature deviation and duration penalties.
+Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected,
 ordered by configured temperature deviation penalty then combined preheat and
 reduction duration. With a zero temperature penalty, duration decides. For an

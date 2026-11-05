@@ -49,6 +49,29 @@ test('disconnect and restart discard compressor duration continuity', async t =>
   assert.deepEqual(restarted.status(), { value: 1, since: START + 2000, transitionObserved: false });
 });
 
+test('an older control-context read cannot erase a newer compressor observation', t => {
+  const f = setup(t); f.feed(0);
+  f.at(START + 1000); f.feed(1);
+  assert.equal(f.controller.status(START).compressorState, null,
+    'An earlier context cannot use a report received after that context');
+  assert.deepEqual(f.status(), { value: 1, since: START + 1000, transitionObserved: true },
+    'A current read retains the genuinely observed transition');
+  f.at(START + 2000); f.feed(1);
+  assert.deepEqual(f.status(), { value: 1, since: START + 1000, transitionObserved: true });
+  f.at(START + 500);
+  assert.equal(f.status(), null, 'An actual clock reversal still breaks continuity');
+});
+
+test('a future status projection cannot expire current compressor evidence', t => {
+  const f = setup(t); f.feed(1);
+  assert.equal(f.controller.status(START + 2 * MINUTE).compressorState, null);
+  assert.deepEqual(f.status(), { value: 1, since: START, transitionObserved: false });
+  f.at(START + 2 * MINUTE);
+  assert.equal(f.status(), null, 'Actual expiry still ends continuity');
+  f.feed(1);
+  assert.deepEqual(f.status(), { value: 1, since: START + 2 * MINUTE, transitionObserved: false });
+});
+
 test('stale gaps reset duration even when no status was requested during the gap', t => {
   const f = setup(t); f.feed(1);
   f.at(START + MINUTE); assert.notEqual(f.status(), null);
