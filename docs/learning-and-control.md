@@ -115,7 +115,12 @@ fitted in the accepted model, retained while awaiting evidence, initial estimate
 or fixed building assumption. The current-value display uses the existing learning
 state. Four **Model coefficients · Calculated** chart choices show historical heat
 loss, combined hydronic response, solar response and fireplace response. Fixed
-building, source and slab assumptions have separate informational rows.
+building, background-heat, demand, initial action/forecast, source and slab
+assumptions have separate informational rows. Background heat is configured in
+°C/h, defaults to zero and remains fixed during local fitting; it is not a
+measured household heat input. Initial response ratios and trajectory allowance
+are fallbacks that observed treatment response and later trajectory checks can
+replace independently.
 
 Coefficient charts read the four histories recorded with committed learning in
 the main database. Normal learning captures every coefficient change from its

@@ -3,6 +3,48 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('every thermal parameter and additional numeric initial assumption has a coefficient disclosure', () => {
+  const model = initialAdaptiveModel({ homeModel: { internalCPerHour: .0275, dutyPerDegree: .0123456,
+    balanceTemperatureC: 16.75, reductionRatio: .3, preheatRatio: 1.2, trajectoryErrorC: .45 },
+    floorThermalPriors: { capacityKwhPerC: 2.5 } });
+  const display = learningDisplay({ adaptive: { model } }), rows = new Map(display.coefficients.map(row => [row.key, row]));
+  const additional = Object.entries(model.initialModel).filter(([key, value]) => typeof value === 'number'
+    && !Object.hasOwn(model.parameters, key) && key !== 'trainingSamples').map(([key]) => key);
+  for (const key of [...Object.keys(model.parameters), ...additional]) {
+    const row = rows.get(key);
+    assert(row, `${key} must be visible`);
+    assert(row.available, `${key} has a current value`);
+    assert(row.unit && row.provenance && row.detail && row.calculation?.equations.length, `${key} has its meaning and calculation`);
+  }
+  assert.equal(rows.get('internalCPerHour').value, '0.0275 °C/h');
+  assert.equal(rows.get('internalCPerHour').provenance, 'Fixed configured assumption');
+  assert.match(JSON.stringify(rows.get('internalCPerHour').calculation), /0.0275.*retained during thermal fitting, not fitted separately/);
+  assert.equal(rows.get('dutyPerDegree').value, '0.0123456 1/°C');
+  assert.equal(rows.get('balanceTemperatureC').value, '16.7500 °C');
+  assert.equal(rows.get('reductionRatio').value, '0.300 × normal demand');
+  assert.equal(rows.get('preheatRatio').value, '1.200 × normal demand');
+  assert.equal(rows.get('trajectoryErrorC').value, '0.4500 °C');
+  assert.match(display.coefficientEvidenceRows.find(row => row.key === 'heat-balance').detail, /configured background heat/);
+  assert.match(display.coefficientEvidence.join(' '), /additional quantities listed separately from this thermal-parameter count/);
+  for (const key of ['capacityKwhPerC', 'nativeCapacityKwhPerC', 'exchangeKwPerC', 'groundLossKwPerC',
+    'groundC', 'openAllocationFraction', 'closedAllocationFraction']) assert(rows.has(`floor-${key}`));
+});
+
+test('fixed initial assumptions preserve valid zero and distinguish missing values from configured zero', () => {
+  const model = initialAdaptiveModel({ homeModel: { internalCPerHour: 0, dutyPerDegree: 0, reductionRatio: 0 } });
+  const rows = () => new Map(modelCoefficientDescriptions({ adaptive: { model } }).map(row => [row.key, row]));
+  assert.equal(rows().get('internalCPerHour').value, '0.0000 °C/h');
+  assert.equal(rows().get('dutyPerDegree').value, '0.0000000 1/°C');
+  assert.equal(rows().get('reductionRatio').value, '0.000 × normal demand');
+  assert.match(JSON.stringify(rows().get('dutyPerDegree').calculation), /q = 0.*without a weather correction/);
+  delete model.initialModel.internalCPerHour;
+  const missing = rows().get('internalCPerHour');
+  assert.equal(missing.available, false); assert.equal(missing.value, 'Unavailable');
+  assert.equal(missing.provenance, 'Unavailable');
+  assert.match(JSON.stringify(missing.calculation), /Unavailable °C\/h/);
+  assert.doesNotMatch(JSON.stringify(missing.calculation), /value: 0/);
+});
+
 test('current initial-model assumptions and unbounded response ratios match the implemented predictor', () => {
   const model = initialAdaptiveModel({ homeModel: { calibrationId: 'synthetic-calibration', dutyPerDegree: .03,
     balanceTemperatureC: 15, trajectoryErrorC: .8, internalCPerHour: .02, reductionRatio: .4, preheatRatio: 1.4 } });

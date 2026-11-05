@@ -17,7 +17,8 @@ const assets = new Map([
 function addModule(pathname) {
   if (assets.has(pathname)) return;
   const source = readFileSync(new URL(`../..${pathname}`, import.meta.url), 'utf8');
-  assets.set(pathname, ['text/javascript', source]);
+  assets.set(pathname, [pathname.endsWith('.json') ? 'application/json' : 'text/javascript', source]);
+  if (pathname.endsWith('.json')) return;
   for (const match of source.matchAll(/\b(?:import|export)\s+[^;]*?\sfrom\s*['"]([^'"]+)['"]/g)) {
     if (match[1].startsWith('.')) addModule(new URL(match[1], `http://fixture${pathname}`).pathname);
   }
@@ -94,6 +95,7 @@ const fixture = `<!doctype html><html><head><meta charset="utf-8"><meta name="vi
   </script></body></html>`;
 const missingAssets = [];
 const server = createServer((request, response) => {
+  if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
   const asset = assets.get(request.url);
   if (!asset && request.url !== '/' && request.url !== '/favicon.ico') missingAssets.push(request.url);
   response.writeHead(asset || request.url === '/' ? 200 : 404,
@@ -128,6 +130,8 @@ try {
       message.error ? task.reject(new Error(message.error.message)) : task.resolve(message.result);
     } else if (message.method === 'Runtime.exceptionThrown') errors.push(
       message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+    else if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error')
+      errors.push(message.params.entry.text);
   };
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence, timer = setTimeout(() => reject(new Error(`CDP timeout: ${method}`)), 15_000);
@@ -144,7 +148,7 @@ try {
       ...(key === 'Enter' ? { nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
   };
-  await send('Runtime.enable'); await send('Page.enable');
+  await send('Runtime.enable'); await send('Page.enable'); await send('Log.enable');
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   for (let attempt = 0; attempt < 200 && !await evaluate('globalThis.ready === true'); attempt++) await pause(30);
   assert.equal(await evaluate('globalThis.ready'), true,
@@ -206,13 +210,18 @@ try {
     && document.querySelectorAll('#actual-coefficients .learning-entry').length >= 14
     && document.querySelectorAll('#actual-inputs .learning-entry').length >= 12`), true,
   'Real learning display renders outcomes, fixed slab priors and all model inputs');
+  assert.equal(await evaluate(`['internalCPerHour', 'dutyPerDegree', 'balanceTemperatureC', 'reductionRatio',
+    'preheatRatio', 'trajectoryErrorC'].every(key => {
+      const row = document.querySelector('#actual-coefficients [data-learning-key="' + key + '"]');
+      return row && row.querySelector('.learning-calculation');
+    })`), true, 'All additional initial assumptions have visible coefficient rows and calculations');
   const panels = await evaluate(`[...document.querySelectorAll('#actual > section')]
     .filter(section => section.querySelector('.learning-entry')).map(section => section.id)`);
   assert.equal(await evaluate(`[...document.querySelectorAll('#actual > section')].every(section => {
     const groups = [...section.querySelectorAll('.learning-row-group')].map(node => node.textContent);
     return groups.length === new Set(groups).size;
   })`), true, 'Each disclosure group occurs once in its section');
-  for (const [width, theme] of [[980, 'dark'], [360, 'light']]) {
+  for (const [width, theme] of [[980, 'dark'], [280, 'light'], [360, 'dark'], [768, 'light']]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
     for (const panel of panels) {
@@ -239,6 +248,7 @@ try {
     }
     for (const [panel, key, name] of [
       ['actual-coefficients', 'source-model-confirmed', 'source-map'],
+      ['actual-coefficients', 'internalCPerHour', 'background-heat'],
       ['actual-calculations', 'model-fitting', 'model-fitting'],
       ['actual-policy', 'Preheat and comfort policy', 'preheat-policy'],
       ['actual-policy', 'Recovery hold', 'recovery-hold'],

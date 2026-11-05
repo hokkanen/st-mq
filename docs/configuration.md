@@ -958,6 +958,12 @@ direction. The profile accepts
 `memory_exchange_per_hour`, `reserve_time_hours`, `internal_c_per_hour`,
 `duty_per_degree`, `balance_temperature_c`, `reduction_ratio`, `preheat_ratio` and
 `trajectory_error_c`. Values are finite bounded estimates, not observations.
+`internal_c_per_hour` is constant background warming in °C/h, default zero;
+local fitting does not adjust it. The weather-demand slope and balance point
+also remain configured priors. Covered treatment episodes can replace the
+initial response ratios, and later checked trajectories can replace the initial
+uncertainty base. Home heat model lists these assumptions with their current
+model values, units and calculations, alongside the learnable responses.
 `calibration_id` names the initial coefficient set. Optional `training_sha256`
 and integer `training_samples` must be supplied together when recording private
 training provenance. Optional `training_through` is a canonical UTC timestamp

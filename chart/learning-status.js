@@ -36,6 +36,20 @@ const coefficientInfo = {
   memoryExchangePerHour: { unit: '1/h', digits: 4, fixed: true, detail: 'Exchange rate between the modeled building heat reserve and indoor air. The slow reserve is unmeasured, so this remains a fixed structural assumption.' },
   reserveTimeHours: { unit: 'h', digits: 1, fixed: true, detail: 'Time scale of the modeled building heat reserve. This is temperature memory, not a measured floor temperature or storage capacity.' },
 };
+const initialCoefficientInfo = [
+  ['internalCPerHour', 'Background heat gain', '°C/h', 4, 'Building assumptions',
+    'Configured constant warming from internal or background heat. It enters the indoor heat balance directly and reduces predicted heating demand. It stays fixed during local fitting; zero adds no background warmth. This is not measured household heat or a learned response.'],
+  ['dutyPerDegree', 'Weather demand slope', '1/°C', 7, 'Demand assumptions',
+    'Configured outdoor-temperature slope of the initial compressor-runtime curve. It can nudge the current heat-balance demand by at most 0.02 duty. Zero disables this weather correction. It is not refitted by local thermal learning.'],
+  ['balanceTemperatureC', 'Weather demand balance temperature', '°C', 4, 'Demand assumptions',
+    'Configured outdoor temperature where the initial weather/runtime curve reaches zero. It is not the indoor comfort reference. It is used only when the weather demand slope is positive and is not refitted locally.'],
+  ['reductionRatio', 'Initial reduction response', '× normal demand', 3, 'Demand assumptions',
+    'Configured fallback compressor-duty ratio during reduction, used when no observed ratio is available for the matching treatment. Covered episodes can replace this fallback independently of validation. A reduction request does not prove that heating stopped.'],
+  ['preheatRatio', 'Initial preheat response', '× normal demand', 3, 'Demand assumptions',
+    'Configured fallback compressor-duty ratio during preheat, used when no observed ratio is available for the matching treatment. ROOM demand and projected water temperature are assessed separately. Covered episodes can replace this fallback independently of validation.'],
+  ['trajectoryErrorC', 'Initial temperature uncertainty', '°C', 4, 'Forecast assumptions',
+    'Configured initial six-hour trajectory-error scale. It supplies the base temperature allowance until checked trajectories are available; source, action, solar, fireplace and slab allowances are additional. It is an engineering estimate, not a confidence interval.'],
+];
 const inputSources = {
   model_indoor_temperature: 'The configured sensors contribute according to their weights. Their latest genuine readings can be held between reports; freshness and report coverage determine whether the interval is usable. A missing contributing sensor or a gap in required reports excludes the average. The chart preserves the originally supplied average, including sensor-change settling gaps; corrected learning can use preserved readings behind those settling gaps.',
   model_outdoor_temperature: 'FMI station, with an Open-Meteo estimate when the station is unavailable. Source validity is checked at each segment.',
@@ -131,6 +145,14 @@ export function modelCoefficientDescriptions(learning = {}) {
         ? undefined : coefficientCalculation(key, model),
       evidence: [coefficientEvidenceText(evidence), latest?.reason ? `Latest unaccepted update: ${evidenceReason(latest.reason)}` : ''].filter(Boolean).join(' · ') };
   });
+  if (model.initialModel) for (const [key, title, unit, digits, group, detail] of initialCoefficientInfo) {
+    const rawValue = model.initialModel[key], available = finite(rawValue);
+    rows.push({ key, title, unit, group, available,
+      value: available ? `${number(rawValue, digits)} ${unit}` : 'Unavailable',
+      provenance: available ? ['reductionRatio', 'preheatRatio', 'trajectoryErrorC'].includes(key)
+        ? 'Configured initial assumption' : 'Fixed configured assumption' : 'Unavailable',
+      detail, calculation: coefficientCalculation(key, model) });
+  }
   if (finite(model.parameters?.hydronicCPerKwh)) {
     rows.push({ key: 'source-model-confirmed', title: 'Installed heat-pump model', group: 'Source assumptions',
       value: model.performance?.modelConfirmed ? 'Confirmed DHP-H 10' : 'DHP-H 10 assumed', provenance: 'Configured assumption', calculation: sourceCalculation(),
@@ -234,7 +256,7 @@ export function learningDisplay(learning = {}, context = {}) {
     .map(([key, info]) => coefficientState(model, key, info));
   if (coefficientStates.length) {
     const count = (...states) => coefficientStates.filter(state => states.includes(state)).length;
-    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. Source and optional slab assumptions are additional fixed quantities listed separately from this coefficient count. A fitted value alone does not establish overall model readiness.`);
+    basis('Coefficient evidence', `${count('fitted')} fitted · ${count('retained')} retained`, `Thermal coefficients: ${count('fitted')} fitted in current model; ${count('retained')} retained from an earlier validated fit; ${count('fixed')} fixed assumptions; ${count('initial', 'unvalidated')} estimates without independent validation${count('unavailable') ? `; ${count('unavailable')} unavailable` : ''}. Background heat, demand, initial forecast, source and optional slab assumptions are additional quantities listed separately from this thermal-parameter count. A fitted value alone does not establish overall model readiness.`);
   }
   for (const [phase, estimate] of Object.entries(model.equipmentResponse?.phases ?? {})) {
     if (finite(estimate.ratio)) basis(`${words(phase)} duty response`, `${number(estimate.ratio)} × normal demand`, `Treatment: ${treatmentName(estimate.treatmentKey)}. Episode-weighted compressor-duty response from ${estimate.trainingEpisodes ?? 0} training episodes. Initial response assumptions are refined by informative observed treatments, including manual actions. Ratios apply only to the supported hydraulic treatment; requested modes and a good thermal fit cannot independently validate equipment timing.`);
@@ -324,7 +346,7 @@ export function learningDisplay(learning = {}, context = {}) {
         ? 'Energy estimates' : 'Model structure', calculation: row.key.endsWith(' duty response') ? dutyCalculation(model) : row.key === 'Initial model' ? initialModelCalculation(model) : calibrationCalculation(row.key) }));
   if (finite(p.hydronicCPerKwh)) visibleCoefficientRows.unshift({ key: 'heat-balance', title: 'How the heat balance works',
     value: model.floor?.enabled ? 'Room + reserve + selected slab' : 'Room + slow reserve', group: 'Model structure',
-    detail: 'Heat loss cools the room; solar and fireplace inputs warm it directly. Hydronic heat first enters storage, then reaches the room through temperature-driven exchange.',
+    detail: 'Heat loss cools the room; solar, fireplace and configured background heat warm it directly. Hydronic heat first enters storage, then reaches the room through temperature-driven exchange.',
     calculation: heatBalanceCalculation(model) });
   if (finite(p.hydronicCPerKwh)) visibleCoefficientRows.push({ key: 'model-fitting', title: 'How parameters are fitted',
     value: 'Independent evidence + later checks', group: 'Model structure',

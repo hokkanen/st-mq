@@ -11,6 +11,8 @@ const equation = (label, expression, legend) => ({ label, expression, legend });
 const calculation = (equations, paragraphs = [], summary = 'Calculation') => ({ summary, equations, paragraphs });
 const hydronicHeatEquation = () => equation('Heat supplied to space heating', 'H = d × Q(T_water) + A',
   'H is thermal power (kW); d is space-heating compressor duty (0–1); Q is estimated compressor heat output; A is space-heating AUX power, approximately equal to its electrical input.');
+const initialModelValue = (model, key) => Number.isFinite(model.initialModel?.[key])
+  ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 7 }).format(model.initialModel[key]) : 'Unavailable';
 
 export function coefficientCalculation(key, model = {}) {
   const definitions = {
@@ -34,7 +36,24 @@ export function coefficientCalculation(key, model = {}) {
       'τ is this fixed time scale (h); a is reserve exchange (1/h); g_seed is the configured initial hydronic response (°C/kWh thermal). C_seed is an effective capacity in kWh/K, not a measured building capacity.')],
     [model.floor?.enabled ? 'The selected slab is allocated from the seeded reserve budget unless a separate remaining capacity is configured. Those capacities stay fixed when the response coefficient is refitted.'
       : 'Without an explicit slab, a × τ sets the reserve-to-room capacity ratio. It controls modeled temperature memory; it does not establish usable tariff-period storage.']),
+    internalCPerHour: calculation([equation('Background warming', 'I_internal = configured constant',
+      `Current configured value: ${initialModelValue(model, 'internalCPerHour')} °C/h. This enters indoor warming directly, including when the heat pump is off. Zero contributes no warmth; missing evidence does not establish a physical zero.`)],
+    ['The same term is subtracted when estimating heating demand and used when initializing the latent reserve. It is retained during thermal fitting, not fitted separately or inferred from household electricity.']),
+    dutyPerDegree: calculation([equation('Initial weather/runtime demand', 'd_weather = q × max(0, T_balance − T_out)',
+      `q = ${initialModelValue(model, 'dutyPerDegree')} duty per °C; T_balance = ${initialModelValue(model, 'balanceTemperatureC')} °C. With q = 0, the predictor uses heat-balance demand without a weather correction.`),
+    equation('Bounded weather correction', 'δ_weather = clamp(d_weather − d_balance, −0.02, 0.02)',
+      'This applies only with a positive configured q. The correction adjusts duty by at most two percentage points; it does not replace current heat balance.')]),
+    balanceTemperatureC: calculation([equation('Weather balance point', 'd_weather = q × max(0, T_balance − T_out)',
+      `T_balance = ${initialModelValue(model, 'balanceTemperatureC')} °C outdoors; q = ${initialModelValue(model, 'dutyPerDegree')} duty per °C. This curve is zero at or above the balance point. The separate indoor reference still governs comfort and heat-balance demand.`)]),
+    trajectoryErrorC: calculation([equation('Initial trajectory allowance', 'U_initial(h) = max(0.25, e_initial × √(h / 6))',
+      `h is forecast hours; e_initial = ${initialModelValue(model, 'trajectoryErrorC')} °C. Checked trajectory errors replace this base when available; other engineering allowances remain additional.`)]),
   };
+  if (['reductionRatio', 'preheatRatio'].includes(key)) {
+    const phase = key === 'reductionRatio' ? 'reduction' : 'preheat';
+    return calculation([equation('Initial requested-mode response', 'd_phase = clamp(r_initial,phase × d_native, 0, 1)',
+      `Configured ${phase} ratio: ${initialModelValue(model, key)}. d_native is the current Normal-demand estimate. The final compressor duty is limited to 0–1.`)],
+    ['The matching treatment’s observed response ratio replaces this fallback when available. Observed response and independently validated action evidence remain distinct. Fresh native demand can replace the duty estimate for a short step.']);
+  }
   return definitions[key];
 }
 
@@ -140,9 +159,7 @@ export function outcomeCalculation(key) {
 }
 
 export function initialModelCalculation(model = {}) {
-  const seed = model.initialModel ?? {};
-  const value = key => Number.isFinite(seed[key])
-    ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 6 }).format(seed[key]) : 'Unavailable';
+  const value = key => initialModelValue(model, key);
   return calculation([
     equation('Configured starting thermal responses', 'k_seed, g_seed, s_seed',
       `Heat loss ${value('lossPerHour')} 1/h; hydronic response ${value('hydronicCPerKwh')} °C/kWh thermal; solar response ${value('solarCPerHourPerKwM2')} °C/h per kW/m². Current fitted or retained responses are listed separately.`),
@@ -150,10 +167,8 @@ export function initialModelCalculation(model = {}) {
       `q = ${value('dutyPerDegree')} duty per °C; T_balance = ${value('balanceTemperatureC')} °C. This curve nudges the current heat-balance duty by at most 0.02; it does not replace it.`),
     equation('Initial requested-mode response', 'd_phase = clamp(r_initial,phase × d_native, 0, 1)',
       `Configured starting ratios: reduction ${value('reductionRatio')}, preheat ${value('preheatRatio')}. These estimates apply until an observed response is available for the matching hydraulic treatment. d_native is the Normal-demand prior; the resulting compressor duty remains between zero and one.`),
-    equation('Configured internal gain', 'I_internal = configured constant',
-      `The initial model supplies ${value('internalCPerHour')} °C/h of internal warming. It is an assumption, not measured household heat or a separately fitted response.`),
-    equation('Initial trajectory allowance', 'U_initial(h) = max(0.25, e_initial × √(h / 6))',
-      `h is forecast hours; e_initial = ${value('trajectoryErrorC')} °C. Later checked trajectories can replace this base allowance; source, action, floor and other uncertainty terms remain separate.`),
+    ...coefficientCalculation('internalCPerHour', model).equations,
+    ...coefficientCalculation('trajectoryErrorC', model).equations,
   ], ['Configured starting estimates support bounded planning before independent local validation. Calibration or historical training is not a passed local temperature, equipment-response or advance-forecast check. Later observations refine independently identifiable responses; fixed storage and source assumptions retain their own status.',
     'An initial model with a recorded training cutoff cannot use that same training period as independent later validation. No new observation or completed learning episode is created by loading the initial model.']);
 }

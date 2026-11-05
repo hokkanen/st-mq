@@ -41,6 +41,18 @@ eligible pair is heat loss and hydronic response. Exchange and memory are fixed
 structural priors. Optional slab capacity, allocation, exchange and ground boundary
 are also explicit fixed priors. There is no automatically fitted storage parameter.
 
+The configured `home_model.internal_c_per_hour` is a fixed background-warming
+term, default zero. It enters indoor warming directly, is subtracted from
+heat-balance demand and participates in initial reserve estimation. Local fitting
+does not adjust it or infer it from household electricity. The Home heat model
+lists this term alongside the fixed initial weather-demand slope and balance
+temperature, fallback reduction/preheat response ratios and initial trajectory
+error scale, with values, units and calculations. These additional assumptions
+are separate from the six thermal parameters counted by Coefficient evidence.
+Observed treatment response can replace a fallback ratio, and checked trajectory
+errors can replace the initial uncertainty base; those changes do not make the
+configured fallback values independently validated.
+
 The fixed DHP-H 10 performance map converts observed routed compressor duty to
 estimated thermal kW; estimated space-heating AUX kW is then added. One
 `hydronicCPerKwh` coefficient acts on that sum. Electrical costing remains separate.
