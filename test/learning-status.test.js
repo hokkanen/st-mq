@@ -3,6 +3,55 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('current initial-model assumptions and unbounded response ratios match the implemented predictor', () => {
+  const model = initialAdaptiveModel({ homeModel: { calibrationId: 'synthetic-calibration', dutyPerDegree: .03,
+    balanceTemperatureC: 15, trajectoryErrorC: .8, internalCPerHour: .02, reductionRatio: .4, preheatRatio: 1.4 } });
+  model.equipmentResponse.phases.reduction = { ratio: 3, trainingEpisodes: 4, treatmentKey: 'reduction-only-v1' };
+  const display = learningDisplay({ adaptive: { model } });
+  const initial = display.coefficientEvidenceRows.find(row => row.key === 'Initial model');
+  assert.equal(initial.value, 'Calibrated starting estimates');
+  assert.match(JSON.stringify(initial.calculation), /0.03.*15.*0.02.*0.8/);
+  assert.match(JSON.stringify(initial.calculation), /not a passed local.*check/);
+  const response = display.coefficientEvidenceRows.find(row => row.key === 'reduction duty response');
+  assert.equal(response.value, '3.00 × normal demand');
+  assert.match(response.detail, /Treatment: tariff reduction/);
+  assert.match(JSON.stringify(response.calculation), /reduction 0.4, preheat 1.4/);
+  const check = learningDisplay({ adaptive: { model: { ...model, equipmentResponse: { validation: {
+    phases: { reduction: { accepted: true, episodes: 3, treatmentKey: 'reduction-only-v1' } } } } } } })
+    .evidenceRows.find(row => row.key === 'reduction equipment response');
+  assert.match(check.calculation.equations[0].expression, /mean_j max\(0, D_j \/ N_j\)/);
+  assert.match(check.calculation.equations[0].legend, /ratio can exceed two.*duty is clamped to 0–1/);
+});
+
+test('trial input readiness, allowance and accepted learning remain separate with zero and missing data', () => {
+  const show = remainingCents => learningDisplay({ readiness: { initialReady: true, trialReady: true },
+    parameters: { learningTrials: true, maxTrialCostCents: 150, trialBudgetCentsPerDay: 300 },
+    trials: { attempted: 0, target: 4, completed: 0, incomplete: 0, assessed: 0, observedCompressorRunHours: 0, remainingCents } });
+  const unknown = show(null);
+  const row = unknown.evidenceRows.find(item => item.key === 'Daily learning trials');
+  assert.match(row.detail, /allowance is unavailable/);
+  assert.doesNotMatch(row.detail, /€0.00|undefined|null/);
+  assert.match(show(0).evidenceRows.find(item => item.key === row.key).detail, /Available allowance for a new automatic trial: €0.00/);
+  assert.match(unknown.evidenceRows.find(item => item.key === 'Action readiness').detail, /input prerequisites: met.*Available allowance/);
+  assert.match(row.detail, /without a fixed learning cooldown.*does not establish accepted model learning/);
+  const budget = unknown.policyRows.find(item => item.key === 'Learning trial budget');
+  assert.equal(budget.value, '150.00 ct per-cycle cap');
+  assert.match(JSON.stringify(budget.calculation), /R_new = R_old.*X_new.*Finnish start day.*unchanged budget/);
+});
+
+test('economic disclosures keep fractional independent hurdles, negative benefits and unknown current policy honest', () => {
+  const display = learningDisplay({ parameters: { minimumHomeBenefitCents: -.25, cycleStartCostCents: 1.25,
+    economicUncertaintyFloorCents: .5 } }, { settings: { savingsStrategy: 'gentle' } });
+  const row = display.policyRows.find(item => item.key === 'Worthwhile cycle threshold');
+  assert.equal(row.value, '-0.25 ct minimum + 1.25 ct start');
+  assert.match(JSON.stringify(row.calculation), /cost_floor = 0.5 ct/);
+  assert.match(JSON.stringify(row.calculation), /best_B_low −.*\|best_B_low\|/);
+  const missing = learningDisplay({}, { settings: { savingsStrategy: 'gentle' } })
+    .policyRows.find(item => item.key === row.key);
+  assert.equal(missing.value, 'Current monetary settings unavailable');
+  assert.match(JSON.stringify(missing.calculation), /numeric defaults.*shared defaults/);
+});
+
 test('daily trials distinguish attempts, completion and assessed evidence without claiming learned savings', () => {
   const display = learningDisplay({ trials: { attempted: 2, target: 2, completed: 1,
     incomplete: 1, assessed: 0, observedCompressorRunHours: .5, remainingCents: 150,
@@ -198,7 +247,7 @@ test('initial and partially fitted models do not claim overall temperature readi
       solarCPerHourPerKwM2: { status: 'identified' }, lossPerHour: { status: 'fixed' }, hydronicCPerKwh: { status: 'fixed' } } };
   assert.equal(thermalEvidenceReady(model), false);
   const partial = learningDisplay({ adaptive: { model } });
-  assert.match(partial.message, /Identified heat loss and heating response are both required/);
+  assert.match(partial.message, /Independent heat-loss and heating-response evidence is required.*Initial estimates remain usable for bounded planning/);
   assert.doesNotMatch(partial.message, /Temperature prediction has passed/);
   assert.match(partial.coefficients.find(row => row.key === 'hydronicCPerKwh').detail, /slow reserve before it reaches indoor air/);
 });
@@ -258,8 +307,8 @@ test('equipment and frozen forecast checks disclose different inputs and support
   assert.match(text, /supported phase duration up to 2.0 hours; supported ROOM increase up to 1.0 °C/);
   assert.match(text, /Electricity can still use source-map and nominal AUX estimates unless the episode was metered/);
   assert.match(text, /validation requirements met within demonstrated durations/);
-  assert.match(text, /basic evidence and budget requirements met/);
-  assert.match(text, /Current comfort, authority, price and duration checks still determine whether an action can run/);
+  assert.match(text, /Learning-trial input prerequisites: met.*Available allowance, useful heating demand/);
+  assert.match(text, /current comfort, authority and duration checks still determine whether a trial can run/);
 });
 
 test('replica snapshots keep saved model evidence separate from unavailable live assessments', () => {
@@ -420,7 +469,7 @@ test('combined hydronic parameter explains the source conversion and separates f
 
 test('Home separates outcomes, model equations and planning without repeating grouped rows', () => {
   const model = initialAdaptiveModel({});
-  const display = learningDisplay({ adaptive: { model, health: { usableSamples: 96 } },
+  const display = learningDisplay({ adaptive: { model, health: { usableSamples: 96 } }, parameters: {},
     readiness: { thermalValidated: false, actionValidated: false }, outcomes: { attempted: 2, completed: 0 },
   }, { settings: { savingsStrategy: 'gentle' }, preheatValves: {} });
   const groups = [display.metrics, display.inputs, display.coefficients, display.evidenceRows,

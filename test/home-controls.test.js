@@ -2,6 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activeRates, finnishDateTime, homePolicyValues, homeIndoorEstimate, homeReferenceValue, homeReferenceSummary, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
 
+test('a planning reference remains distinct from a learned Normal reference at startup', () => {
+  const status = { settings: { comfort: { targetC: null } }, decision: { comfort: { targetC: 21.3 } },
+    learning: { adaptive: { comfortReference: null } } };
+  assert.equal(homeReferenceValue(status), 21.3);
+  assert.equal(homeReferenceSummary(status), 'Planning reference · Normal temperature still learning');
+  const policy = homePolicyValues({ learning: { parameters: {
+    learningTrials: true, maxTrialCostCents: 150, trialBudgetCentsPerDay: 300 } } });
+  assert.match(policy.trialBudget, /the configured daily target/);
+  assert.doesNotMatch(policy.trialBudget, /seeking 4/);
+  assert.match(policy.trialBudget, /reservation that may grow.*without a fixed learning cooldown/);
+});
+
 test('date controls display Finnish wall time across winter, summer and midnight', () => {
   const original = process.env.TZ;
   process.env.TZ = 'America/Los_Angeles';

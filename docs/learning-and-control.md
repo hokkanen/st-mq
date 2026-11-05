@@ -89,6 +89,17 @@ heating strategy and current decision. The three closed sections are:
   that turn inputs into predictions. Initial estimates, accepted or retained fits,
   observed averages and fixed assumptions keep their own provenance.
 
+**Heat balance, calibration & history → Initial model** explains the configured
+starting thermal, internal-gain, weather/runtime and uncertainty estimates.
+Starting estimates support bounded planning; loading them establishes no new local
+observation or passed independent validation. Covered automatic, manual and
+interrupted treatments can refine response estimates before later checks qualify
+them. Response and advance checks must match the same hydraulic treatment.
+**Heating strategy & comfort** keeps the learning-trial reservation calculation
+with the monetary rules. Readiness, allowance, useful demand and permission are
+separate; an active cycle can block a new trial without having spent the daily
+allowance. Unknown allowance remains unavailable rather than appearing as zero.
+
 These sections use expandable rows: the name, value or unit, and provenance stay visible;
 explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
 their role. **Validation & evidence** keeps detailed checks alongside the outcomes without
@@ -366,7 +377,10 @@ configured comfort limits and physical stress checks still apply. Continuation e
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected,
 ordered by configured temperature deviation penalty then combined preheat and
-reduction duration. With a zero temperature penalty, duration decides.
+reduction duration. With a zero temperature penalty, duration decides. For an
+explicitly reviewed manual minimum below zero that admits estimated extra cost, the retention
+threshold is `best - (1 - retained_fraction) × abs(best)`, which also handles a
+negative best benefit.
 Gentle can still start a sufficiently worthwhile cycle. Use **Paused** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
 
 These decision rules consume the heat model's thermal predictions, uncertainty

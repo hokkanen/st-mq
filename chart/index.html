@@ -198,7 +198,7 @@
                     <p class="heating-policy-intro">Shift heating to lower-cost times when the expected benefit justifies the change. Your comfort limits constrain the plan; the heat model estimates how the house will respond.</p>
                     <section class="heating-policy-section" aria-labelledby="home-strategy-title">
                       <h5 id="home-strategy-title">Savings strategy <span id="home-savings-strategy" class="heating-policy-current">Unavailable</span></h5>
-                      <p>The strategy sets the share of the best eligible conservative saving to retain. Monetary preferences and temperature limits are independent. It does not turn price control off.</p>
+                      <p>The strategy sets the share of the best eligible conservative saving to retain, relative to the best evaluated cycle. These percentages are not a promised reduction in your heating bill. Monetary preferences and temperature limits are independent. It does not turn price control off.</p>
                       <ul class="heating-strategy-options" aria-label="Home savings strategies">
                         <li id="home-strategy-gentle" class="heating-strategy-option" data-selected="false"><strong>Gentle (60%) <span id="home-strategy-gentle-current" class="heating-strategy-current" hidden>Current</span></strong><p>Prefer a milder cycle retaining at least 60% of the best eligible conservative saving.</p></li>
                         <li id="home-strategy-balanced" class="heating-strategy-option" data-selected="false"><strong>Balanced (80%) <span id="home-strategy-balanced-current" class="heating-strategy-current" hidden>Current</span></strong><p>Prefer a milder cycle retaining at least 80% of the best eligible conservative saving.</p></li>
@@ -215,20 +215,22 @@
                       </dl>
                       <p>Comfort limits apply to the configured indoor average. Bedroom has half the default weight; Upstairs and Downstairs each have a quarter. Individual room temperatures remain visible, but do not impose separate limits.</p>
                       <p class="heating-policy-note">Both limits constrain the occupied indoor-average forecast, including temperature uncertainty and any missing-sensor allowance. Away mode lifts these occupied limits until your return; the plan includes reheating costs and checks the limits again from the return time.</p>
+                      <p class="heating-policy-note">Configured comfort limits apply from startup, including while the normal-temperature reference is still being learned. The initial planning reference and a supported learned Normal reference remain distinct.</p>
                     </section>
                     <section class="heating-policy-section" aria-labelledby="home-decision-process-title">
                       <h5 id="home-decision-process-title">How decisions are made</h5>
                       <ol class="heating-policy-steps">
                         <li><strong>Compare complete heating cycles.</strong> Forecast normal heating alongside possible reductions, with optional preheating. Use current temperatures, stored heat, weather and all-in electricity prices; include recovery, auxiliary heat and the estimated cost of any heat still owed at the end.</li>
                         <li><strong>Check comfort and available control.</strong> Reject forecasts outside average-temperature limits, supported equipment capabilities or configured duration limits. Recheck the chosen plan before it starts and while it runs. Missing required readings, lost forecast coverage or exceeded limits prevent or end an action.</li>
-                        <li><strong>Choose a worthwhile change.</strong> Deduct uncertainty from estimated savings, then require the result to exceed the configured minimum saving plus any cycle start, temperature deviation and duration penalties. Prefer the mildest qualifying cycle that retains enough of the best benefit. Otherwise leave normal heating in charge.</li>
+                        <li><strong>Screen economic changes.</strong> Deduct uncertainty from estimated savings, then require the result to exceed the configured minimum saving plus any cycle start, temperature deviation and duration penalties. Among eligible plans, compare the temperature deviation penalty first, then combined preheat and reduction duration, while retaining the strategy’s share of the best benefit. An explicitly reviewed manual minimum below zero can permit estimated extra cost.</li>
+                        <li><strong>Consider additional learning.</strong> Enabled trials can prioritize a useful experiment within their cost allowance, including a trial with lower estimated savings than an economic alternative. The price threshold is a learning priority, not a price ceiling or a guarantee that savings periods are unaffected. When no action qualifies, normal heating remains in charge.</li>
                       </ol>
                       <p class="heating-policy-note">The <a class="heating-policy-link" href="#learning-panel-details" data-policy-model-link="learning-panel-details">Home heat model</a> supplies temperature, heat-reserve and equipment-response estimates. The initialized model supports plans while independent validation accumulates. Current measurements, forecasts, equipment capability and configured limits determine which actions can run; automatic permission or explicit one-cycle approval authorizes execution.</p>
                       <p class="heating-policy-note">Savings estimates cover space heating, including recovery. They compare modelled alternatives; changes in hot-water service prevent a whole-house savings claim.</p>
                       <details class="equipment-fold heating-policy-details">
                         <summary>Learning trials &amp; forecast limits</summary>
                         <p id="home-policy-trials" class="heating-policy-note">Learning-trial settings are unavailable.</p>
-                        <p class="heating-policy-note">An enabled learning trial can run before normal savings checks are established, within a separate cost budget and stricter cold and delayed-overheating checks. A trial gathers evidence and may cost money; it is not an accepted savings forecast.</p>
+                        <p class="heating-policy-note">Enabled learning trials supplement economic planning during initialization and later operation, with separate cost-exposure, cold and delayed-overheating checks. An initial exposure estimate reserves allowance; an active trial may reserve more within its per-cycle and daily limits. A trial gathers evidence and may cost money. An attempt or completed trial does not by itself establish accepted learning or a validated savings forecast.</p>
                         <p class="heating-policy-note">The forecast and comfort limits use the same configured indoor average. A bounded estimate can bridge one unavailable room, with an extra uncertainty allowance. No new learning trial starts with an estimated room, and inferred readings never train the model or fill measured history.</p>
                       </details>
                     </section>
@@ -263,7 +265,7 @@
                   </div>
                 </summary>
                 <div class="learning-model-purpose">
-                  <p>The model estimates how the house warms, cools and stores heat. It combines recorded inputs with learned responses and fixed assumptions.</p>
+                  <p>The model estimates how the house warms, cools and stores heat. Configured calibrated or engineering estimates provide its starting point. Recorded inputs refine supported responses; independent checks assess them separately. Source and storage assumptions keep their own status.</p>
                   <p>Planning uses those estimates with prices and comfort limits to choose a heating cycle. Heating control sends the allowed commands. See <a class="heating-policy-link" href="#home-preferences-details" data-policy-model-link="home-preferences-details">Heating strategy &amp; comfort</a> for the decision and its rules.</p>
                 </div>
                 <details id="learning-details" class="learning-section section-fold">
@@ -345,7 +347,7 @@
                 <details id="model-coefficients-details" class="learning-section section-fold">
                   <summary><span class="learning-section-title">Model coefficients</span><small class="learning-section-kind"> · Learned &amp; assumed</small></summary>
                   <div class="learning-section-body">
-                    <p class="learning-intro">These current values turn inputs into temperature and stored-heat estimates: how quickly heat escapes, how much warmth heating adds and how slowly stored heat returns. Each row distinguishes an initial estimate, a fitted or retained response, or a fixed assumption. Learning updates supported responses; validation determines what forecasts they can support.</p>
+                    <p class="learning-intro">These current values turn inputs into temperature and stored-heat estimates: how quickly heat escapes, how much warmth heating adds and how slowly stored heat returns. Each row distinguishes an initial estimate, a fitted or retained response, or a fixed assumption. Initial estimates support bounded planning while observations refine supported responses and later checks assess their validity.</p>
                     <div id="model-coefficients-content"></div>
                     <details class="learning-support"><summary>Heat balance, calibration &amp; history</summary><p id="coefficient-context" class="learning-note"></p><div id="coefficient-evidence"></div></details>
                   </div>

@@ -68,7 +68,7 @@ export function homePolicyValues(status = {}) {
   const money = value => `€${amount(value / 100)}`;
   const trialBudget = parameters.learningTrials === false ? 'Learning trials are disabled in configuration.'
     : parameters.learningTrials === true && Number.isFinite(parameters.trialBudgetCentsPerDay) && Number.isFinite(parameters.maxTrialCostCents)
-      ? `Learning trials are enabled, seeking ${parameters.learningTrialTargetPerDay ?? 4} priority opportunities per day, with further useful learning allowed within incremental cost exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Duration follows heating demand; current inputs, comfort, completed recovery and remaining budget still determine whether a trial can run.`
+      ? `Learning trials are enabled, seeking ${Number.isFinite(parameters.learningTrialTargetPerDay) ? `${parameters.learningTrialTargetPerDay} priority opportunities per day` : 'the configured daily target'}, with further useful learning allowed within incremental cost exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Duration follows heating demand within configured ceilings; current inputs, comfort, completed recovery and remaining budget still determine whether a trial can run. Initial exposure is a reservation that may grow inside those limits. Completed recovery permits another trial without a fixed learning cooldown.`
       : 'Learning-trial settings are unavailable.';
   const economics = status.decision?.plan?.economics;
   const benefit = status.decision?.plan?.trial === true
@@ -77,7 +77,7 @@ export function homePolicyValues(status = {}) {
       ? `Latest cycle comparison: ${money(economics.lowerBenefitCents)} conservative space-heating benefit against a ${money(economics.hurdleCents)} required benefit. Both are estimates; the current checks still determine execution.` : '';
   const durations = ['maxPreheatHours', 'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours']
     .every(key => Number.isFinite(parameters[key]))
-    ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without native heat-pump observations, reduction is capped at ${amount(parameters.maxUnobservedReductionHours)} h. Demonstrated response, comfort and forecast coverage can shorten these limits.`
+    ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without ready native heat-pump control, reduction is capped at ${amount(parameters.maxUnobservedReductionHours)} h. Comfort, equipment and forecast coverage can shorten these limits. Demonstrated durations describe independent validation coverage.`
     : 'Configured duration limits are unavailable.';
   return {
     strategy: strategy ? `${strategy.label} (${strategy.retainedBenefitFraction * 100}%)` : 'Unavailable', strategyId: strategy?.id ?? null,
@@ -134,6 +134,7 @@ export function homeReferenceSummary(status = {}) {
   if (status.settings?.comfort?.targetC != null || status.decision?.comfort?.source === 'explicit-setting') return 'Configured normal temperature';
   if (reference) return reference.provisional || reference.confidence === 'provisional-heating-demand-baseline'
     ? 'Provisional normal temperature' : 'Learned normal temperature';
+  if (Number.isFinite(homeReferenceValue(status))) return 'Planning reference · Normal temperature still learning';
   const reasons = {
     'waiting-for-observations': 'Waiting for measured indoor temperatures',
     'excluded-operation': 'Learning paused during current heating conditions',

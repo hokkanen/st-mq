@@ -77,12 +77,16 @@ try {
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
   };
   const screenshot = async (name, id = 'home-control') => {
-    await evaluate('window.scrollTo(0, 0)');
+    await evaluate(`document.getElementById('${id}').scrollIntoView({ block: 'start', behavior: 'instant' });
+      await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
     const clip = await evaluate(`(() => {
       const box = document.getElementById('${id}').getBoundingClientRect();
-      return { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 };
+      return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height, scale: 1 };
     })()`);
-    const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+    // Focused evidence rows can be taller than the viewport. Keep their native
+    // viewport capture stable rather than resizing around a focused disclosure.
+    const shot = await send('Page.captureScreenshot', { format: 'png',
+      ...(id === 'home-control' ? { captureBeyondViewport: true, clip } : {}) });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(shot.data, 'base64'));
   };
   await send('Runtime.enable'); await send('Page.enable');
@@ -271,6 +275,57 @@ try {
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
     'Home manual reduction stays available while paused');
   await evaluate(`homeFixture.automatic = true; homeFixture.estimatedIndoor = true; await homeFixture.poll()`);
+  // Audit the entire expanded content, including equations, around responsive
+  // breakpoints and on short landscape screens. Restore the reader's folds later.
+  await evaluate(`globalThis.auditDisclosures = [...document.querySelectorAll(
+    '#home-preferences-details, #home-preferences-details details, #learning-panel-details, #learning-panel-details details'
+  )].map(node => [node, node.open]);
+    for (const [node] of auditDisclosures) if (!node.id.includes('sensor-change')) node.open = true`);
+  for (const [width, height] of [[280, 740], [320, 740], [390, 420], [390, 844], [650, 900],
+    [651, 900], [768, 1024], [844, 390], [1024, 768], [1280, 1000], [1920, 1080]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    for (const theme of ['light', 'dark']) {
+      await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
+        await new Promise(requestAnimationFrame)`);
+      const layout = await evaluate(`(() => {
+        const selectors = ['#home-preferences-details .home-preferences-body', '#home-preferences-details .learning-entry',
+          '#learning-panel-details .learning-section-body', '#learning-panel-details .learning-entry',
+          '#learning-panel-details .learning-calculation', '#learning-panel-details .learning-equation-expression'];
+        return { page: document.documentElement.scrollWidth, viewport: innerWidth,
+          overflow: [...document.querySelectorAll(selectors.join(','))]
+            .filter(node => node.checkVisibility() && node.clientWidth > 0 && node.scrollWidth > node.clientWidth + 1)
+            .map(node => ({ key: node.dataset.learningKey ?? node.className, scroll: node.scrollWidth, client: node.clientWidth })) };
+      })()`);
+      assert(layout.page <= layout.viewport && layout.overflow.length === 0,
+        `Expanded strategy/model explanations fit ${width}×${height} ${theme}: ${JSON.stringify(layout)}`);
+      assert.equal(await evaluate(`JSON.stringify((${uiSpacingFailures.toString()})())`), '[]');
+    }
+  }
+  const initialModelSelector = '#coefficient-evidence [data-learning-key="Initial model"]';
+  await evaluate(`(() => {
+    const row = document.querySelector(${JSON.stringify(initialModelSelector)});
+    row.open = false; row.querySelector('summary').focus();
+  })()`);
+  await keyPress('Enter');
+  assert(await evaluate(`document.querySelector(${JSON.stringify(initialModelSelector)}).open`),
+    'New initial-model disclosure opens by keyboard');
+  await evaluate(`globalThis.initialModelFocus = document.activeElement; await homeFixture.poll()`);
+  assert(await evaluate(`document.activeElement === initialModelFocus && document.querySelector(${JSON.stringify(initialModelSelector)}).open`),
+    'Polling retains the new explanation and keyboard focus');
+  for (const [width, theme] of [[280, 'light'], [1280, 'dark']]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`(() => {
+      if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
+      for (const row of document.querySelectorAll('#learning-panel-details .learning-entry, #home-policy-content .learning-entry')) row.open = false;
+      const initial = document.querySelector(${JSON.stringify(initialModelSelector)});
+      initial.open = true; initial.id = 'home-audit-initial-model'; initial.querySelector('.learning-calculation').open = true;
+      const budget = document.querySelector('#home-policy-content [data-learning-key="Learning trial budget"]');
+      budget.open = true; budget.id = 'home-audit-trial-budget'; budget.querySelector('.learning-calculation').open = true;
+    })()`);
+    await screenshot(`${width}-${theme}-initial-model`, 'home-audit-initial-model');
+    await screenshot(`${width}-${theme}-trial-budget`, 'home-audit-trial-budget');
+  }
+  await evaluate(`for (const [node, open] of auditDisclosures) node.open = open`);
   for (const width of [320, 360, 390, 768, 820, 1280]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();

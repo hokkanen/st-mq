@@ -139,14 +139,35 @@ export function outcomeCalculation(key) {
   }[key];
 }
 
-export function dutyCalculation() {
+export function initialModelCalculation(model = {}) {
+  const seed = model.initialModel ?? {};
+  const value = key => Number.isFinite(seed[key])
+    ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 6 }).format(seed[key]) : 'Unavailable';
+  return calculation([
+    equation('Configured starting thermal responses', 'k_seed, g_seed, s_seed',
+      `Heat loss ${value('lossPerHour')} 1/h; hydronic response ${value('hydronicCPerKwh')} °C/kWh thermal; solar response ${value('solarCPerHourPerKwM2')} °C/h per kW/m². Current fitted or retained responses are listed separately.`),
+    equation('Initial weather/runtime curve', 'd_weather = q × max(0, T_balance − T_out)',
+      `q = ${value('dutyPerDegree')} duty per °C; T_balance = ${value('balanceTemperatureC')} °C. This curve nudges the current heat-balance duty by at most 0.02; it does not replace it.`),
+    equation('Configured internal gain', 'I_internal = configured constant',
+      `The initial model supplies ${value('internalCPerHour')} °C/h of internal warming. It is an assumption, not measured household heat or a separately fitted response.`),
+    equation('Initial trajectory allowance', 'U_initial(h) = max(0.25, e_initial × √(h / 6))',
+      `h is forecast hours; e_initial = ${value('trajectoryErrorC')} °C. Later checked trajectories can replace this base allowance; source, action, floor and other uncertainty terms remain separate.`),
+  ], ['Configured starting estimates support bounded planning before independent local validation. Calibration or historical training is not a passed local temperature, equipment-response or advance-forecast check. Later observations refine independently identifiable responses; fixed storage and source assumptions retain their own status.',
+    'An initial model with a recorded training cutoff cannot use that same training period as independent later validation. No new observation or completed learning episode is created by loading the initial model.']);
+}
+
+export function dutyCalculation(model = {}) {
+  const initial = model.initialModel;
+  const response = initial && Number.isFinite(initial.reductionRatio) && Number.isFinite(initial.preheatRatio)
+    ? `Configured initial ratios: reduction ${initial.reductionRatio}, preheat ${initial.preheatRatio}.`
+    : `Shared initial defaults: reduction ${DEFAULT_HOME_MODEL.reductionRatio}, preheat ${DEFAULT_HOME_MODEL.preheatRatio}. Current configured initial ratios are unavailable.`;
   return calculation([
     equation('Heat-balance demand', 'd_balance = [k × (T_in − T_out) − J − I_internal] / [g × Q(T_water)]',
       'Temperatures are in °C; J is solar warming and I_internal is the configured internal-gain estimate, both in °C/h.'),
     equation('Native-demand prior', 'd_native = clamp(d_balance + δ_weather + [0.25 × (T_ref + b − T_in) + 0.25 × a × (T_res,ref − T_res)] / [g × Q(T_water)], 0, 1)',
       'b is the requested ROOM increase during preheat; a is reserve exchange. The weather/runtime curve can adjust duty by at most 0.02. The fixed 0.25/h feedback responds to room and reserve deviations. clamp limits duty to 0–1; latent reserve is an estimate.'),
     equation('Requested-mode response', 'd = clamp(r_phase × d_native, 0, 1)',
-      'r_phase is the episode-weighted response ratio for the matching treatment. Without an available matching ratio the configured initial response is used (default 0.25 for reduction and 1 for preheat); requested reduction does not prove that heating stopped.'),
+      `r_phase is the episode-weighted response ratio for the matching treatment. Without an available matching ratio the configured initial response is used. ${response} Requested reduction does not prove that heating stopped.`),
   ], ['Fresh native demand can replace this estimate for a short step of at most one hour. Current-state thermal fitting instead uses observed routed duty whenever available.']);
 }
 
@@ -157,11 +178,11 @@ export function economicCalculation(strategyId,config={}) {
     equation('Electrical energy and cost', 'E = Σ(P_space × Δt);  C = Σ(P_space × Δt × price) + C_tail',
       'P_space is electrical kW; Δt is hours; price is cents/kWh. E is kWh and C is cents. C_tail prices remaining thermal deficit against the normal reference at the last forecast quote, bounded below by zero. This boundary estimate is identical across compared paths; it is not a quote beyond the forecast.'),
     equation('Conservative benefit', 'B_low = B_nominal − max(cost_floor, B_nominal − min(B_nominal, B_stress−, B_stress+))',
-      'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths. The configured cost_floor (default zero) sets a minimum uncertainty deduction; it is not added to a larger stress deduction.'),
+      `Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths. Configured cost_floor = ${policy.economicUncertaintyFloorCents} ct is a minimum uncertainty deduction; it is not added to a larger stress deduction.`),
     equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + hour_weight × extra_hours + start_weight × start',
       `Independent monetary policy: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These configurable decision penalties increase the saving required to choose a cycle; they are not electricity charges.`),
-    equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
-      `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. The configured temperature deviation penalty is compared first, then combined preheat and reduction duration. With a zero temperature penalty, duration decides. Strategy changes do not change monetary settings.`),
+    equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low − (1 − retained_fraction) × |best_B_low|',
+      `Physical limits and evidence checks must also pass. For positive benefit, this retains ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best eligible conservative saving. An explicitly reviewed manual minimum below zero can admit estimated extra cost; the absolute-value rule also handles a negative best benefit. The configured temperature deviation penalty is compared first, then combined preheat and reduction duration. With a zero temperature penalty, duration decides. Strategy changes do not change monetary settings.`),
   ], ['During continuation the minimum estimated saving and cycle start penalty are omitted; remaining temperature deviation and duration penalties still count. Gentle is not an off switch. Automatic permission or explicit one-cycle approval determines whether a reviewed plan is applied.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }
@@ -174,6 +195,17 @@ export function comfortReferenceCalculation() {
       'h is newly supported occupied Normal observation time in hours. The 48-hour smoothing timescale and 1 °C innovation bound prevent one unusual interval dominating the reference. Reused observations earn no new movement.'),
   ], ['A provisional reference starts after one supported hour of occupied Normal heating. The reference remains labelled provisional until 24 hours are supported by verified heating. The configured comfort limits apply from startup. Missing measurements pause progress and never erase an established reference.',
     'Verified space-heating demand includes normal compressor-off periods for up to six hours after activity. When native evidence is unavailable, outdoor temperature at most 12 °C and an indoor–outdoor difference of at least 8 °C support a provisional estimate. Preheat, reduction, recovery, Away and material logged fireplace influence do not train it. Two hours of normal settling follow a controller intervention. Estimated missing-room temperatures never train the reference or thermal model.']);
+}
+
+export function trialBudgetCalculation() {
+  return calculation([
+    equation('Initial trial reservation', 'R_start = max(0, extra_cost, stress_exposure, displaced_saving)',
+      'All amounts are in cents. This is estimated complete-cycle exposure, including recovery and remaining heat debt; it is not the entire electricity bill or a measured saving.'),
+    equation('Active trial reservation', 'R_new = R_old + max(0, X_new − X_previous)',
+      'X is estimated remaining exposure. Increases reserve additional allowance; decreases retain the reservation because that exposure may already have been incurred. Repeating the same estimate adds nothing. Original plans and forecasts stay unchanged.'),
+  ], ['The reservation must remain within the per-cycle cap. Automatic trials also need sufficient unreserved daily allowance; the cycle and daily ledger update atomically. A trial spanning midnight remains funded by its Finnish start day. Unknown exposure does not grant continuation.',
+    'An explicitly edited, reviewed one-cycle budget is separate from the automatic daily ledger. An unchanged budget, permission-only edit or priority-only edit retains automatic restrictions. The daily learning target prioritizes useful opportunities and does not guarantee a trial or cap all further learning.',
+    'Price threshold, daily target, cost allowance and evidence readiness are separate checks. A learning trial can have lower estimated savings than an economic alternative under the existing opportunity-cost rules. These budgets do not guarantee that profitable periods are unaffected.']);
 }
 
 export function inputCalculation(key) {
@@ -211,8 +243,8 @@ export function validationCalculation(key) {
       'This maximum is over eligible later trajectory blocks. The comparison baseline holds each block’s initial indoor temperature constant.'),
   ], ['Each checked trajectory starts once and advances with recorded heat input. Eligible blocks need continuous coverage and sufficient earlier thermal warmup. This checks temperature response conditional on observed equipment use, separately from a forecast of future equipment use or cost.']);
   if (key === 'equipment' || / equipment response$/.test(key)) return calculation([
-    equation('Learned treatment response', 'r = mean_j clamp(D_j / N_j, 0, 2)',
-      'D_j is observed compressor duty-hours and N_j is the native-demand prior’s duty-hours for training episode j. Covered episodes receive equal weight; the configured starting ratio is used before observed response estimates exist. Independent validation remains separate.'),
+    equation('Learned treatment response', 'r = mean_j max(0, D_j / N_j)',
+      'D_j is observed compressor duty-hours and N_j is the native-demand prior’s duty-hours for training episode j. Covered episodes receive equal weight. This ratio can exceed two when observed demand exceeds a small prior; only the resulting compressor duty is clamped to 0–1. The configured starting ratio applies before observed response estimates exist. Independent validation remains separate.'),
     equation('Mean episode duty error', 'MAE_d = mean_j |Σ_i(d_predicted,i − d_observed,i) × Δt_i / h_j|',
       'h_j is episode duration. Later episodes receive equal weight; intervals within each episode are duration-weighted. Multiply by 100 for percentage points.'),
     equation('Within-episode timing error', 'MAE_interval = mean_j [Σ_i |d_predicted,i − d_observed,i| × Δt_i / h_j]',

@@ -591,8 +591,8 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .learning-entry { min-width: 0; margin: 0; border-top: 0; border-bottom: 1px solid var(--border); }
 .learning-entry:last-child { border-bottom: 0; }
 .learning-entry > summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto) 18px; align-items: start; gap: 6px 14px; padding: 14px 0; list-style: none; }
-.learning-entry > summary::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 18px; width: 18px; height: 18px; text-align: center; justify-self: end; }
-.learning-entry[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
+.learning-entry > summary::after { content: ''; width: 7px; height: 7px; margin: 5px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); justify-self: end; }
+.learning-entry[open] > summary::after { border-color: var(--accent); transform: rotate(45deg); }
 .learning-entry-heading { display: grid; gap: 4px; min-width: 0; }
 .learning-entry-title { font-size: 12px; line-height: 1.5; font-weight: 550; }
 .learning-entry-provenance, .learning-entry-summary { color: var(--muted); font-size: 10px; line-height: 1.6; }
