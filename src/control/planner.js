@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { CYCLE_EVALUATION_CONTINUATION_VERSION, validateCycleEvaluationState } from '../domain/cycle-evaluation-state.js';
+export { CYCLE_EVALUATION_CONTINUATION_VERSION } from '../domain/cycle-evaluation-state.js';
 import { initialAdaptiveModel, THERMAL_PARAMETER_BOUNDS, predictThermalStep, predictEquipmentDuty, thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fireplaceEvidenceReady, fireplaceGainUncertainty, equipmentResponseEstimate, forecastEvidence } from './adaptive-learning.js';
 import { estimateHeatPumpPerformance, hydronicGain, planningSupplyC } from '../domain/heat-pump-performance.js';
 import { heatingStrategy, heatingEconomics } from '../domain/heating-strategy.js';
@@ -135,34 +138,63 @@ export function auxiliaryThreshold(config = {}) {
     : c.auxIntegralA2;
 }
 
+const evaluationBinding = value => {
+  const canonical = input => Array.isArray(input) ? input.map(canonical) : input && typeof input === 'object'
+    ? Object.fromEntries(Object.keys(input).sort().map(key => [key, canonical(input[key])])) : input;
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+};
 /** Same thermal predictor is used in fitting, dispatch and frozen-reference evaluation. */
-export function evaluateCycle({ schedule = null, intervals, model, initialState, targetC,
-  occupancy = { mode: 'occupied' }, maxDropC = 1.5, maxRiseC = 1.5, config = {}, equipment = {}, includeTail = true }) {
+export function evaluateCycle(args) {
+  return evaluateCyclePartition(args, null, false).result;
+}
+
+/** Advance contiguous partitions of the same interval tape under fixed inputs.
+ * Scalars are cumulative; trajectory contains only this call's points and is
+ * omitted from the continuation. Use includeTail:false until final assessment;
+ * an empty final chunk prices the retained thermal debt at the last quote once.
+ * Restart may JSON-roundtrip the continuation without changing arithmetic order.
+ */
+export function advanceCycleEvaluation(args, continuation = null) {
+  return evaluateCyclePartition(args, continuation, true);
+}
+
+function evaluateCyclePartition({ schedule = null, intervals, model, initialState, targetC,
+  occupancy = { mode: 'occupied' }, maxDropC = 1.5, maxRiseC = 1.5, config = {}, equipment = {}, includeTail = true,
+  captureTrajectory = true }, continuation, resumable) {
   const c = { ...CONTROL_DEFAULTS, ...config };
   model ??= initialAdaptiveModel(c);
   if (!Array.isArray(intervals) || !number(initialState?.indoorC) || !number(targetC))
     throw new TypeError('A cycle requires intervals, indoor temperature and a target');
-  let state = { indoorC: initialState.indoorC, reserveC: initialState.reserveC ?? initialState.indoorC, slabC: initialState.slabC ?? initialState.reserveC ?? initialState.indoorC };
-  let nativeState = { ...state };
+  const binding = resumable ? evaluationBinding({ algorithm: LEARNING_ALGORITHM, schedule, model, initialState, targetC,
+    occupancy, maxDropC, maxRiseC, config: c, equipment }) : null;
+  if (continuation !== null) validateCycleEvaluationState(continuation, binding);
+  const origin = continuation?.origin ?? intervals[0]?.start ?? null;
+  let state = continuation ? { ...continuation.state }
+    : { indoorC: initialState.indoorC, reserveC: initialState.reserveC ?? initialState.indoorC, slabC: initialState.slabC ?? initialState.reserveC ?? initialState.indoorC };
+  let nativeState = { ...(continuation?.nativeState ?? state) };
   const normalSupplyC = planningSupplyC(equipment);
   const initialIntegral = number(initialState.integral) ? initialState.integral : null;
   const threshold = auxiliaryThreshold(c);
   let costCents = 0, electricityKwh = 0, auxiliaryKwh = 0, recoveryCostCents = 0, preheatCostCents = 0;
   let absoluteCostCents = 0, recoveryEnergyKwh = 0, recoveryAuxKwh = 0, spaceHeatingCostCents=0, spaceHeatingKwh=0;
   let penalty = 0, severe = false, uncertaintyC = 0, elapsed = 0;
-  const discomfort = { cold: 0, hot: 0 };
+  if (continuation) ({ costCents, electricityKwh, auxiliaryKwh, recoveryCostCents, preheatCostCents, absoluteCostCents,
+    recoveryEnergyKwh, recoveryAuxKwh, spaceHeatingCostCents, spaceHeatingKwh, penalty } = continuation.totals);
+  const discomfort = continuation ? { ...continuation.discomfort } : { cold: 0, hot: 0 };
   // Keep one worst occurrence per boundary. These facts explain the same
   // safety checks used by dispatch; they do not change admission or training.
-  const violations = new Map();
+  const violations = new Map((continuation?.violations ?? []).map(entry => [entry.code, { ...entry }]));
   const violation = (code, at, value, limit, excess = 0) => {
     const key = code, previous = violations.get(key);
     if ((!previous || excess > previous.excess) && (previous || violations.size < 24))
       violations.set(key, { code, at, value: number(value) ? value : null, limit, unit: '°C', excess });
   };
   let recoverySettledHours = 0, recoveredAt = null, previousEnd = null, recoveryFallbackAt=null, indoorTrendCPerHour=null;
+  if (continuation) ({ severe, uncertaintyC, elapsed, recoverySettledHours, recoveredAt, previousEnd,
+    recoveryFallbackAt, indoorTrendCPerHour } = continuation);
   const normalHistory=equipment.heatingDemand;
   const normalAuxiliaryKw=number(normalHistory?.normalAuxiliaryKw)&&number(normalHistory.observedThrough)
-    &&normalHistory.observedThrough<=intervals[0].start&&intervals[0].start-normalHistory.observedThrough<=2*HOUR
+    &&normalHistory.observedThrough<=(continuation?origin:intervals[0].start)&&origin-normalHistory.observedThrough<=2*HOUR
     ?Math.max(0,normalHistory.normalAuxiliaryKw):0;
   const trajectory = [];
 
@@ -183,11 +215,11 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
         : compressorIntegralDemand === false && compressorHysteresisDemand === false ? false : null };
   };
   const predict = (before, phase, boost, interval, dt, projected, native = false) => {
-    const stepStart = intervals[0].start + elapsed * HOUR;
+    const stepStart = origin + elapsed * HOUR;
     const phaseStart=phase==='preheat'?schedule?.preheatStart:phase==='reduction'?schedule?.reductionStart:schedule?.reductionEnd;
     const inputs = { outdoorC: interval.outdoorC, solarRadiationWm2: interval.solarRadiationWm2,
       phase, roomBoostC: boost, targetC,
-      phaseHours:phase==='normal'?0:Math.max(0,(stepStart+dt*HOUR-(phaseStart??intervals[0].start))/HOUR),
+      phaseHours:phase==='normal'?0:Math.max(0,(stepStart+dt*HOUR-(phaseStart??origin))/HOUR),
       supplyC: planningSupplyC({...equipment,normalSupplyC},phase==='preheat'?boost:0),
       brineC: equipment.brineC, floorOverrideMode: !native && phase === 'preheat' && schedule?.floorOverride ? 'on' : 'off',
       treatmentKey: !native && schedule ? schedule.treatmentKey ?? 'reduction-only-v1' : 'normal',
@@ -210,7 +242,7 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
     // Do not hold cumulative historical deficit forever after it has recovered.
     const priorRisk = preliminary.compressorDuty < 0.01 ? 0 : phase === 'recovery' ? clamp(shortage * 0.3 + reserveShortage * 0.15, 0.03, 0.8)
       : phase === 'preheat' ? clamp(boost * 0.025, 0, 0.2) : 0;
-    const projectedAt=intervals[0].start+elapsed*HOUR;
+    const projectedAt=origin+elapsed*HOUR;
     const policy=!native&&phase==='recovery'?recoveryPolicy({
       now:projectedAt,reductionEnd:schedule.reductionEnd,indoorC:before.indoorC,targetC,
       indoorTrendCPerHour,occupancy,equipment:{...equipment,
@@ -254,14 +286,14 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
       state = { indoorC: prediction.indoorC, reserveC: prediction.reserveC, slabC: prediction.slabC ?? null };
       elapsed += dt;
       const sourceUncertaintyC = indoorUncertaintyAt(equipment,elapsed,end);
-      const actionHours = schedule ? Math.max(0, (end - Math.max(intervals[0].start, schedule.preheatStart)) / HOUR) : elapsed;
+      const actionHours = schedule ? Math.max(0, (end - Math.max(origin, schedule.preheatStart)) / HOUR) : elapsed;
       uncertaintyC = sourceUncertaintyC === null ? null : sourceUncertaintyC + thermalUncertaintyC(model, actionHours, { phase,
         roomBoostC,phaseHours:phase==='normal'?0:Math.max(0,(end-
           (phase==='preheat'?schedule.preheatStart:phase==='reduction'?schedule.reductionStart:schedule.reductionEnd))/HOUR),
         supplyC: prediction.source?.supplyC, brineC: equipment.brineC,
         floorOverrideMode: phase === 'preheat' && schedule?.floorOverride ? 'on' : 'off',
         treatmentKey: schedule?.treatmentKey ?? 'normal', solarRadiationWm2: interval.solarRadiationWm2,
-        fireplaceKgPerHour: fireplaceRate(equipment.fireplaceEvents ?? [], intervals[0].start, end) });
+        fireplaceKgPerHour: fireplaceRate(equipment.fireplaceEvents ?? [], origin, end) });
       const duty = prediction.compressorDuty, auxKw = prediction.auxKw;
       const source = prediction.source;
       // Manufacturer electrical input already includes its test-boundary pumps.
@@ -298,7 +330,7 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
       if (phase === 'preheat' && (!source.withinPlanningRange || !number(equipment.supplyC))) {
         severe = true; violation('preheat-source-range', end, source.supplyC, null);
       }
-      trajectory.push({ at: end, phase, requestedPhase, ...state, integral: projected.integral,
+      if (captureTrajectory) trajectory.push({ at: end, phase, requestedPhase, ...state, integral: projected.integral,
         supplyShortfallC: projected.supplyShortfallC, nativeCompressorDemand: projected.nativeCompressorDemand,
         sourceEstimate: prediction.source, auxiliaryRisk: prediction.auxiliaryRisk, powerKw: kw, spaceHeatingPowerKw, auxiliaryKw: auxKw,
         equipmentBasis: prediction.equipmentBasis, uncertaintyDuty: prediction.uncertaintyDuty,
@@ -312,6 +344,16 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
       time = end;
     }
   }
+  // Retain physical/accounting state before the optional terminal estimate.
+  // A subsequent chunk must never turn a previous tail estimate into spending.
+  const lastPrice = intervals.at(-1)?.price ?? continuation?.lastPrice ?? null;
+  const next = resumable ? { version: CYCLE_EVALUATION_CONTINUATION_VERSION, binding, finalized: Boolean(includeTail),
+    origin, previousEnd, elapsed, state: { ...state }, nativeState: { ...nativeState },
+    totals: { costCents, electricityKwh, auxiliaryKwh, recoveryCostCents, preheatCostCents, absoluteCostCents,
+      recoveryEnergyKwh, recoveryAuxKwh, spaceHeatingCostCents, spaceHeatingKwh, penalty },
+    discomfort: { ...discomfort }, severe, uncertaintyC, recoverySettledHours, recoveredAt, recoveryFallbackAt,
+    indoorTrendCPerHour, lastPrice,
+    violations: [...violations.values()].map(entry => ({ ...entry })) } : null;
   // Explicitly price an unsettled thermal tail; this is not evidence that recovery completed.
   const reserveCapacity = model.floor?.enabled ? model.floor.nativeCapacityKwhPerC
     : model.parameters.memoryExchangePerHour * model.parameters.reserveTimeHours / hydronicGain(model);
@@ -325,18 +367,19 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
   // the last available quote, equally for every compared path. Charging it at
   // an earlier peak can erase the very benefit of recovering after that peak.
   // This remains an explicit estimate, not a future quote or realized saving.
-  const terminalPrice = Math.max(0, intervals.at(-1)?.price ?? 0);
+  const terminalPrice = Math.max(0, lastPrice ?? 0);
   const terminalCostCents = terminalKwh * terminalPrice;
   costCents += terminalCostCents;
   const uncertaintyCents = Math.max(5, (absoluteCostCents + Math.abs(terminalCostCents)) * (model.energy?.relativeUncertainty ?? 0.5)
     + (equipment.h66Available ? 0 : auxiliaryKwh * terminalPrice * 0.5));
-  return { costCents, electricityKwh, auxiliaryKwh, recoveryCostCents, recoveryEnergyKwh, recoveryAuxKwh, preheatCostCents,
+  const result = { costCents, electricityKwh, auxiliaryKwh, recoveryCostCents, recoveryEnergyKwh, recoveryAuxKwh, preheatCostCents,
     penalty, discomfort, score: costCents + penalty * 17.5, severe, endState: state, terminalKwh, terminalCostCents,spaceHeatingCostCents,spaceHeatingKwh,
     uncertaintyCents, trajectory, recoveredAt, nativeEndState: nativeState,
     violations: [...violations.values()].map(({ excess, ...entry }) => entry),
     integralBasis: 'At most one hour of measured-trend projection; later native integral unknown',
     auxiliaryBasis: 'Estimated space-heating auxiliary risk; DHW costs need separate observed attribution',
     basis: 'estimated-space-heating-only; matched DHW service is not established', completeRecoveryPredicted: schedule === null || recoveredAt !== null };
+  return { result, continuation: next };
 }
 
 /** Shared selection, pending-plan and continuation comparison. Scenarios use

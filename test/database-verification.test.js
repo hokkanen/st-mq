@@ -89,7 +89,7 @@ for (const mutation of ['missing', 'extra', 'wrong']) {
     const { store, directory } = await fixture(t), at = 1767225600000;
     const id = store.observation({ source: 'synthetic', device: 'synthetic-room', signal: 'indoor_temperature',
       unit: 'degC', value: 21, sourceTime: at, receivedAt: at });
-    store.cycle('mqtt', { id: 'synthetic-cycle', status: 'active', startedAt: at, observations: [{ provenance: { observationId: id } }] });
+    store.cycle('mqtt', { id: 'synthetic-cycle', status: 'active', startedAt: at, provenance: { observationId: id } });
     await verifyDatabase({ dbPath: store.path });
     const checkpoint = store.checkpoint();
     if (mutation === 'missing') store.db.exec('DELETE FROM recovery_dependencies');

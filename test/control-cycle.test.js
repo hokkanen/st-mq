@@ -44,7 +44,7 @@ test('cycle accounts at every current quote start/end without changing its froze
     tracker.record(sample(start+HOUR/4,{priceIntervals:[{start:start+7*60000,end:start+20*60000,price:after}]}),start+HOUR/4);
     const active=tracker.active();
     assert(Math.abs(active.actual.costCents-2*(7*before+8*after)/60)<1e-10);
-    assert.equal(active.actual.coveredHours,0.25);assert.equal(active.observations.length,2);
+    assert.equal(active.actual.coveredHours,0.25);assert.equal(active.observationCount,2);
     assert.deepEqual(active.plan,original);
   }
 });
@@ -130,18 +130,18 @@ test('cycle selection and revalidation accept old indoor values without renewing
 
 test('cycle accounting splits published price boundaries without duplicating coverage or stored trajectories', t => {
   const rows = intervals(8, { price: i => i === 0 ? 10 : 30 });
-  const { tracker } = fixture(t, { intervals: rows });
+  const { tracker, store } = fixture(t, { intervals: rows });
   const plan = fixturePlan(rows);
   tracker.start(plan, sample(start + HOUR / 6, { priceCents: 10, priceStart: start, priceEnd: start + HOUR / 4 }), start + HOUR / 6);
   tracker.record(sample(start + HOUR / 3), start + HOUR / 3, { thermalState: { reserveC: 21.5 } });
   const cycle = tracker.active();
   assert.equal(cycle.plan.prediction.trajectory, undefined);
   assert.equal(cycle.plan.referencePrediction.trajectory, undefined);
-  assert.equal(cycle.observations.length, 2);
+  assert.equal([...store.cycleEvidence(cycle.id)].length, 2);
   assert.ok(Math.abs(cycle.actual.coveredHours - 1 / 6) < 1e-10);
   assert.ok(Math.abs(cycle.actual.costCents - (2 * 10 / 12 + 2 * 30 / 12)) < 1e-10);
-  assert.equal(cycle.observations[0].priceBasis, 'applicable-observed-quote');
-  assert.equal(cycle.observations[1].priceBasis, 'frozen-published-price');
+  assert.equal([...store.cycleEvidence(cycle.id)][0].priceBasis, 'applicable-observed-quote');
+  assert.equal([...store.cycleEvidence(cycle.id)][1].priceBasis, 'frozen-published-price');
 });
 function fixturePlan(rows) {
   const args = common({ intervals: rows });
@@ -156,7 +156,7 @@ test('completed-cycle profit uses the same elapsed period and keeps DHW auxiliar
   const episode = finish(tracker, changes);
   assert.ok(episode?.complete);
   const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
-  const samePeriod = cycle.observations.map(o => ({ ...o }));
+  const samePeriod = [...store.cycleEvidence(cycle.id)].map(o => ({ ...o }));
   const reference = evaluateCycle({ ...common({ intervals: samePeriod }), includeTail: false });
   assert.ok(Math.abs(cycle.assessment.profitCents - (reference.spaceHeatingCostCents - cycle.actual.spaceHeatingCostCents)) < 1e-8);
   assert.equal(cycle.assessment.wholeCycleProfitCents,null);
@@ -251,8 +251,8 @@ test('temperature outages retain real energy accounting and conservative fallbac
       assert.equal(cycle.actual.coveredHours, 0.25);
       assert.equal(cycle.actual.temperatureMissingHours, 0.25);
       assert.equal(cycle.actual.missingHours, 0);
-      assert.equal(cycle.observations[0].indoorC, null);
-      assert.equal(cycle.observations[0].indoorControlEstimate.value, 21.5);
+      assert.equal([...store.cycleEvidence(cycle.id)][0].indoorC, null);
+      assert.equal([...store.cycleEvidence(cycle.id)][0].indoorControlEstimate.value, 21.5);
       assert.equal(cycle.observerState.indoorC, 21, 'The model observer does not assimilate an inferred room as a measured endpoint');
     }
   }
@@ -284,8 +284,8 @@ test('a returning sensor cannot turn an earlier estimated interval into observed
   const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
   assert.equal(cycle.estimatedIndoorUsed, true);
   assert.equal(cycle.actual.temperatureMissingHours, 0.5);
-  assert.ok(cycle.observations.slice(1).every(row => row.indoorC === 21.5));
-  assert.equal(cycle.observations[0].indoorC, null);
+  assert.ok([...store.cycleEvidence(cycle.id)].slice(1).every(row => row.indoorC === 21.5));
+  assert.equal([...store.cycleEvidence(cycle.id)][0].indoorC, null);
   assert.equal(store.learningJournal({ input: 'synthetic' }).length, 0);
   assert.equal(tracker.metrics(21).recoveryError.count, 0);
 });

@@ -36,7 +36,8 @@ function fixture(t, { validated = false, reductionHours = 0.5 } = {}) {
   };
   return { store, tracker, plan, sample, begin, advance };
 }
-const savedCycle = store => store.cycles({ input: 'mqtt' })[0];
+const savedCycle = store => { const cycle = store.cycles({ input: 'mqtt' })[0];
+  return { ...cycle, observations: [...store.cycleEvidence(cycle.id)] }; };
 const elapsedIntervals = cycle => cycle.observations.map(({ start, end, outdoorC, solarRadiationWm2, price }) =>
   ({ start, end, outdoorC, solarRadiationWm2, price }));
 function reference(cycle, events) {
@@ -119,7 +120,7 @@ test('correcting an active observer matches clean reconstruction across sub-samp
   const original = fired.begin(); clean.begin();
   fired.advance(1, 3, HOUR / 2); clean.advance(1, 3, HOUR / 2);
   const before = fired.tracker.active(), cleanState = clean.tracker.active().observerState;
-  assert.equal(before.observations.length, 6, 'Each 30-minute sample is split into 15-minute tariff intervals');
+  assert.equal(before.observationCount, 6, 'Each 30-minute sample is split into 15-minute tariff intervals');
   assert.notEqual(before.observerState.reserveC, cleanState.reserveC);
   removeFireplace(fired.store, 'mqtt', { requestId: 'invented-remove-observer', id: load.id }, start + 1.5 * HOUR + 1);
   fired.tracker.correctFireplace(fireplaceLearningContext(fired.store, 'mqtt'), start + 1.5 * HOUR + 1);

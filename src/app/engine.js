@@ -15,6 +15,7 @@ import { LiveLearning } from './live-learning.js';
 import { sensorRevision } from './sensor-inputs.js';
 import { publishCorrection } from './learning-publication.js';
 import { CycleTracker } from './cycles.js';
+import { rebuildCycleWorking, assessCycle } from './cycle-evaluation.js';
 import { controlObservations, applyNativeControlTrends } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
@@ -1264,6 +1265,8 @@ export class Engine {
     if (job.kind === 'reserve') return evaluateThermalModel(job.options.checkpoint.model,
       job.options.checkpoint.samples.map(row => withFireplaceInputs(row, job.options.context)),
       { rollout: false, observedOnly: false }).state?.reserveC ?? null;
+    if (job.kind === 'cycle-working') return rebuildCycleWorking(this.store,job.options);
+    if (job.kind === 'cycle-assess') return assessCycle(this.store,job.options);
     if (job.kind === 'control-ready') return null;
     throw new TypeError('Unknown live learning operation');
   }
@@ -1281,7 +1284,9 @@ export class Engine {
       // Retrospective selection, measurement boundaries and control instructions
       // do; later entries are consumed incrementally without redoing that prefix.
       settings: this.settings, applied: this.applied, automation: this.automation.features,
-      cycle: cycle && [cycle.id, cycle.status, cycle.lastSample?.timestamp, cycle.endedAt],
+      cycle: cycle && [cycle.id, cycle.status, cycle.observationCount, cycle.lastSample?.timestamp, cycle.endedAt,
+        cycle.executionSchedule, cycle.adjustments, cycle.recoveryStartedAt, cycle.recoveryHoldUntil,
+        cycle.recoveryFallbackAt, cycle.trialBudget, cycle.fireplaceCorrectionRevision],
       native: [native.externalChangeRevision, native.phase, native.readings?.['0203']?.value, native.obligations],
       executor: [executor.phase, executor.manualPause, executor.manualRequested, executor.manualTemporary,
         executor.restorationPending, executor.pulseUntil],
@@ -1654,13 +1659,19 @@ export class Engine {
     this.store.setState(controlStateKey, runtimeThermal);
     const planningState = runtimeThermal?.state ?? (observations.indoorControl.estimated ? null
       : checkpoint.state ?? initialHomeState(checkpoint.model, sample.indoorC, sample.outdoorC, sample.solarRadiationWm2));
+    const cycleWorkingJob = this.cycles.workingJob();
+    if (cycleWorkingJob) this.cycles.adoptWorking(yield { kind: 'cycle-working', options: cycleWorkingJob });
     const priorCycleSample = this.cycles.active()?.lastSample;
     if (Number.isFinite(priorCycleSample?.indoorC) && Number.isFinite(cycleSample.indoorC) && now > priorCycleSample.timestamp)
       cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
     else cycleSample.indoorTrendCPerHour = sample.indoorTrendCPerHour;
-    const episode = this.cycles.record(cycleSample, now, { thermalState: this.fireplaceReserveOverride == null
+    let episode = this.cycles.record(cycleSample, now, { thermalState: this.fireplaceReserveOverride == null
       ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
       equipment: { ...equipment, integral: cycleSample.integral }, controlIndoor: observations.indoorControl });
+    if (episode?.assessmentJob) {
+      const job = episode.assessmentJob;
+      episode = this.cycles.complete(job,yield { kind: 'cycle-assess', options: job });
+    }
     if (episode) {
       this.applied.phase = 'normal';
       if (this.plant) this.plant.state.phase = 'normal';

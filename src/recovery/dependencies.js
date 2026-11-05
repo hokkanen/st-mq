@@ -3,10 +3,23 @@
 const references = `CASE
   WHEN j.key IN ('observationId','sourceObservationId') OR j.path GLOB '*.observations' AND typeof(j.key)='integer' THEN 'observations'
   WHEN j.key='coverageId' OR j.path GLOB '*.coverage' AND typeof(j.key)='integer' THEN 'recorder_coverage'
-  WHEN j.key='snapshotId' OR j.key='id' AND (j.path GLOB '*.forecastVersion' OR j.path GLOB '*.forecast_version') THEN 'provider_snapshot_fetches'
+  WHEN j.key='snapshotId' OR j.key='id' AND (j.path GLOB '*.forecastVersion' OR j.path GLOB '*.forecast_version' OR j.path GLOB '*.lastForecastVersion') THEN 'provider_snapshot_fetches'
   WHEN j.key IN ('cycleId','episodeId') THEN 'learning_cycles'
   WHEN j.path GLOB '*.journal' AND typeof(j.key)='integer' OR j.key='id' AND j.path GLOB '*.sensorRevert' THEN 'learning_journal'
 END`;
+const cycleTables = ['learning_cycles','learning_cycle_definitions','learning_cycle_samples','learning_cycle_observations'];
+const columns = table => table === 'learning_cycle_samples' ? ['provenance','context'] : ['payload'];
+const structural = table => table === 'learning_cycles' ? `
+  SELECT 'learning_cycle_definitions' source_table,id source_key FROM learning_cycle_definitions WHERE id=?
+  UNION SELECT 'learning_cycle_samples',CAST(id AS TEXT) FROM learning_cycle_samples WHERE cycle_id=?`
+  : table === 'learning_cycle_samples' ? `SELECT 'learning_cycle_observations' source_table,CAST(id AS TEXT) source_key FROM learning_cycle_observations WHERE sample_id=?` : null;
+function ownershipTriggers(table, parent, field) {
+  return `CREATE TRIGGER ${table}_recovery_owner_insert AFTER INSERT ON ${table} BEGIN
+    INSERT INTO recovery_dependencies VALUES('${parent}',CAST(NEW.${field} AS TEXT),'${table}',CAST(NEW.id AS TEXT)); END;
+  CREATE TRIGGER ${table}_recovery_owner_delete AFTER DELETE ON ${table} BEGIN
+    DELETE FROM recovery_dependencies WHERE owner_table='${parent}' AND owner_key=CAST(OLD.${field} AS TEXT)
+      AND source_table='${table}' AND source_key=CAST(OLD.id AS TEXT); END;`;
+}
 function triggers(table) {
   const root = table === 'learning_journal_entries' ? ' AND NEW.source_entry_id IS NULL' : '';
   const owner = table === 'learning_journal_entries' ? 'learning_journal' : table;
@@ -16,17 +29,17 @@ function triggers(table) {
       CASE WHEN source_table='learning_journal' THEN CAST(COALESCE((SELECT COALESCE(e.source_entry_id,e.id)
         FROM learning_journal_entries e WHERE e.id=source_key),source_key) AS TEXT) ELSE CAST(source_key AS TEXT) END
     FROM (SELECT ${sourceReferences} source_table,j.atom source_key
-      FROM json_tree(NEW.payload) j
+      FROM (${columns(table).map(column => `SELECT * FROM json_tree(NEW.${column})`).join(' UNION ALL ')}) j
       WHERE j.type IN ('integer','text')) WHERE source_table IS NOT NULL;`;
   return `CREATE TRIGGER ${table}_recovery_insert AFTER INSERT ON ${table}
-    WHEN json_valid(NEW.payload)${root} BEGIN ${insert} END;
-  CREATE TRIGGER ${table}_recovery_update AFTER UPDATE OF payload ON ${table}
-    BEGIN DELETE FROM recovery_dependencies WHERE owner_table='${owner}' AND owner_key=CAST(OLD.id AS TEXT);
+    WHEN ${columns(table).map(column => `json_valid(NEW.${column})`).join(' AND ')}${root} BEGIN ${insert} END;
+  CREATE TRIGGER ${table}_recovery_update AFTER UPDATE OF ${columns(table).join(',')} ON ${table}
+    BEGIN DELETE FROM recovery_dependencies WHERE owner_table='${owner}' AND owner_key=CAST(OLD.id AS TEXT) AND source_table NOT IN ('learning_cycle_definitions','learning_cycle_samples','learning_cycle_observations');
       ${insert} END;
   CREATE TRIGGER ${table}_recovery_delete AFTER DELETE ON ${table}
     BEGIN DELETE FROM recovery_dependencies WHERE owner_table='${owner}' AND owner_key=CAST(OLD.id AS TEXT); END;`;
 }
-export const RECOVERY_MODEL_TIME = `COALESCE(CASE WHEN typeof(json_extract(payload,'$.plan.model.trainedAt')) IN ('integer','real') THEN json_extract(payload,'$.plan.model.trainedAt') ELSE (julianday(json_extract(payload,'$.plan.model.trainedAt'))-2440587.5)*86400000 END,started_at)`;
+export const RECOVERY_MODEL_TIME = 'model_at';
 export const RECOVERY_DEPENDENCY_SCHEMA = `
 CREATE TABLE recovery_dependencies (
   owner_table TEXT NOT NULL,owner_key TEXT NOT NULL,source_table TEXT NOT NULL,source_key TEXT NOT NULL,
@@ -37,7 +50,10 @@ CREATE INDEX recovery_fireplace_parent ON fireplace_events(target_id,id);
 CREATE INDEX recovery_cycles_model_time ON learning_cycles(input,${RECOVERY_MODEL_TIME},id);
 CREATE INDEX recovery_learning_source ON learning_journal_entries(source_entry_id,epoch,input);
 ${triggers('learning_journal_entries')}
-${triggers('learning_cycles')}
+${cycleTables.map(triggers).join('\n')}
+${ownershipTriggers('learning_cycle_definitions','learning_cycles','id')}
+${ownershipTriggers('learning_cycle_samples','learning_cycles','cycle_id')}
+${ownershipTriggers('learning_cycle_observations','learning_cycle_samples','sample_id')}
 `;
 
 /** Read-only semantic check for the derived reverse-reference index. SQLite
@@ -49,32 +65,29 @@ ${triggers('learning_cycles')}
 export function validateRecoveryDependencies(db, onProgress = () => {}) {
   const invalid = () => { throw Object.assign(new Error('Recovery source references failed verification. Preserve the database and use an intact current-version backup.'),
     { code: 'database_integrity_failed' }); };
-  if (db.prepare(`SELECT 1 FROM recovery_dependencies d
-    LEFT JOIN learning_journal_entries e ON d.owner_table='learning_journal'
-      AND e.id=CAST(d.owner_key AS INTEGER) AND d.owner_key=CAST(e.id AS TEXT)
-    LEFT JOIN learning_cycles c ON d.owner_table='learning_cycles' AND c.id=d.owner_key
-    WHERE e.id IS NULL AND c.id IS NULL LIMIT 1`).get()) invalid();
-  const actual = db.prepare(`SELECT source_table,source_key FROM recovery_dependencies
-    WHERE owner_table=? AND owner_key=? ORDER BY source_table,source_key`);
+  if (db.prepare(`SELECT 1 FROM recovery_dependencies d WHERE NOT (
+    d.owner_table='learning_journal' AND EXISTS(SELECT 1 FROM learning_journal_entries e WHERE e.id=CAST(d.owner_key AS INTEGER) AND CAST(e.id AS TEXT)=d.owner_key)
+    ${cycleTables.map(table => `OR d.owner_table='${table}' AND EXISTS(SELECT 1 FROM ${table} c WHERE c.id=d.owner_key AND CAST(c.id AS TEXT)=d.owner_key)`).join('\n')}) LIMIT 1`).get()) invalid();
   let processed = 0;
-  for (const table of ['learning_journal_entries', 'learning_cycles']) {
+  for (const table of ['learning_journal_entries', ...cycleTables]) {
     const learning = table === 'learning_journal_entries', owner = learning ? 'learning_journal' : table;
     const sourceReferences = learning ? references.replace("WHEN j.key IN ('cycleId','episodeId')",
       "WHEN j.key='id' AND j.path GLOB '*.value' AND ?='episode' OR j.key IN ('cycleId','episodeId')") : references;
-    const expected = db.prepare(`SELECT DISTINCT source_table,
+    const jsonReferences = columns(table).map(() => `SELECT source_table,
       CASE WHEN source_table='learning_journal' THEN CAST(COALESCE((SELECT COALESCE(e.source_entry_id,e.id)
         FROM learning_journal_entries e WHERE e.id=source_key),source_key) AS TEXT) ELSE CAST(source_key AS TEXT) END source_key
       FROM (SELECT ${sourceReferences} source_table,j.atom source_key
-        FROM json_tree(?) j WHERE j.type IN ('integer','text'))
-      WHERE source_table IS NOT NULL ORDER BY source_table,source_key`);
-    const rows = db.prepare(`SELECT id,payload${learning ? ',kind,source_entry_id' : ''} FROM ${table}`);
-    for (const row of rows.iterate()) {
-      const found = actual.all(owner, String(row.id));
-      const wanted = expected.all(...(learning ? [row.kind] : []), row.payload);
-      if (learning && row.source_entry_id !== null) {
-        const allowed = new Set(wanted.map(value => JSON.stringify([value.source_table, value.source_key])));
-        if (found.some(value => !allowed.has(JSON.stringify([value.source_table, value.source_key])))) invalid();
-      } else if (JSON.stringify(found) !== JSON.stringify(wanted)) invalid();
+        FROM json_tree(?) j WHERE j.type IN ('integer','text')) WHERE source_table IS NOT NULL`).join(' UNION ');
+    const expected = `${jsonReferences}${structural(table) ? ` UNION ${structural(table)}` : ''}`;
+    const compare = optional => db.prepare(`WITH wanted AS (${expected}),found AS (
+      SELECT source_table,source_key FROM recovery_dependencies WHERE owner_table=? AND owner_key=?)
+      SELECT 1 FROM (SELECT * FROM found EXCEPT SELECT * FROM wanted)
+      ${optional ? '' : 'UNION ALL SELECT 1 FROM (SELECT * FROM wanted EXCEPT SELECT * FROM found)'} LIMIT 1`);
+    const required = compare(false), optional = learning && compare(true);
+    for (const row of db.prepare(`SELECT id,${columns(table).join(',')}${learning ? ',kind,source_entry_id' : ''} FROM ${table}`).iterate()) {
+      const args = columns(table).flatMap(column => [...(learning ? [row.kind] : []),row[column]]);
+      if (structural(table)) args.push(...(table === 'learning_cycles' ? [row.id,row.id] : [row.id]));
+      if ((learning && row.source_entry_id !== null ? optional : required).get(...args,owner,String(row.id))) invalid();
       if (++processed % 256 === 0) onProgress(processed);
     }
   }

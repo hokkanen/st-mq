@@ -35,7 +35,8 @@ function initializeKeys(donor) {
   donor.recoveryKeysReady=true;
   donor.db.exec(`PRAGMA query_only=OFF; CREATE TEMP TABLE recovery_source_keys(
     table_name TEXT NOT NULL,record_key TEXT NOT NULL,visited INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;`);
+    PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;
+    CREATE INDEX temp.recovery_source_unvisited ON recovery_source_keys(visited,table_name,record_key);`);
 }
 function include(donor,table,row) {
   if(row && ['charging_reports','charging_report_events','charging_report_contexts'].includes(table)) {
@@ -50,6 +51,9 @@ function include(donor,table,row) {
 function references(table,row) {
   const result=[];
   const add=(name,id)=>{if(id!==null && id!==undefined) result.push([name,String(id)]);};
+  if (row.cycle_id!==undefined) add('learning_cycles',row.cycle_id);
+  if (row.sample_id!==undefined) add('learning_cycle_samples',row.sample_id);
+  if (table==='learning_cycle_definitions') add('learning_cycles',row.id);
   if(row.import_id!==undefined) add('imports',row.import_id);
   if(row.observation_id!==undefined) add('observations',row.observation_id);
   if(table==='provider_snapshot_fetches') add('provider_snapshot_contents',row.content_id);
@@ -67,12 +71,12 @@ function references(table,row) {
         if(entry && typeof entry==='object') visit(entry,key,depth+1); else add(arrays[key],entry);
       }
       else if(key==='id' && parent==='sensorRevert') add('learning_journal',item);
-      else if(key==='id' && ['forecastVersion','forecast_version'].includes(parent)) add('provider_snapshot_fetches',item);
-      else if(key==='contentId' && ['forecastVersion','forecast_version'].includes(parent)) add('provider_snapshot_contents',item);
+      else if(key==='id' && ['forecastVersion','forecast_version','lastForecastVersion'].includes(parent)) add('provider_snapshot_fetches',item);
+      else if(key==='contentId' && ['forecastVersion','forecast_version','lastForecastVersion'].includes(parent)) add('provider_snapshot_contents',item);
       else visit(item,key,depth+1);
     }
   };
-  for(const field of ['raw','payload','forecast_version']) if(typeof row[field]==='string') {
+  for(const field of ['raw','payload','forecast_version','provenance','context']) if(typeof row[field]==='string') {
     try { visit(JSON.parse(row[field]),field); } catch(error) { if(error.code==='RECOVERY_INVALID') throw error; }
   }
   return result;
@@ -95,8 +99,15 @@ export async function scopeIncrementalSource(donor,{base,checkpoint,changes,yiel
     for(const key of keys) {
       const table=key.table_name;
       const row=table==='import_rows' ? donor.db.prepare('SELECT * FROM import_rows WHERE import_id=? AND row_number=?').get(...key.record_key.split(':').map(Number))
-        : donor.db.prepare(`SELECT * FROM ${q(table)} WHERE ${table==='state'?'key':'id'}=?`).get(['state','learning_cycles'].includes(table)?key.record_key:Number(key.record_key));
+        : donor.db.prepare(`SELECT * FROM ${q(table)} WHERE ${table==='state'?'key':'id'}=?`).get(['state','learning_cycles','learning_cycle_definitions'].includes(table)?key.record_key:Number(key.record_key));
       if(row) for(const [name,id] of references(table,row)) donor.db.prepare('INSERT OR IGNORE INTO recovery_source_keys(table_name,record_key) VALUES(?,?)').run(name,id);
+      // Structural ownership is read from the pinned row overlay, rather than
+      // MAIN's derived index, which can represent a different peer boundary.
+      if (row && table==='learning_cycles') for (const [child,field] of [['learning_cycle_definitions','id'],['learning_cycle_samples','cycle_id']])
+        donor.db.prepare(`INSERT OR IGNORE INTO recovery_source_keys(table_name,record_key)
+          SELECT ?,CAST(id AS TEXT) FROM ${child} WHERE ${field}=?`).run(child,row.id);
+      if (row && table==='learning_cycle_samples') donor.db.prepare(`INSERT OR IGNORE INTO recovery_source_keys(table_name,record_key)
+        SELECT 'learning_cycle_observations',CAST(id AS TEXT) FROM learning_cycle_observations WHERE sample_id=?`).run(row.id);
       donor.db.prepare('UPDATE recovery_source_keys SET visited=1 WHERE table_name=? AND record_key=?').run(table,key.record_key);
     }
     await yieldControl();
@@ -114,7 +125,7 @@ export async function scopeIncrementalSource(donor,{base,checkpoint,changes,yiel
       if(!keys.length) break;
       for(const key of keys) {
         const values=name==='import_rows'?key.record_key.split(':').map(Number)
-          :[['state','learning_cycles'].includes(name)?key.record_key:Number(key.record_key)];
+          :[['state','learning_cycles','learning_cycle_definitions'].includes(name)?key.record_key:Number(key.record_key)];
         const row=get.get(...values);
         if(row) put.run(...table.columns.map(column=>row[column]));
         after=key.record_key;
@@ -122,10 +133,11 @@ export async function scopeIncrementalSource(donor,{base,checkpoint,changes,yiel
       await yieldControl();
     }
     if(name==='state') donor.db.exec(`CREATE TEMP VIEW recovery_source_state AS SELECT * FROM ${q(scratch)};`);
-    else donor.db.exec(`DROP VIEW IF EXISTS temp.active_${name};
-      CREATE TEMP VIEW active_${name} AS SELECT r.* FROM ${q(scratch)} r
-      WHERE NOT EXISTS(SELECT 1 FROM recovery_exclusions x WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
-        AND x.table_name='${name}' AND x.record_key=${name==='import_rows'?"printf('%d:%d',r.import_id,r.row_number)":'CAST(r.id AS TEXT)'});`);
+    else {
+      const sql=donor.db.prepare("SELECT sql FROM main.sqlite_schema WHERE type='view' AND name=?").get(`active_${name}`).sql;
+      donor.db.exec(`DROP VIEW IF EXISTS temp.active_${name};`);
+      donor.db.exec(sql.replace(/^CREATE VIEW/i,'CREATE TEMP VIEW').replace(`FROM ${name} r`,`FROM ${q(scratch)} r`));
+    }
   }
   // An aggregate over a join to the UNION journal view can make SQLite
   // materialize every historical row. Keep only the selected changed rows in

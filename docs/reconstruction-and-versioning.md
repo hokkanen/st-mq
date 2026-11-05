@@ -246,8 +246,8 @@ state is not migrated or trusted. Failures and superseded jobs remain terminal
 until an explicit new action; there is no automatic retry loop.
 
 The original coefficient-history change retained journaled layout 30 and the
-numerical learning algorithm. The current coverage-evidence format uses layout
-31 as described above; numerical learning is unchanged. Incompatible development databases are rejected
+numerical learning algorithm. The current append-only cycle-evidence format uses layout
+32 as described below; numerical learning is unchanged. Incompatible development databases are rejected
 before mutation; the runtime adds no upgrade ladder, permanent historical backfill
 or old-format reader. Any specifically owner-approved, data-preserving preparation
 of an existing installation is an external controlled operation under the exact
@@ -413,7 +413,7 @@ and atomic replay. F1 ends only at actual production v1.0.0, when the owner-appr
 2026-10-07 [release upgrade policy](pairing.md#software-upgrades) applies; evidence,
 database-preservation and authority safeguards remain.
 
-Physical SQLite schema 36 and journaled layout 31 have separate identifiers.
+Physical SQLite schema 37 and journaled layout 32 have separate identifiers.
 They retain compact independent-evidence recording coverage and indexed
 selected-period counter, completed/active cycle, temperature-receipt,
 voltage-availability and per-signal energy-start reads, plus indexed manual
@@ -422,6 +422,16 @@ reads. Fresh databases use this one current layout and matching genesis/hash
 interpretation. Startup rejects incompatible physical schemas before mutation;
 there is no older-schema branch, alternate journal decoder or automatic reset.
 A pair cannot mirror or hand over between incompatible physical schemas.
+
+Home cycle storage separates one immutable frozen definition, immutable sample
+provenance groups and ordered interval evidence from a compact mutable execution
+header. The active-cycle state holds only its identifier. Ordinary updates append
+new evidence and update bounded totals and replaceable predictor state; they never
+rewrite an earlier observation tape. Recovery checks advance the same thermal
+predictor incrementally. Final assessment and cache reconstruction stream bounded
+pages in an admitted read-only worker during live operation. Original forecasts,
+source clocks, gaps and journal replay inputs retain their meaning. A recovery
+timeout starts at the executed reduction end, independent of reduction length.
 
 ### Approved installation-only schema changes
 
@@ -485,6 +495,17 @@ remain required.
   treatment-scoped forecast checks. The same backup, preservation, replay,
   rollback and coordinated-activation requirements apply. This remains a closed
   installation-only exception; ordinary startup rejects earlier algorithms.
+
+- **2026-11-05 night — append-only Home cycle evidence, schema 36/layout 31 →
+  schema 37/layout 32.** The owner explicitly approved external installation-only
+  conversion and any further required schema conversion during this overnight
+  audit. No conversion tool or historical decoder enters the repository. Preserve
+  original cycle evidence, forecasts, all other household history, the committed
+  learning journal, dashboard intent, equipment/session identity, restoration and
+  pairing authority. Rehearse conversion, integrity, replay and rollback before
+  coordinated activation; retain verified original backups. Operational replication
+  history remains retained in the original backups when the new row layout is
+  anchored. This grants no automatic migration or future upgrade ladder.
 
 ## Version discipline
 

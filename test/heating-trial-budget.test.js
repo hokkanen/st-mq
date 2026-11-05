@@ -70,8 +70,8 @@ test('explicit reviewed budgets stay separate from the automatic daily ledger', 
 });
 
 test('one-cycle approval without an edited budget still uses automatic allowance', t => {
-  const r = fixture(t, { exposure: 1, cap: 10, daily: 10, previous: 8 });
-  const cycle = r.tracker.active(); cycle.plan.userTrial = { limits: { maxDropC: 2 } }; r.tracker.save(cycle);
+  const r = fixture(t, { exposure: 1, cap: 10, daily: 10, previous: 8, deferStart: true });
+  r.plan.userTrial = { limits: { maxDropC: 2 } }; r.begin();
   assert.equal(r.tracker.reserveTrialExposure(2), true);
   assert.equal(r.ledger().reservedCents, 10);
   assert.equal(r.tracker.reserveTrialExposure(2.1), false);

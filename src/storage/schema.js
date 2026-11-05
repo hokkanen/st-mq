@@ -1,14 +1,15 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current physical schema. Startup never converts an existing database.
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 // Coverage evidence is part of the one current journaled row layout.
 // This is one current layout, not a decoder for an earlier database schema.
-export const JOURNALED_DATA_VERSION = 31;
+export const JOURNALED_DATA_VERSION = 32;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
-  'fireplace_events', 'import_rows', 'imports', 'learning_cycles', 'observations',
+  'fireplace_events', 'import_rows', 'imports', 'learning_cycles', 'learning_cycle_definitions',
+  'learning_cycle_samples', 'learning_cycle_observations', 'observations',
   'provider_snapshot_contents', 'provider_snapshot_fetches', 'recorder_coverage'];
 export const recoveryRecordKey = (table, alias = 'r') => table === 'import_rows'
   ? `printf('%d:%d',${alias}.import_id,${alias}.row_number)` : `CAST(${alias}.id AS TEXT)`;
@@ -16,6 +17,16 @@ export const recoveryRecordKey = (table, alias = 'r') => table === 'import_rows'
 export const selectedHistoryPredicate = (table, alias = 'r') => `NOT EXISTS(SELECT 1 FROM recovery_exclusions x
  WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
  AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table, alias)})`;
+const selectedCycle = (alias, column) => `EXISTS(SELECT 1 FROM learning_cycles cycle_parent
+ JOIN learning_cycle_definitions cycle_definition ON cycle_definition.id=cycle_parent.id
+ WHERE cycle_parent.id=${alias}.${column}
+ AND ${selectedHistoryPredicate('learning_cycles', 'cycle_parent')}
+ AND ${selectedHistoryPredicate('learning_cycle_definitions', 'cycle_definition')})`;
+const selectedCycleOwner = table => table === 'learning_cycles' || table === 'learning_cycle_definitions'
+  ? selectedCycle('r', 'id') : table === 'learning_cycle_samples' ? selectedCycle('r', 'cycle_id')
+    : table === 'learning_cycle_observations' ? `${selectedCycle('r', 'cycle_id')}
+ AND EXISTS(SELECT 1 FROM learning_cycle_samples cycle_sample WHERE cycle_sample.id=r.sample_id
+   AND cycle_sample.cycle_id=r.cycle_id AND ${selectedHistoryPredicate('learning_cycle_samples', 'cycle_sample')})` : '1';
 // In learning_journal_all, +e.id on the inherited lower bound deliberately
 // leaves the external requested cursor as the index seek. Without unary +,
 // SQLite can seek at the historical segment start and filter the cursor later.
@@ -79,7 +90,34 @@ CREATE TABLE imports (
 );
 CREATE TABLE learning_cycles (
  id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
- status TEXT NOT NULL, payload TEXT NOT NULL);
+ status TEXT NOT NULL CHECK(status IN ('active','completed','incomplete')),
+ model_at INTEGER NOT NULL, trial INTEGER CHECK(trial IS NULL OR trial IN (0,1)),
+ payload TEXT NOT NULL CHECK(json_valid(payload)));
+-- Definitions are frozen once a cycle starts. Control updates only the small
+-- header; original model/forecast material never joins an observation rewrite.
+CREATE TABLE learning_cycle_definitions (
+ id TEXT PRIMARY KEY REFERENCES learning_cycles(id) ON DELETE CASCADE,
+ payload TEXT NOT NULL CHECK(json_valid(payload) AND json_type(payload)='object'));
+-- One provenance group per admitted control sample, shared by its intervals.
+CREATE TABLE learning_cycle_samples (
+ id INTEGER PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES learning_cycles(id) ON DELETE CASCADE,
+ sample_at INTEGER NOT NULL,provenance TEXT NOT NULL CHECK(json_valid(provenance) AND json_type(provenance) IN ('object','null')),
+ context TEXT NOT NULL CHECK(json_valid(context) AND json_type(context)='object'),
+ UNIQUE(cycle_id,sample_at),UNIQUE(cycle_id,id));
+CREATE TABLE learning_cycle_observations (
+ id INTEGER PRIMARY KEY,cycle_id TEXT NOT NULL REFERENCES learning_cycles(id) ON DELETE CASCADE,
+ sample_id INTEGER NOT NULL,ordinal INTEGER NOT NULL CHECK(ordinal>=0),
+ start_at INTEGER NOT NULL,end_at INTEGER NOT NULL CHECK(end_at>start_at),
+ payload TEXT NOT NULL CHECK(json_valid(payload) AND json_type(payload)='object'),UNIQUE(cycle_id,ordinal),
+ FOREIGN KEY(cycle_id,sample_id) REFERENCES learning_cycle_samples(cycle_id,id));
+CREATE INDEX learning_cycle_observations_sample ON learning_cycle_observations(sample_id,id);
+CREATE INDEX learning_cycle_observations_time ON learning_cycle_observations(cycle_id,end_at,ordinal);
+CREATE TRIGGER learning_cycle_definitions_immutable BEFORE UPDATE ON learning_cycle_definitions
+ BEGIN SELECT RAISE(ABORT,'Cycle definitions are immutable'); END;
+CREATE TRIGGER learning_cycle_samples_immutable BEFORE UPDATE ON learning_cycle_samples
+ BEGIN SELECT RAISE(ABORT,'Cycle source groups are immutable'); END;
+CREATE TRIGGER learning_cycle_observations_immutable BEFORE UPDATE ON learning_cycle_observations
+ BEGIN SELECT RAISE(ABORT,'Cycle observations are immutable'); END;
 CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
 -- A separate digest index keeps lookup keys small. WITHOUT ROWID would put the
 -- large sample body in the key B-tree and reread overflow pages during seeks.
@@ -262,7 +300,7 @@ CREATE VIEW provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetc
  c.payload AS payload,f.digest FROM provider_snapshot_fetches f
  JOIN provider_snapshot_contents c ON c.id=f.content_id;
 ${RECOVERABLE_TABLES.map(table => `CREATE VIEW active_${table} AS SELECT r.* FROM ${table} r
- WHERE ${selectedHistoryPredicate(table)};`).join('\n')}
+ WHERE ${selectedHistoryPredicate(table)} AND ${selectedCycleOwner(table)};`).join('\n')}
 CREATE VIEW active_provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
  c.payload AS payload,f.digest FROM active_provider_snapshot_fetches f
  JOIN active_provider_snapshot_contents c ON c.id=f.content_id;

@@ -324,10 +324,15 @@ async function createProjection(merge, runId) {
   for (;;) {
     const rows = target.db.prepare('SELECT * FROM learning_journal_entries WHERE epoch=? AND source_entry_id IS NULL AND id>? ORDER BY id LIMIT 64').all(epoch, after);
     if (!rows.length) break;
-    target.transaction(() => { for (const row of rows) {
-      const original = donor.db.prepare('SELECT * FROM learning_journal WHERE id=?').get(sources.get(row.id).id);
-      rememberContribution(target, recoveryId, 'learning_journal', row, original, donor);
-      after = row.id;
+    const receipts=[];let preparedAt=performance.now();
+    for(const row of rows) {
+      const original=donor.db.prepare('SELECT * FROM learning_journal WHERE id=?').get(sources.get(row.id).id);
+      receipts.push({row,original,fingerprint:merge.fingerprint('learning_journal',original)});
+      if(performance.now()-preparedAt>=16) {await yieldTurn();preparedAt=performance.now();}
+    }
+    target.transaction(() => { for (const {row,original,fingerprint} of receipts) {
+      rememberContribution(target,recoveryId,'learning_journal',row,original,donor,fingerprint);
+      after=row.id;
     } });
     await yieldTurn();
   }

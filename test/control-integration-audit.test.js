@@ -173,7 +173,7 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
   const deadline=r.engine.cycles.active().recoveryHoldUntil;
   assert.equal(status.decision.recoveryHoldActive,true);
   assert.equal(deadline,r.now+HOUR);
-  assert.deepEqual(native.values['0212'],40);assert.equal(native.values['0208'],50);
+  assert.deepEqual(native.values['0212'],45);assert.equal(native.values['0208'],50);
   assert.equal(native.values['2201'],2);assert.deepEqual(r.circulation,[]);
   r.room(20.4);
   for(let step=0;step<6;step++){
@@ -183,7 +183,7 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
     assert.equal(status.decision.recoveryCompressorOnly,false,'Cold room permits AUX throughout the rest of recovery');
     if(r.now<deadline){
       assert.equal(status.decision.recoveryHoldActive,true);
-      assert.equal(native.values['0212'],40);assert.equal(native.values['0208'],50);
+      assert.equal(native.values['0212'],45);assert.equal(native.values['0208'],50);
       assert.equal(native.values['2201'],1);assert.deepEqual(r.circulation,[]);
     }
   }
@@ -197,7 +197,7 @@ test('pausing price control during recovery restores native DHW settings for an 
   const r=setup(t);r.plan();r.engine.tick();await r.settle();
   const native=r.native();r.advance(MINUTE);native.refresh();
   r.engine.cycles.shorten(r.now,'synthetic-recovery-transition');r.engine.tick();await r.settle();
-  assert.equal(native.values['0212'],40);assert.equal(native.values['2201'],2);
+  assert.equal(native.values['0212'],45);assert.equal(native.values['2201'],2);
   r.engine.setTemporary({pauseUntil:new Date(r.now+HOUR).toISOString()});await r.settle();
   assert.equal(r.engine.cycles.active(),null);
   assert.equal(native.values['0212'],47);assert.equal(native.values['0208'],62);assert.equal(native.values['2201'],1);
@@ -219,7 +219,7 @@ test('an expiry-timer AUX release stays latched when fresh warm observations arr
   assert.equal(saved.phase,'recovery');
   assert.equal(saved.recoveryAuxReleasedAt,r.now);
   assert.equal(native.values['2201'],1,'An expired temperature assessment permits native AUX');
-  assert.equal(native.values['0212'],40);assert.equal(native.values['0208'],50);
+  assert.equal(native.values['0212'],45);assert.equal(native.values['0208'],50);
   const status=r.engine.tick();await r.settle();
   assert.equal(status.decision.recoveryCompressorOnly,false);
   assert.equal(status.decision.recoveryHoldUntil,saved.recoveryHoldUntil);

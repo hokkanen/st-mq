@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, observation, sample, recover, start, W } from './helpers/recovery-fixture.js';
+import { seedCycleEvidence } from './helpers/cycle-evidence.js';
 import { Store } from '../src/storage/store.js';
 import { recordLearningContext } from '../src/app/committed-learning.js';
 import { previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
@@ -43,11 +44,11 @@ test('source identity follows referenced evidence across local IDs and preserves
   }));
 });
 
-test('fingerprint provenance traversal rejects missing, cyclic and excessive references with bounded work', t => {
+test('fingerprint traversal rejects missing, cyclic and deep references while repeated IDs remain valid', t => {
   const f = fixture(t), id = observation(f.master, start);
   const row = payload => ({ type: 'synthetic', at: start, payload: JSON.stringify(payload) });
   assert.throws(() => sourceFingerprint(f.master, 'events', row({ observationId: id + 1 })), /missing record/);
-  assert.throws(() => sourceFingerprint(f.master, 'events', row({ observations: Array(2049).fill(id) })), /supported bounds/);
+  assert.match(sourceFingerprint(f.master,'events',row({observations:Array(2049).fill(id)})),/^[a-f0-9]{64}$/);
   let nested = { value: true }; for (let i = 0; i < 40; i++) nested = { nested };
   assert.throws(() => sourceFingerprint(f.master, 'events', row(nested)), /supported bounds/);
   assert.throws(() => sourceFingerprint(f.master, 'observations', { unit: 'kWh', raw: JSON.stringify(nested) }), /supported bounds/);
@@ -62,13 +63,12 @@ test('cycle observation objects retain frozen evidence while nested source refer
   const frozen = { at: start, indoorC: 21, outdoorC: 0, phase: 'normal',
     provenance: { observationId, lineage: { indoor_temperature: { observations: [observationId] } } } };
   const cycle = { id: 'invented-frozen-cycle', status: 'completed', startedAt: start, endedAt: start + W,
-    observations: [frozen], plan: { model: { trainedAt: start - W }, baseline: { energyKwh: 2 } } };
+    plan: { model: { trainedAt: start - W }, baseline: { energyKwh: 2 } } };
   const context = recordLearningContext(donor, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21,
     roomBoostC: 0, episodeId: cycle.id }, start);
   cycle.lastSample = { timestamp: start, indoorC: 21, episodeId: cycle.id,
     provenance: { lineage: { control_context: { journal: [context] } } } };
-  donor.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
-    .run(cycle.id, 'mqtt', start, start + W, cycle.status, JSON.stringify(cycle));
+  seedCycleEvidence(donor,{input:'mqtt',cycle,samples:[{at:start+W,rows:[{start,end:start+W,indoorC:21,outdoorC:0,phase:'normal'}],provenance:frozen.provenance}]});
   const source = donor.db.prepare('SELECT * FROM learning_cycles WHERE id=?').get(cycle.id);
   const fingerprint = sourceFingerprint(donor, 'learning_cycles', source);
   assert.match(fingerprint, /^[a-f0-9]{64}$/);
@@ -77,10 +77,12 @@ test('cycle observation objects retain frozen evidence while nested source refer
   const accepted = f.master.db.prepare('SELECT * FROM learning_cycles').get(), payload = JSON.parse(accepted.payload);
   const mappedId = f.master.db.prepare('SELECT id FROM observations WHERE source_time=?').get(start).id;
   assert.notEqual(mappedId, observationId);
-  assert.deepEqual(payload.observations, [{ ...frozen, provenance: { observationId: mappedId,
-    lineage: { indoor_temperature: { observations: [mappedId] } } } }]);
-  assert.deepEqual(payload.plan, cycle.plan);
-  assert.equal(payload.lastSample.episodeId, accepted.id);
+  const evidence=f.master.cycleEvidencePage({id:accepted.id});
+  assert.equal(evidence.rows.length,1);
+  assert.equal(evidence.rows[0].indoorC,21);
+  assert.deepEqual(evidence.samples[0].provenance,{observationId:mappedId,lineage:{indoor_temperature:{observations:[mappedId]}}});
+  assert.deepEqual(f.master.cycleById({id:accepted.id}).plan,cycle.plan);
+  assert.equal(payload.lastSample.timestamp,start+W);
   assert.equal(sourceFingerprint(f.master, 'learning_cycles', accepted), fingerprint);
   donor.event('synthetic-new-snapshot', {}, start + 2 * W);
   const repeated = await recover(f, await f.snapshot(donor));
@@ -88,12 +90,12 @@ test('cycle observation objects retain frozen evidence while nested source refer
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_cycles').get().n, 1);
 });
 
-test('cycle fingerprint bounds accommodate the current complete observation log', t => {
-  const f = fixture(t), id = observation(f.master, start);
-  const payload = { observations: Array.from({ length: 3001 }, (_, index) => ({ start: start + index,
-    end: start + index + 1, indoorC: 21, provenance: { observationId: id, lineage: { indoor: { observations: [id] } } } })) };
-  const row = () => ({ input: 'mqtt', started_at: start, payload: JSON.stringify(payload) });
-  assert.match(sourceFingerprint(f.master, 'learning_cycles', row()), /^[a-f0-9]{64}$/);
-  payload.observations.push(payload.observations[0]);
-  assert.throws(() => sourceFingerprint(f.master, 'learning_cycles', row()), /supported bounds/);
+test('cycle fingerprints stay bounded independently of the retained interval count',t=>{
+  const f=fixture(t),id=observation(f.master,start);
+  const value=seedCycleEvidence(f.master,{input:'mqtt',cycle:{id:'long-cycle',status:'completed',startedAt:start,endedAt:start+3002},
+    samples:[{at:start+3002,provenance:{observationId:id},rows:Array.from({length:3002},(_,index)=>({start:start+index,end:start+index+1,indoorC:21}))}]});
+  const row=f.master.db.prepare('SELECT * FROM learning_cycles WHERE id=?').get(value.id);
+  assert.match(sourceFingerprint(f.master,'learning_cycles',row),/^[a-f0-9]{64}$/);
+  assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_cycle_observations').get().n,3002);
+  assert.equal(Object.hasOwn(JSON.parse(row.payload),'observations'),false);
 });

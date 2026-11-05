@@ -66,7 +66,7 @@ test('a completed live receipt publishes the bounded cycle summary instead of wo
   };
   r.advance(60_000); r.engine.tick(); await r.settle();
   check();
-  assert(r.engine.cycles.active().observations.length > 0, 'working evidence remains retained');
+  assert(r.engine.cycles.active().observationCount > 0, 'working evidence remains retained');
 });
 
 test('a live trial continues after exposure grows beyond its initial estimate and stops at the actual budget cap', async t => {
@@ -100,8 +100,9 @@ test('a live trial continues after exposure grows beyond its initial estimate an
   assert.deepEqual(continued.plan, originalPlan);
   // The same real controller path still ends a trial when its authorized cap
   // cannot fund the updated exposure; the fix does not bypass the budget gate.
-  const capped = r.engine.cycles.active(); capped.plan.config.maxTrialCostCents = 0;
-  r.engine.cycles.save(capped);
+  const adverseMarket = r.store.getState('provider:market');
+  adverseMarket.intervals.forEach((row,i) => { if (i > 0) row.spotCtPerKwh = 5000; });
+  r.store.setState('provider:market',adverseMarket);
   r.advance(60_000); r.engine.tick(); await r.settle();
   assert.equal(r.engine.status().decision.phase, 'recovery');
   assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');

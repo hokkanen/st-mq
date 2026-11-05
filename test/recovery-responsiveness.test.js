@@ -1,3 +1,4 @@
+import { seedCycleEvidence } from './helpers/cycle-evidence.js';
 import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -109,12 +110,9 @@ test(`restoration preserves recovered energy conflicts when an overlapping pendi
 test('a full supported cycle provenance graph eventually recovers while unrelated recording continues', async t => {
   const f = fixture(t), donor = await f.donor();
   const observationId = observation(donor, start, 21);
-  const cycle = { id: 'synthetic-complete-cycle', status: 'completed', startedAt: start, endedAt: start + W,
-    observations: Array.from({ length: 3001 }, (_, index) => ({ start: start + index,
-      end: start + index + 1, indoorC: 21,
-      provenance: { observationId, lineage: { indoor: { observations: [observationId] } } } })) };
-  donor.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
-    .run(cycle.id, 'mqtt', cycle.startedAt, cycle.endedAt, cycle.status, JSON.stringify(cycle));
+  seedCycleEvidence(donor,{input:'mqtt',cycle:{id:'synthetic-complete-cycle',status:'completed',startedAt:start,endedAt:start+3001},
+    samples:[{at:start+3001,rows:Array.from({length:3001},(_,index)=>({start:start+index,end:start+index+1,indoorC:21})),
+      provenance:{observationId,lineage:{indoor:{observations:[observationId]}}}}]});
   const snapshot = await f.snapshot(donor);
   await f.master.startWriter();
   let writes = 0, largestGap = 0, last = performance.now(), ticks = 0, phase = null, slowestPhase = null;
@@ -142,7 +140,7 @@ test('a full supported cycle provenance graph eventually recovers while unrelate
     assert.equal(result.report.counts.skipped, 0);
     assert.equal(result.report.tables.find(value => value.name === 'learning_cycles').missing, 1);
     const saved = JSON.parse(f.master.db.prepare('SELECT payload FROM learning_cycles').get().payload);
-    assert.equal(saved.observations.length, 3001, 'all supported frozen evidence is retained');
+    assert.equal(saved.observationCount, 3001, 'all supported frozen evidence is retained');
     assert(writesDuringRecovery > 1, 'independent writes complete before recovery finishes');
     assert(ticks > 1, 'the heartbeat progresses independently of write completion');
     assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-independent-event'").get().n, writes,

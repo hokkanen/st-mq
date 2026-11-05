@@ -278,6 +278,9 @@ export function* databaseOverviewQueries({ store, now = Date.now() }) {
 
   const journal = yield* grouped('learning_journal', "CASE WHEN input IN ('mqtt','providers','simulated','offline') THEN kind ELSE 'inactive-scope' END", 'at');
   const cycles = yield* aggregate('learning_cycles', 'started_at', 'COALESCE(ended_at,started_at)');
+  const cycleDefinitions = yield* aggregate('learning_cycle_definitions','NULL');
+  const cycleSamples = yield* aggregate('learning_cycle_samples','sample_at');
+  const cycleObservations = yield* aggregate('learning_cycle_observations','start_at','end_at');
   const cycleFacts = yield* request(`SELECT SUM(status='completed') completed,SUM(status='incomplete') incomplete,
     SUM(json_type(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,'$.assessment')='object') assessed FROM learning_cycles`);
   const learningItems = ['sample', 'episode', 'context'].map(kind => item(`journal-${kind}`, {
@@ -300,11 +303,13 @@ export function* databaseOverviewQueries({ store, now = Date.now() }) {
       'This distinct journal kind is counted separately; it has no current writer description.', values, {
         writeBehavior: 'Unrecognized writer; inspect the current producer before interpreting these records.', fields: learningFields }));
   }
-  learningItems.push(item('learning-cycles', 'Cycle plans, execution and assessments', 'Each cycle contains its original plan and forecast, observations, adjustments, calculated costs and completed assessment when available.', cycles, {
-    countLabel: 'cycles', retention: 'mixed', retentionDescription: 'A cycle record is updated while active and retained after completion or interruption.',
+  learningItems.push(item('learning-cycles', 'Cycle plans, execution and assessments', 'Each cycle retains a compact execution summary, a frozen original plan and forecast, and separately appended observations with shared sample provenance.', cycles, {
+    countLabel: 'cycles', retention: 'mixed', retentionDescription: 'Only the compact summary changes while active. Frozen plans and appended source evidence remain after completion or interruption.',
     dateBasis: 'cycle start / end', writeBehavior: 'On planning and as a cycle progresses or completes.',
     facts: [{ label: 'Completed cycles', value: cycleFacts.completed ?? 0 }, { label: 'Incomplete cycles', value: cycleFacts.incomplete ?? 0 },
-      { label: 'Cycles with saved assessments', value: cycleFacts.assessed ?? 0 }],
+      { label: 'Cycles with saved assessments', value: cycleFacts.assessed ?? 0 },
+      { label: 'Frozen cycle definitions', value: cycleDefinitions.count }, { label: 'Source sample groups', value: cycleSamples.count },
+      { label: 'Recorded cycle intervals', value: cycleObservations.count }],
     fields: fields(['Original plan', 'Schedule, frozen model and configuration, weather and price assumptions.'],
       ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Recorded cycle cost, comparable space-heating cost and benefit, space-heating recovery error and uncertainty; hot-water service is excluded from benefit.']) }));
   add('learning', 'Learning history', 'Journal samples, episodes and contexts describe the selected model history. Other retained model epochs are listed under storage support. Cycle records retain original plans and outcomes, including records excluded by recovery corrections.', learningItems);
@@ -489,9 +494,13 @@ export function* databaseOverviewQueries({ store, now = Date.now() }) {
   const recoveryFacts = yield* request(`SELECT SUM(active=1) active,SUM(active=0) reverted,
     SUM(completed_at IS NULL) unfinished FROM history_recoveries`);
   // Only exclusions belonging to the published selection count as excluded
-  // history. Indexed source lookups avoid scanning the history again for each
-  // view, and ignore stale references to rows no longer physically retained.
+  // history. Cycle evidence also follows its selected definition and sample
+  // owners. Physical keyset batches keep those checks bounded; stale references
+  // to rows no longer retained do not count as excluded source records.
   const excludedRows = function* (table) {
+    if (['learning_cycles','learning_cycle_definitions','learning_cycle_samples','learning_cycle_observations'].includes(table))
+      return Number((yield* request(`SELECT COUNT(*) count FROM ${table} r
+        WHERE NOT EXISTS(SELECT 1 FROM active_${table} selected WHERE selected.id=r.id)`)).count);
     const physical = table === 'learning_journal' ? 'learning_journal_entries' : table;
     const lookup = table === 'import_rows'
       ? "r.import_id=CAST(substr(x.record_key,1,instr(x.record_key,':')-1) AS INTEGER) AND r.row_number=CAST(substr(x.record_key,instr(x.record_key,':')+1) AS INTEGER)"
@@ -621,6 +630,7 @@ export function* databaseOverviewQueries({ store, now = Date.now() }) {
     recorder_coverage: coverage.count, recorder_metrics: metrics.count, energy_audits: audits.count,
     learning_journal_entries: journalEntries.count, learning_epochs: epochs.count, recovery_runs: recoveryRuns.count,
     recovery_provenance: recoverySources.count, learning_cycles: cycles.count,
+    learning_cycle_definitions: cycleDefinitions.count, learning_cycle_samples: cycleSamples.count, learning_cycle_observations: cycleObservations.count,
     fireplace_events: sum([...fireplace.values()]).count,
     charging_reports: chargingReports.count, charging_report_events: chargingEvents.count, charging_report_contexts: chargingContexts.count,
     history_recoveries: recoveries.count, recovery_members: recoveryMembers.count, recovery_decisions: recoveryDecisions.count,

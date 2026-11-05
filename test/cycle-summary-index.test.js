@@ -16,17 +16,15 @@ function recordedReads(store) {
 }
 
 function incompletePrefix(store, count) {
-  const insert = store.db.prepare(`INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload)
-    VALUES(?,'providers',?,?,'incomplete',?)`);
-  store.transaction(() => {
-    for (let i = 0; i < count; i++) insert.run(`incomplete-${i}`, 1000 + i, 1001 + i,
-      JSON.stringify({ id: `incomplete-${i}`, status: 'incomplete', startedAt: 1000 + i, endedAt: 1001 + i }));
+  for (let offset=0;offset<count;offset+=128) store.transaction(() => {
+    for (let i=offset;i<Math.min(count,offset+128);i++) store.cycle('providers', { id: `incomplete-${i}`,
+      status: 'incomplete', startedAt: 1000+i, endedAt: 1001+i });
   });
 }
 
 function assertCompletedSeeks(plans) {
   for (const plan of plans) {
-    assert(plan.some(detail => /learning_cycles_completed_start.*input=/.test(detail)), plan.join('\n'));
+    assert(plan.some(detail => /learning_cycles_completed_start.*input=|INDEX.*input=/.test(detail)), plan.join('\n'));
     assert(!plan.some(detail => /SCAN (?:r|learning_cycles)\b|USE TEMP B-TREE FOR ORDER BY/.test(detail)), plan.join('\n'));
   }
 }

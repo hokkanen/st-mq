@@ -198,8 +198,10 @@ test('reverting a reset leaves its cancelled cycle and frozen observations intac
     schedule: { preheatStart: cycleStart, preheatEnd: cycleStart, reductionStart: cycleStart, reductionEnd: start + HOUR, roomBoostC: 0 },
     reference: null, occupancy: { mode: 'occupied' }, maxDropC: 1, equipment: {} };
   const cycle = f.engine.cycles.start(plan, { timestamp: cycleStart, indoorC: 21.5 }, cycleStart);
-  cycle.observations.push({ start: cycleStart, end: start, indoorC: 21, electricityKwh: 1 });
-  cycle.actual.electricityKwh = 1; f.engine.cycles.save(cycle);
+  cycle.observationCount = 1; cycle.lastSample = { timestamp: start, indoorC: 21 };
+  cycle.phases = ['reduction']; cycle.actual.electricityKwh = 1;
+  f.store.appendCycleEvidence('providers',cycle,[{ start: cycleStart, end: start, indoorC: 21, electricityKwh: 1 }],{sampleAt:start});
+  f.engine.cycles.save(cycle);
   const changed = f.engine.changeSensor({ requestId: 'invented-cycle-reset', signal: 'indoor_temperature', reason: 'moved' });
   const cancelled = structuredClone(f.store.cycles({ input: 'providers' }));
   assert.equal(cancelled[0].status, 'incomplete');

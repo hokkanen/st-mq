@@ -19,7 +19,9 @@ import { validateSavedChargingState } from '../charging/saved-state.js';
 import { validateSavedCaravanPowerTiming } from '../domain/caravan-power-timing.js';
 import { validateSavedCaravanQualification } from '../domain/caravan-qualification.js';
 import { createDatabaseBackup } from './backup.js';
+import { decodeCycleWorking } from '../domain/cycle-working-state.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
+import { saveCycle, readCycle, cycleFromRow, appendCycleEvidence, cycleEvidencePage, cycleEvidence, validateActiveCyclePointers, validateCycleStorage } from './cycle-evidence.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
 import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
@@ -123,8 +125,12 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
     { code: 'database_integrity_failed' });
 }
 
-export function validateCurrentDatabase(db, { full = false, readOnly = false } = {}) {
+export function validateCurrentDatabase(db, { full = false, readOnly = false, onCycleProgress } = {}) {
   validateCurrentDatabaseFormat(db, { full });
+  validateActiveCyclePointers(db);
+  for (const row of db.prepare("SELECT key,value FROM state WHERE key GLOB 'cycle:working:*'").iterate())
+    decodeCycleWorking(row.value,row.key.slice('cycle:working:'.length));
+  if (full) validateCycleStorage(db,onCycleProgress);
   validateCoefficientHistory(db,{full});
   // Writable startup rejects unsupported active caches before mutation. A
   // read-only evidence viewer can expose independent observations even when a
@@ -867,15 +873,27 @@ export class Store {
   cycle(input, cycle) {
     if (!['active','completed','incomplete'].includes(cycle?.status)) throw new TypeError('Invalid cycle status');
     if (cycle.endedAt != null && instant(cycle.endedAt,'cycle end') < cycle.startedAt) throw new TypeError('Cycle end precedes its start');
-    this.db.prepare(`INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at,status=excluded.status,payload=excluded.payload`)
-      .run(label(cycle.id, 'cycle id'), label(input, 'input'), instant(cycle.startedAt, 'cycle start'),
-        cycle.endedAt ?? null, label(cycle.status, 'cycle status'), json(cycle));
+    label(cycle.id, 'cycle id'); label(input, 'input'); instant(cycle.startedAt, 'cycle start');
+    return this.transaction(() => saveCycle(this, input, cycle));
   }
 
+  cycleById({ id, input } = {}) {
+    label(id, 'cycle id'); if (input !== undefined) label(input, 'input');
+    return readCycle(this, id, { input });
+  }
+
+  appendCycleEvidence(input, cycle, rows, options) {
+    label(input, 'input'); label(cycle?.id, 'cycle id');
+    return this.transaction(() => appendCycleEvidence(this, input, cycle, rows, options));
+  }
+
+  cycleEvidencePage(options) { return cycleEvidencePage(this, options); }
+  cycleEvidence(id, options) { return cycleEvidence(this, id, options); }
+
   cycles({ input, limit = 100, completedOnly = false } = {}) {
-    return this.db.prepare(`SELECT payload FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
-      ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit)).map(row => JSON.parse(row.payload));
+    return this.db.prepare(`SELECT c.*,d.payload AS definition FROM active_learning_cycles c
+      LEFT JOIN learning_cycle_definitions d ON d.id=c.id WHERE c.input=? ${completedOnly ? "AND c.status='completed'" : ''}
+      ORDER BY c.started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit)).map(cycleFromRow);
   }
 
   /** Dashboard/control summaries avoid materializing complete observation tapes. */
@@ -891,7 +909,7 @@ export class Store {
       json_extract(payload,'$.actual.missingHours') AS missingHours,
       json_extract(payload,'$.actual.auxiliarySpaceObserved') AS auxiliarySpaceObserved,
       json_extract(payload,'$.incompleteReason') AS incompleteReason,
-      json_extract(payload,'$.plan.trial') AS trial,
+      trial,
       json_extract(payload,'$.actual.compressorRunHours') AS compressorRunHours
       FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
       ${since === null ? '' : 'AND started_at>=?'}

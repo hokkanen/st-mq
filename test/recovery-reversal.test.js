@@ -1,3 +1,4 @@
+import { seedCycleEvidence } from './helpers/cycle-evidence.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, observation, sample, recover, start, W } from './helpers/recovery-fixture.js';
@@ -195,9 +196,9 @@ test('rejecting recovered observations invalidates dependent savings without del
   const first = await recover(f, await f.snapshot(donor));
   const id = f.master.observations()[0].id;
   const cycle = { id: 'invented-dependent-cycle', input: 'mqtt', startedAt: start, endedAt: start + W, status: 'completed',
-    observations: [{ provenance: { observationId: id } }], assessment: { basis: 'estimated-space-heating-execution-and-reference', profitCents: 200 } };
-  f.master.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
-    .run(cycle.id, 'mqtt', start, start + W, cycle.status, JSON.stringify(cycle));
+    assessment: { basis: 'estimated-space-heating-execution-and-reference', profitCents: 200 } };
+  seedCycleEvidence(f.master,{input:'mqtt',cycle,samples:[{at:start+W,rows:[{start,end:start+W,indoorC:21}],provenance:{observationId:id}}]});
+  const originalHeader=f.master.db.prepare('SELECT payload FROM learning_cycles WHERE id=?').get(cycle.id).payload;
   const review = await previewRecoveryRevision({ store: f.master, input: 'mqtt', recoveryId: first.report.recoveryId,
     active: false, signal: t.signal });
   assert.equal(review.impact.direct, 1);
@@ -207,7 +208,7 @@ test('rejecting recovered observations invalidates dependent savings without del
   assert.equal(review.period.to, start, 'Original recovered dates stay distinct from later affected assessments');
   await change(f, first.report.recoveryId, false);
   assert(f.master.db.prepare("SELECT 1 FROM recovery_exclusions WHERE generation=(SELECT generation FROM history_selection) AND table_name='cycle_assessments' AND record_key=?").get(cycle.id));
-  assert.deepEqual(JSON.parse(f.master.db.prepare('SELECT payload FROM learning_cycles WHERE id=?').get(cycle.id).payload), cycle);
+  assert.equal(f.master.db.prepare('SELECT payload FROM learning_cycles WHERE id=?').get(cycle.id).payload,originalHeader);
   await change(f, first.report.recoveryId, true);
   assert.equal(f.master.db.prepare("SELECT 1 FROM recovery_exclusions WHERE generation=(SELECT generation FROM history_selection) AND table_name='cycle_assessments' AND record_key=?").get(cycle.id), undefined);
 });

@@ -157,7 +157,7 @@ test('historical worker cache follows assessment edits without telemetry and ign
   assert.equal((await service.query(args)).heatingBenefit.valueEuro, 1.25);
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.setState('synthetic-unrelated-checkpoint', { tick: 2 });
-  store.cycle('providers', { ...cycle, observations: [{ synthetic: true }] });
+  store.cycle('providers', { ...cycle, sourceReview: { synthetic: true } });
   assert.equal((await service.query(args)).meta.cacheHit, true);
   store.cycle('providers', { ...cycle, assessment: { ...cycle.assessment, profitCents: -50 } });
   let result = await service.query(args);

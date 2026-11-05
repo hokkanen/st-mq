@@ -39,7 +39,7 @@ function canonicalValue(value) {
 }
 function verify({ db, checkpoint }) {
   progress({ phase: 'checking-contracts', processed: 0, checkpoint }, true);
-  validateCurrentDatabase(db, { full: true });
+  validateCurrentDatabase(db, { full: true, onCycleProgress: processed => progress({ phase: 'checking-cycles', processed, unit: 'intervals', checkpoint }) });
   progress({ phase: 'checking-journal', processed: 0, checkpoint }, true);
   const journal = verifyJournal(db);
   progress({ phase: 'checking-dependencies', processed: 0, checkpoint }, true);

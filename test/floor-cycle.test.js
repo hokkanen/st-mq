@@ -52,9 +52,9 @@ test('frozen observer follows recorded source temperatures and floor ON/OFF with
   }
   const active = f.tracker.active();
   assert.equal(active.treatmentKey, treatmentKey);
-  assert.deepEqual(active.observations.map(row => row.floorOverrideMode), ['on', 'on', 'off', 'off']);
-  assert.deepEqual(active.observations.map(row => row.supplyC), [45, 45, 35, 35]);
-  assert.ok(active.observations.every(row => row.treatmentKey === treatmentKey && row.brineC === 0));
+  assert.deepEqual([...f.store.cycleEvidence(active.id)].map(row => row.floorOverrideMode), ['on', 'on', 'off', 'off']);
+  assert.deepEqual([...f.store.cycleEvidence(active.id)].map(row => row.supplyC), [45, 45, 35, 35]);
+  assert.ok([...f.store.cycleEvidence(active.id)].every(row => row.treatmentKey === treatmentKey && row.brineC === 0));
 });
 
 test('corrected frozen observer reproduces recorded floor routing across sub-sample transitions', t => {
@@ -70,6 +70,7 @@ test('corrected frozen observer reproduces recorded floor routing across sub-sam
       f.tracker.record(row, end);
     }
   }
+  const beforeEvidence = [...fired.store.cycleEvidence(fired.tracker.active().id)];
   const before = fired.tracker.active(), expected = clean.tracker.active().observerState;
   assert.notEqual(before.observerState.slabC, expected.slabC);
   removeFireplace(fired.store, 'mqtt', { requestId: 'invented-floor-correction-remove', id: load.id }, start + 2 * HOUR + 1);
@@ -79,7 +80,7 @@ test('corrected frozen observer reproduces recorded floor routing across sub-sam
   near(corrected.observerState.reserveC, expected.reserveC);
   near(corrected.observerState.slabC, expected.slabC);
   assert.deepEqual(corrected.actual, before.actual);
-  assert.deepEqual(corrected.observations, before.observations);
+  assert.deepEqual([...fired.store.cycleEvidence(corrected.id)], beforeEvidence);
   assert.deepEqual(corrected.plan, before.plan);
 });
 
@@ -93,7 +94,7 @@ test('room and native reserve recovery cannot complete a cycle while selected sl
     assert.equal(f.tracker.record(row, row.timestamp), null);
   }
   const active = f.tracker.active();
-  const intervals = active.observations.map(({ start, end, outdoorC, solarRadiationWm2, price }) =>
+  const intervals = [...f.store.cycleEvidence(active.id)].map(({ start, end, outdoorC, solarRadiationWm2, price }) =>
     ({ start, end, outdoorC, solarRadiationWm2, price }));
   const reference = evaluateCycle({ ...active.plan, intervals, schedule: null, config: active.modelConfig, includeTail: false });
   assert.ok(active.lastSample.indoorC >= reference.endState.indoorC - 0.2);

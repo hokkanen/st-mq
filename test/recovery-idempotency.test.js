@@ -1,3 +1,4 @@
+import { seedCycleEvidence } from './helpers/cycle-evidence.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -145,12 +146,10 @@ test('remapped cycle and event provenance remain already present when donor snap
   observation(target, start + HOUR);
   const observationId = observation(donor, start);
   const cycleId = 'invented-active-cycle';
-  donor.db.prepare(`INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload)
-    VALUES(?,?,?,NULL,?,?)`).run(cycleId, 'mqtt', start, 'active',
-    JSON.stringify({ id: cycleId, status: 'active', provenance: { observations: [observationId] } }));
+  seedCycleEvidence(donor,{input:'mqtt',cycle:{id:cycleId,status:'active',startedAt:start,provenance:{observations:[observationId]}}});
   donor.event('invented-cycle-evidence', { observationId, cycleId }, start);
   const merge = digest => new HistoryMerge({ target, donor, donorDigest: digest.repeat(64), input: 'mqtt' }).run();
-  assert.equal((await merge('a')).counts.missing, 3);
+  assert.equal((await merge('a')).counts.missing, 4);
   const cycle = target.db.prepare('SELECT * FROM learning_cycles').get();
   assert.equal(cycle.status, 'incomplete', 'a recovered active cycle cannot become active control state');
   const event = target.events().find(row => row.type === 'invented-cycle-evidence');

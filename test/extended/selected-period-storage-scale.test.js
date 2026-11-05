@@ -167,14 +167,12 @@ test('recent Home savings seek the same long-start outcomes and selected assessm
     const store = new Store(join(directory, `fixture-${oldRows}.sqlite`));
     try {
       const oldStart = range.from - 50_024 * HOUR;
-      const old = store.db.prepare(`INSERT INTO learning_cycles VALUES(?,'providers',?,?,'completed',?)`);
       const assessment = { profitCents: 125, uncertaintyCents: 25, referenceCostCents: 300,
         actualSpaceHeatingCostCents: 175, basis: 'estimated-space-heating-execution-and-reference' };
       for (let offset = 0; offset < oldRows; offset += 128) store.transaction(() => {
         for (let n = offset; n < Math.min(oldRows, offset + 128); n++) {
           const startedAt = oldStart + n * HOUR, endedAt = startedAt + 1000;
-          old.run(`synthetic-old-${n}`, startedAt, endedAt, JSON.stringify({ id: `synthetic-old-${n}`,
-            startedAt, endedAt, status: 'completed', assessment }));
+          store.cycle('providers',{ id: `synthetic-old-${n}`,startedAt,endedAt,status:'completed',assessment });
         }
       });
       const save = (id, status, startedAt, endedAt) => store.cycle('providers', { id, status, startedAt, endedAt, assessment });

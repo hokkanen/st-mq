@@ -28,12 +28,12 @@ function sample(start,end,powerKw,extra={}) {
 
 test('completed power stays on its own side of a 100-to-1 price boundary',t=>{
   const prices=[{start:now,end:now+60000,price:100},{start:now+60000,end:now+H,price:1}];
-  const {tracker}=rig(t,prices.map(row=>({...row,outdoorC:21,solarRadiationWm2:0})));
+  const {tracker,store}=rig(t,prices.map(row=>({...row,outdoorC:21,solarRadiationWm2:0})));
   tracker.record(sample(now,now+60000,3,{priceIntervals:prices}),now+60000);
   tracker.record(sample(now+60000,now+120000,0,{priceIntervals:prices}),now+120000);
   assert.ok(Math.abs(tracker.active().actual.electricityKwh-.05)<1e-12);
   assert.ok(Math.abs(tracker.active().actual.costCents-5)<1e-12);
-  assert.deepEqual(tracker.active().observations.map(o=>o.powerKw),[3,0]);
+  assert.deepEqual([...store.cycleEvidence(tracker.active().id)].map(o=>o.powerKw),[3,0]);
 });
 
 test('joint route segments separate DHW compressor and AUX from space recovery',t=>{

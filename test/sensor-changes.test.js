@@ -213,8 +213,10 @@ test('sensor changes end an active heating cycle as incomplete without rewriting
     schedule: { preheatStart: start, preheatEnd: start, reductionStart: start, reductionEnd: now + HOUR, roomBoostC: 0 },
     reference: null, occupancy: { mode: 'occupied' }, maxDropC: 1, equipment: {} };
   const cycle = engine.cycles.start(plan, { timestamp: start, indoorC: 21.5 }, start);
-  cycle.observations.push({ start, end: now, indoorC: 21, electricityKwh: 1 });
-  cycle.actual.electricityKwh = 1; engine.cycles.save(cycle);
+  cycle.observationCount = 1; cycle.lastSample = { timestamp: now, indoorC: 21 };
+  cycle.phases = ['reduction']; cycle.actual.electricityKwh = 1;
+  store.appendCycleEvidence('providers',cycle,[{ start: start, end: now, indoorC: 21, electricityKwh: 1 }],{sampleAt:now});
+  engine.cycles.save(cycle);
   const before = structuredClone(store.cycles({ input: 'providers' })[0]);
   engine.changeSensor(change());
   const after = store.cycles({ input: 'providers' })[0];
@@ -223,7 +225,8 @@ test('sensor changes end an active heating cycle as incomplete without rewriting
   assert.equal(after.incompleteReason, 'sensor-measurement-changed');
   assert.deepEqual(after.plan, before.plan);
   assert.deepEqual(after.originalPrediction, before.originalPrediction);
-  assert.deepEqual(after.observations, before.observations);
+  assert.equal(after.observationCount,1);
+  assert.deepEqual([...store.cycleEvidence(after.id)].map(row => row.electricityKwh),[1]);
   assert.deepEqual(after.actual, before.actual);
   assert.equal(engine.checkpoint.model.energy.episodes, 0);
 });

@@ -7,7 +7,7 @@ import { replayLearningJournal } from '../src/app/committed-learning.js';
 import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
 const cycle = (id, index = 0) => ({
-  id, input: 'mqtt', status: 'completed', startedAt: start + (index + 3) * W,
+  id, input: 'mqtt', observationCount:0, status: 'completed', startedAt: start + (index + 3) * W,
   endedAt: start + (index + 4) * W, plan: { model: { trainedAt: start + 2 * W } },
   actual: { costCents: 80 }, assessment: { profitCents: 20, uncertaintyCents: 5, recoveryErrorCents: 2 },
 });

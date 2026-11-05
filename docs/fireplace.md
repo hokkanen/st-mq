@@ -136,13 +136,13 @@ household data. The results are workload estimates, not a hard upper bound on a
 live database, its WAL or repeated temporary writes. Raw telemetry recording rates
 and CSV import formats are unchanged.
 
-A 365-day synthetic run with four loads per day, 10% removals and two retained
-8-hour cycles per day measured **2.46–3.42 MB of first-year additional SQLite
-storage**, depending on whether 15-minute observations retained one segment or
-three 5-minute segments. This includes approximately 0.50 MB of bounded checkpoint
-overhead, counted once, plus source events, cycle records and longer journal version
-identifiers. Raw learning-window payloads remained unchanged. Different control-cycle
-or source-segment density changes this estimate; it is not a guaranteed 5 MB cap.
+The benchmark uses the current append-only cycle representation and the same
+current learning algorithm on both sides. Its analytical comparison removes
+fireplace/endpoint metadata, retaining other source resolution and numeric
+lengths. Original plans and forecasts are stored once; sample provenance is
+shared by its intervals. Historical measurements from the earlier inline-cycle
+format do not describe the current layout. Run the benchmark for a dated workload
+measurement rather than treating an older annual estimate as a storage cap.
 
 The authoritative database stores no new interval or daily firewood savings rows.
 Paired savings are reconstructed in the read-only chart worker. A private disposable

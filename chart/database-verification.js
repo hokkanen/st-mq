@@ -38,6 +38,7 @@ export function verificationActivityText(activity, formatTime = value => new Dat
   if (active) {
     const progress = active.progress?.processed ? ` · ${active.progress.processed.toLocaleString()} records checked` : '';
     const phase = { 'checking-transfer': 'Checking snapshot transfer bytes', 'checking-contracts': 'Checking saved data contracts',
+      'checking-cycles': 'Checking cycle source intervals and provenance groups',
       'checking-journal': 'Checking retained transaction history and current row fingerprints',
       'checking-dependencies': 'Checking recovery source references',
       'checking-integrity': 'Checking SQLite integrity', checking: 'Checking current content' }[active.progress?.phase] ?? 'Full verification running';

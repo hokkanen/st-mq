@@ -12,7 +12,8 @@ import { assertCurrentChargingSessionCheck } from '../app/charging-session-check
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { observationTimeAdmitted, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { validCaravanCoverageEvidence } from '../domain/caravan-recording-evidence.js';
-import { rememberContribution, rejectedContribution, sourceFingerprint } from './ledger.js';
+import { rememberContribution, rejectedContribution, sourceFingerprint, pinnedSourceFingerprints } from './ledger.js';
+import { verifyCycleEvidencePages } from './cycle-validation.js';
 
 import { ScratchMap, ScratchList, initializeScratch } from './scratch.js';
 
@@ -76,7 +77,7 @@ const energyEquivalent = (old, row, raw) => {
     && raw?.basis === previous?.basis && raw?.timeBasis === previous?.timeBasis;
 };
 const ID_TABLES = ['imports', 'observations', 'recorder_coverage', 'provider_snapshot_contents',
-  'provider_snapshot_fetches', 'fireplace_events', 'learning_cycles', 'learning_journal'];
+  'provider_snapshot_fetches', 'fireplace_events', 'learning_cycles', 'learning_cycle_definitions', 'learning_cycle_samples', 'learning_cycle_observations', 'learning_journal'];
 
 export function emptyReport() {
   return { policy: RECOVERY_POLICY, counts: Object.fromEntries(dispositions.map(key => [key, 0])),
@@ -88,7 +89,7 @@ export function emptyReport() {
  * accumulators and old adaptive checkpoints are never copied from the donor.
  * Valid frozen energy tails become immutable history with separate provenance. */
 export class HistoryMerge {
-  constructor({ target, donor, donorDigest, input, recoveryId, progress = () => {}, now = Date.now(), yieldControl = yieldTurn }) {
+  constructor({ target, donor, donorDigest, input, recoveryId, progress = () => {}, now = Date.now(), yieldControl = yieldTurn, signal }) {
     this.target = target; this.donor = donor; this.digest = donorDigest; this.input = input;
     if (!target.readOnly) initializeScratch(target.db);
     this.progress = progress; this.report = emptyReport();
@@ -97,7 +98,29 @@ export class HistoryMerge {
     this.journal = new ScratchList(target.db, 'accepted-journal'); this.processed = 0;
     this.now = now; this.metrics = new Recorder(target);
     this.recoveryId = recoveryId;
-    this.yieldControl = yieldControl;
+    this.yieldControl = yieldControl; this.signal=signal;
+    this.fingerprintSession=donor.readOnly && donor.db.isTransaction && donorDigest
+      ? pinnedSourceFingerprints(donor,{binding:donorDigest,isCurrent:()=>!signal?.aborted}) : null;
+  }
+  checkCancellation() {this.signal?.throwIfAborted();}
+  fingerprint(table,row) {
+    if(this.preparedRow?.table===table && this.preparedRow.row===row) return this.preparedRow.fingerprint;
+    if(this.preparedRow?.definition?.row===row && table==='learning_cycle_definitions') return this.preparedRow.definition.fingerprint;
+    if(this.preparedRow?.parent?.row===row && table==='learning_cycles') return this.preparedRow.parent.fingerprint;
+    if(this.applyingRows) throw new Error('Donor fingerprints must be prepared before writer admission');
+    this.checkCancellation();
+    return this.fingerprintSession?.fingerprint(table,row) ?? sourceFingerprint(this.donor,table,row);
+  }
+  prepareFingerprint(table,row) {
+    const value={table,row,fingerprint:this.fingerprint(table,row)};
+    if(table==='learning_cycles') {
+      const definition=this.donor.db.prepare('SELECT * FROM active_learning_cycle_definitions WHERE id=?').get(row.id);
+      if(definition) value.definition={row:definition,fingerprint:this.fingerprint('learning_cycle_definitions',definition)};
+    } else if(table==='learning_cycle_samples' || table==='learning_cycle_observations') {
+      const parent=this.donor.db.prepare('SELECT * FROM active_learning_cycles WHERE id=?').get(row.cycle_id);
+      if(parent) value.parent={row:parent,fingerprint:this.fingerprint('learning_cycles',parent)};
+    }
+    return value;
   }
   count(table, disposition, at = null) {
     let row = this.report.tables.find(value => value.name === table);
@@ -120,10 +143,10 @@ export class HistoryMerge {
     const row = this.target.db.prepare('SELECT target_id,disposition FROM recovery_provenance WHERE donor_digest=? AND table_name=? AND donor_id=?')
       .get(this.digest, table, String(id));
     if (!row) return null;
-    return { id: table === 'learning_cycles' ? row.target_id : row.target_id === null ? null : Number(row.target_id), disposition: row.disposition };
+    return { id: ['learning_cycles','learning_cycle_definitions'].includes(table) ? row.target_id : row.target_id === null ? null : Number(row.target_id), disposition: row.disposition };
   }
-  insert(table, row) {
-    const fingerprint = this.recoveryId ? sourceFingerprint(this.donor, table, this.sourceRow ?? row) : undefined;
+  insert(table, row, preparedFingerprint) {
+    const fingerprint = this.recoveryId ? preparedFingerprint ?? this.fingerprint(table,this.sourceRow ?? row) : undefined;
     const columns = Object.keys(row);
     const result = this.target.db.prepare(`INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`).run(...columns.map(key => row[key]));
     const id = row.id ?? Number(result.lastInsertRowid);
@@ -145,21 +168,36 @@ export class HistoryMerge {
     this.metrics.count({ key: recordingStreamKey(observation) }, row.received_at,
       { saved: true, polls: 0, bytes: Buffer.byteLength(json(row)) });
   }
-  async rows(table, fn, { query = `SELECT * FROM active_${table} ORDER BY id`, map = true, group, prepare } = {}) {
+  async rows(table, fn, { query = `SELECT * FROM active_${table} ORDER BY id`, map = true, group, prepare, sourceEvidence = true } = {}) {
     let batch = [], size = 0;
     const grouped = new ScratchMap(this.target.db, 'phase-cohorts'); grouped.initialize();
     const flush = async () => {
+      // Resolve source graphs with no target writer held. Keep only a bounded
+      // cohort's digest receipts; cancellation can stop before admission.
+      const prepared=new WeakMap();let preparedAt=performance.now();
+      for(const cohort of batch) for(const row of cohort) {
+        this.checkCancellation();
+        try {prepared.set(row,sourceEvidence?this.prepareFingerprint(table,row):{table,row});}
+        catch(error) {
+          if(!(error instanceof TypeError || error instanceof SyntaxError || error?.code==='RECOVERY_ROW_INVALID')) throw error;
+          prepared.set(row,{error});
+        }
+        if(performance.now()-preparedAt>=16) {await this.yieldControl();this.checkCancellation();preparedAt=performance.now();}
+      }
+      await this.yieldControl();this.checkCancellation();
       let next = 0;
       while (next < batch.length) {
         const started = performance.now();
-        this.target.transaction(() => {
+        this.checkCancellation();this.applyingRows=true;
+        try { this.target.transaction(() => {
           do {
             const cohort = batch[next++];
             const forced = prepare?.(cohort);
             for (const row of cohort) {
             try {
-              this.sourceRow = row;
-              if (rejectedContribution(this.target, table, row, this.donor)) {
+              this.sourceRow = row;this.preparedRow=prepared.get(row);
+              if(this.preparedRow.error) throw this.preparedRow.error;
+              if (sourceEvidence && rejectedContribution(this.target, table, row, this.donor,this.preparedRow.fingerprint)) {
                 this.count(table, 'conflicts');
                 if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: 'conflicts' });
                 continue;
@@ -192,12 +230,18 @@ export class HistoryMerge {
               // full, locks, malformed schema) abort instead of claiming success.
               if (!(error instanceof TypeError || error instanceof SyntaxError || error?.code === 'RECOVERY_ROW_INVALID')) throw error;
               this.count(table, 'skipped'); if (map) this.remember(table, row.id, null, 'skipped');
-            } finally { this.sourceRow = null; }
+            } finally {
+              if(table.startsWith('learning_cycle_') && row.cycle_id && ['conflicts','skipped'].includes(this.known(table,row.id)?.disposition)) {
+                const cycle=this.known('learning_cycles',row.cycle_id);
+                if(cycle) this.maps.learning_cycles.set(row.cycle_id,{...cycle,disposition:'conflicts'});
+              }
+              this.sourceRow = null;this.preparedRow=null;
+            }
             }
           // Keep a phase cohort indivisible, but release the writer promptly even
           // when comparison/provenance work makes a nominal 64-row batch costly.
           } while (next < batch.length && performance.now() - started < 16);
-        });
+        }); } finally {this.applyingRows=false;}
         if (next === batch.length) {
           this.processed += size;
           this.progress({ phase: 'importing', processed: this.processed });
@@ -570,13 +614,16 @@ export class HistoryMerge {
           this.count(PENDING_ENERGY, 'skipped');
           this.remember(PENDING_ENERGY, digest([checkpoint.key, 'invalid']), null, 'skipped');
         });
-      } else this.target.transaction(() => {
+      } else {
+        const fingerprints=rows.map(row=>this.fingerprint('observations',row));
+        await this.yieldControl();this.checkCancellation();
+        this.target.transaction(() => {
         const ids = rows.map(row => digest([checkpoint.key, row.signal]));
         const prior = ids.map(id => this.known(PENDING_ENERGY, id));
         const removed = prior.some(value => value?.disposition === 'missing' && value.id !== null
           && !this.target.db.prepare('SELECT 1 FROM active_observations AS observations WHERE id=?').get(value.id));
         const overlaps = rows.map(row => this.observationOverlap(row, decode(row.raw)));
-        const rejected = rows.some(row => rejectedContribution(this.target, 'observations', row, this.donor));
+        const rejected = rows.some((row,i) => rejectedContribution(this.target,'observations',row,this.donor,fingerprints[i]));
         const disposition = removed || rejected ? 'conflicts' : overlaps.every((old, i) => old && energyEquivalent(old, rows[i], decode(rows[i].raw)))
           ? 'duplicates' : overlaps.some(Boolean) ? 'conflicts' : 'missing';
         for (let i = 0; i < rows.length; i++) {
@@ -586,7 +633,7 @@ export class HistoryMerge {
             delete raw.pending;
             raw.recorder = { version: RECORDING_VERSION, policy: 'adaptive-energy', reason: 'recovered-open-interval', group: identity[2] };
             raw.recovery = { kind: 'frozen-recorder-energy', donorDigest: this.digest, donorState: digest(checkpoint.key) };
-            id = this.insert('observations', { ...row, raw: json(raw), import_id: null, row_number: null });
+            id = this.insert('observations', { ...row, raw: json(raw), import_id: null, row_number: null },fingerprints[i]);
           }
           this.count(PENDING_ENERGY, disposition, rows[i].source_time);
           // A deliberate master deletion remains a durable tombstone, even if
@@ -594,6 +641,7 @@ export class HistoryMerge {
           if (prior[i]?.disposition !== 'missing') this.remember(PENDING_ENERGY, ids[i], id, disposition);
         }
       });
+      }
       this.processed += Math.max(rows.length, 1);
       this.progress({ phase: 'importing', processed: this.processed });
       await this.yieldControl();
@@ -689,39 +737,98 @@ export class HistoryMerge {
             return reference(table, entry);
           });
         }
-        else if (key === 'forecastVersion' && object(item)) {
+        else if (['forecastVersion','forecast_version','lastForecastVersion'].includes(key) && object(item)) {
           node[key] = { ...item, id: reference('provider_snapshot_fetches', item.id), contentId: reference('provider_snapshot_contents', item.contentId) };
         } else visit(item);
       }
     };
     visit(result);
-    if (references.size && object(result)) result.recoveryReferences = { donorDigest: this.digest, entries: [...references.values()] };
+    if (references.size && object(result)) result.recoveryReferences = {
+      donorDigest: this.digest, entries: [...references.values()],
+      // Retain the original provenance without treating donor IDs as local
+      // edges. The committed journal is independently remapped at publication.
+      original: json(value),
+    };
     return result;
   }
   async evidence() {
     await this.rows('learning_cycles', row => {
       const payload = decode(row.payload);
-      this.require(text(row.id) && text(row.input) && instant(row.started_at)
+      const definition = this.preparedRow?.definition?.row ?? this.donor.db.prepare('SELECT * FROM active_learning_cycle_definitions WHERE id=?').get(row.id);
+      this.require(text(row.id) && text(row.input) && instant(row.started_at) && instant(row.model_at)
+        && [null,0,1].includes(row.trial) && definition && object(decode(definition.payload))
         && (row.ended_at === null || instant(row.ended_at) && row.ended_at >= row.started_at)
-        && ['active', 'completed', 'incomplete'].includes(row.status) && object(payload));
-      const old = this.target.db.prepare(`SELECT * FROM active_learning_cycles AS learning_cycles WHERE id=? OR
+        && ['active','completed','incomplete'].includes(row.status) && object(payload)
+        && payload.id === row.id && payload.status === row.status && payload.startedAt === row.started_at
+        && !Object.hasOwn(payload,'observations') && Number.isSafeInteger(payload.observationCount) && payload.observationCount >= 0);
+      const frozenSource=decode(definition.payload),trained=frozenSource.plan?.model?.trainedAt;
+      const trainedAt=typeof trained==='number'?trained:Date.parse(trained);
+      this.require(row.model_at===(Number.isSafeInteger(trainedAt)?trainedAt:row.started_at)
+        && row.trial===(typeof frozenSource.plan?.trial==='boolean'?Number(frozenSource.plan.trial):null));
+      const old = this.target.db.prepare(`SELECT * FROM active_learning_cycles WHERE id=? OR
         (input=? AND started_at<=COALESCE(?,?) AND COALESCE(ended_at,started_at)>=?) ORDER BY started_at DESC LIMIT 1`)
-        .get(row.id, row.input, row.ended_at, row.started_at, row.started_at);
-      // Source cycle IDs may collide after independent operation; scope the
-      // donor ID. The frozen plan, observations and command attempts remain.
-      const id = old?.id ?? `recovered:${digest([this.digest, row.id]).slice(0, 32)}`;
-      this.maps.learning_cycles.set(row.id, { id, disposition: 'missing' });
+        .get(row.id,row.input,row.ended_at,row.started_at,row.started_at);
+      const id = old?.id ?? `recovered:${digest([this.digest,row.id]).slice(0,32)}`;
+      this.maps.learning_cycles.set(row.id,{id,disposition:'missing'});
       const mapped = this.remap(payload); mapped.id = id;
-      const original = structuredClone(mapped);
-      if (mapped.status === 'active') { mapped.status = 'incomplete'; mapped.incompleteReason = 'recovered-interrupted-cycle'; }
+      const original = structuredClone(mapped), frozen = this.remap(decode(definition.payload));
+      if (mapped.status === 'active') { mapped.status='incomplete'; mapped.incompleteReason='recovered-interrupted-cycle'; }
       const remembered = old && this.target.db.prepare(`SELECT 1 FROM recovery_members
         WHERE table_name='learning_cycles' AND record_key=? AND fingerprint=? LIMIT 1`)
-        .get(old.id, sourceFingerprint(this.donor, 'learning_cycles', row));
-      if (old) return { id: old.id, disposition: remembered || same(decode(old.payload), original) || same(decode(old.payload), mapped)
-        ? 'duplicates' : 'conflicts' };
-      this.insert('learning_cycles', { ...row, id, status: mapped.status, payload: json(mapped) });
-      return { id, disposition: 'missing', at: row.started_at };
-    }, { query: 'SELECT * FROM active_learning_cycles AS learning_cycles ORDER BY started_at,id' });
+        .get(old.id,this.fingerprint('learning_cycles',row));
+      if (old) {
+        const existing = this.target.db.prepare('SELECT payload FROM active_learning_cycle_definitions WHERE id=?').get(old.id);
+        return {id:old.id,disposition: remembered || old.input === row.input && old.started_at === row.started_at
+          && old.model_at === row.model_at && old.trial === row.trial && existing && same(decode(existing.payload),frozen)
+          && (same(decode(old.payload),original) || same(decode(old.payload),mapped)) ? 'duplicates' : 'conflicts'};
+      }
+      // The definition and header are one root publication. Later bounded
+      // phases add immutable samples and intervals, never an inline tape.
+      this.insert('learning_cycles',{...row,id,status:mapped.status,payload:json(mapped)});
+      const previous = this.sourceRow; this.sourceRow=definition;
+      try { this.insert('learning_cycle_definitions',{id,payload:json(frozen)}); }
+      finally { this.sourceRow=previous; }
+      this.remember('learning_cycle_definitions',row.id,id,'missing');
+      this.count('learning_cycle_definitions','missing');
+      return {id,disposition:'missing',at:row.started_at};
+    },{query:'SELECT * FROM active_learning_cycles ORDER BY started_at,id'});
+    let parentCache = null;
+    const parent = cycleId => {
+      if (parentCache?.sourceId === cycleId) return parentCache;
+      const mapped = this.known('learning_cycles',cycleId);
+      this.require(mapped?.id != null && ['missing','duplicates'].includes(mapped.disposition));
+      const source = this.preparedRow?.parent?.row ?? this.donor.db.prepare('SELECT * FROM active_learning_cycles WHERE id=?').get(cycleId);
+      this.require(source);
+      // A matching, locally recorded root is comparison-only. Only a root
+      // accepted from this exact evidence may resume interrupted child import.
+      const writable = mapped.disposition === 'missing' || Boolean(this.target.db.prepare(`SELECT 1 FROM recovery_members
+        WHERE table_name='learning_cycles' AND record_key=? AND fingerprint=? LIMIT 1`)
+        .get(mapped.id,this.fingerprint('learning_cycles',source)));
+      return parentCache={sourceId:cycleId,id:mapped.id,writable};
+    };
+    await this.rows('learning_cycle_samples',row => {
+      this.require(Number.isSafeInteger(row.id) && instant(row.sample_at)
+        && (decode(row.provenance) === null || object(decode(row.provenance))) && object(decode(row.context)));
+      const cycle=parent(row.cycle_id);
+      const mapped={cycle_id:cycle.id,sample_at:row.sample_at,provenance:json(this.remap(decode(row.provenance))),context:json(this.remap(decode(row.context)))};
+      const old=this.target.db.prepare('SELECT * FROM active_learning_cycle_samples WHERE cycle_id=? AND sample_at=?').get(cycle.id,row.sample_at);
+      if(old) return {id:old.id,disposition:same(without(old,['id']),mapped)?'duplicates':'conflicts'};
+      if(!cycle.writable) return {id:null,disposition:'conflicts'};
+      return {id:this.insert('learning_cycle_samples',mapped),disposition:'missing',at:row.sample_at};
+    },{query:'SELECT * FROM active_learning_cycle_samples ORDER BY cycle_id,sample_at,id'});
+    await this.rows('learning_cycle_observations',row => {
+      this.require(Number.isSafeInteger(row.id) && Number.isSafeInteger(row.ordinal) && row.ordinal>=0
+        && instant(row.start_at) && instant(row.end_at) && row.end_at>row.start_at && object(decode(row.payload)));
+      const cycle=parent(row.cycle_id),sample=this.known('learning_cycle_samples',row.sample_id);
+      this.require(sample?.id != null && ['missing','duplicates'].includes(sample.disposition));
+      const group=this.target.db.prepare('SELECT cycle_id,sample_at FROM active_learning_cycle_samples WHERE id=?').get(sample.id);
+      this.require(group?.cycle_id === cycle.id && row.end_at <= group.sample_at);
+      const mapped={cycle_id:cycle.id,sample_id:sample.id,ordinal:row.ordinal,start_at:row.start_at,end_at:row.end_at,payload:json(this.remap(decode(row.payload)))};
+      const old=this.target.db.prepare('SELECT * FROM active_learning_cycle_observations WHERE cycle_id=? AND ordinal=?').get(cycle.id,row.ordinal);
+      if(old) return {id:old.id,disposition:same(without(old,['id']),mapped)?'duplicates':'conflicts'};
+      if(!cycle.writable) return {id:null,disposition:'conflicts'};
+      return {id:this.insert('learning_cycle_observations',mapped),disposition:'missing',at:row.end_at};
+    },{query:'SELECT * FROM active_learning_cycle_observations ORDER BY cycle_id,ordinal'});
     await this.rows('events', row => {
       const payload = decode(row.payload);
       this.require(text(row.type) && instant(row.at) && object(payload));
@@ -748,7 +855,7 @@ export class HistoryMerge {
         && /^[a-f0-9]{64}$/.test(value.fingerprint) && event?.id != null && event.disposition !== 'conflicts');
       if (this.target.getState(row.key)) return { disposition: 'duplicates' };
       this.target.setState(row.key, { ...value, eventId: event.id }); return { disposition: 'missing' };
-    }, { query: `SELECT * FROM ${this.donor.recoveryState ?? 'state'} WHERE key LIKE 'charging-session-check:%' ORDER BY key`, map: false });
+    }, { query: `SELECT * FROM ${this.donor.recoveryState ?? 'state'} WHERE key LIKE 'charging-session-check:%' ORDER BY key`, map: false, sourceEvidence: false });
     await this.rows('energy_audits', row => {
       this.require(row.signal === 'property_import_energy_counter' && text(row.source) && text(row.device)
         && instant(row.source_time) && instant(row.received_at) && finite(row.value) && row.value >= 0 && flags(decode(row.quality)));
@@ -759,6 +866,28 @@ export class HistoryMerge {
     });
 
   }
+  async verifyCycleEvidence() {
+    // A crash can leave a durably imported prefix. Resume that prefix on the
+    // next attempt, but never publish a header whose promised tape is partial.
+    for(const source of this.donor.db.prepare('SELECT * FROM active_learning_cycles ORDER BY id').iterate()) {
+      const mapped=this.known('learning_cycles',source.id);
+      if(!mapped?.id) continue;
+      const admitted=this.target.db.prepare(`SELECT 1 FROM recovery_members WHERE table_name='learning_cycles'
+        AND record_key=? AND fingerprint=? LIMIT 1`).get(mapped.id,this.fingerprint('learning_cycles',source));
+      const accepted=this.target.db.prepare(`SELECT 1 FROM recovery_provenance WHERE donor_digest=? AND table_name='learning_cycles'
+        AND donor_id=? AND target_id=? AND disposition='missing'`).get(this.digest,source.id,mapped.id);
+      if(!admitted && !accepted) continue;
+      const payload=decode(source.payload);
+      try {
+        for(const _ of verifyCycleEvidencePages(this.target.db,{id:mapped.id,startedAt:source.started_at,
+          observationCount:payload.observationCount,lastSampleAt:payload.lastSample?.timestamp,selected:true})) await this.yieldControl();
+      } catch(error) {
+        if(error.code!=='database_integrity_failed') throw error;
+        throw Object.assign(new Error('Recovered cycle evidence is incomplete. Preserve the source and retry recovery.'),{code:'RECOVERY_INVALID'});
+      }
+      await this.yieldControl();
+    }
+  }
   async scanJournal() {
     // Context identity uses timestamp + type, never the machine-local row ID.
     // Samples cover half-open windows; a donor window with any usable master
@@ -766,7 +895,7 @@ export class HistoryMerge {
     for (const row of this.donor.db.prepare(`SELECT * FROM ${this.donor.recoveryJournal ?? 'learning_journal'} WHERE input=? ORDER BY at,id`).iterate(this.input)) {
       let disposition = 'skipped';
       try {
-        if (rejectedContribution(this.target, 'learning_journal', row, this.donor)) {
+        if (rejectedContribution(this.target,'learning_journal',row,this.donor,this.fingerprint('learning_journal',row))) {
           this.maps.learning_journal.set(row.id, { id: null, disposition: 'conflicts' });
           this.count('learning_journal', 'conflicts', row.at); continue;
         }
@@ -870,7 +999,7 @@ export class HistoryMerge {
   }
   async run() {
     await this.imports(); await this.snapshots(); await this.observations(); await this.pendingEnergy();
-    await this.manual(); await this.evidence(); await this.scanJournal();
+    await this.manual(); await this.evidence(); await this.verifyCycleEvidence(); await this.scanJournal();
     this.report.unsupported = ['charging_reports', 'charging_report_events', 'charging_report_contexts'].map(table => ({
       name: table, count: this.donor.incremental ? this.donor.db.prepare('SELECT COUNT(*) count FROM recovery_source_keys WHERE table_name=?').get(table).count : this.donor.db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count,
       reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);

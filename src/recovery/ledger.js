@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
+import { MAX_COMMIT_BYTES } from '../storage/journal.js';
 import { learningVersion } from '../app/committed-learning.js';
 
 export const selectedHistory = store => store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
@@ -49,40 +50,76 @@ function energyFingerprint(row) {
     start: raw.intervalStart, end: raw.intervalEnd, basis: raw.basis ?? null, timeBasis: raw.timeBasis ?? null });
 }
 
-/** Resolve local provenance to its original meaning before identifying a donor
- * contribution. A copied/reprojected donor can change every local row ID while
- * keeping the same evidence. Each call bounds its traversal and memoized refs. */
-export function sourceFingerprint(store, table, row) {
-  const cache = new Map(), visiting = new Set();
-  let nodes = 0, references = 0;
-  let maxNodes = 20_000, maxReferences = 2048;
-  if (table === 'learning_cycles') {
-    const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
-    const observations = Array.isArray(payload?.observations) ? payload.observations.length : 0;
-    // Cycle recording closes after its 3001st observation. Its retained source
-    // evidence needs a per-observation allowance, while caches stay fixed-size.
-    if (observations > 3001) throw new TypeError('Recovery cycle observations exceed supported bounds');
-    maxNodes += observations * 256; maxReferences += observations * 256;
-  }
-  const bounds = depth => {
-    if (depth > 32 || ++nodes > maxNodes) throw new TypeError('Recovery source provenance exceeds supported bounds');
+const FINGERPRINT_CACHE_ENTRIES = 256;
+const fingerprintCacheGet = (cache,key) => {
+  const value=cache.get(key);
+  if(value!==undefined) {cache.delete(key);cache.set(key,value);}
+  return value;
+};
+const fingerprintCachePut = (cache,key,value) => {
+  cache.delete(key);
+  if(cache.size>=FINGERPRINT_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+  cache.set(key,value);return value;
+};
+
+/** The caller owns this read transaction for the whole session. No global or
+ * mutable-store memoization: a new source boundary requires a new session.
+ * Only digest strings are retained, with a fixed LRU size. */
+export function pinnedSourceFingerprints(store,{binding,isCurrent=()=>true}={}) {
+  const db=store.db;
+  if(!store.readOnly || !db.isTransaction || typeof binding!=='string' || !binding)
+    throw new TypeError('Fingerprint reuse requires an explicitly bound, pinned read-only source');
+  const version=()=>JSON.stringify([store.checkpoint(),selectedHistory(store),store.recoveryJournal??null,store.recoveryState??null]);
+  const initial=version(),cache=new Map();let closed=false;
+  const stats={calls:0,expandedReferences:0,cacheHits:0};
+  return {
+    fingerprint(table,row) {
+      if(closed || store.db!==db || !db.isTransaction || !isCurrent() || version()!==initial)
+        throw Object.assign(new Error('The pinned fingerprint source is no longer current'),{code:'RECOVERY_INVALID'});
+      stats.calls++;
+      return fingerprintSource(store,table,row,{cache,stats});
+    },
+    get stats(){return {...stats,entries:cache.size,binding};},
+    close(){closed=true;cache.clear();},
   };
-  const jsonColumns = new Set(['raw', 'quality', 'payload', 'config_version', 'forecast_version', 'fetch_metadata', 'canonical']);
+}
+
+/** Resolve source meaning afresh for mutable callers. Per-record work bounds
+ * follow admitted encoded bytes, rather than an observation-count ceiling.
+ * Cached references do not consume the expansion budget again. */
+export function sourceFingerprint(store,table,row) {return fingerprintSource(store,table,row);}
+function fingerprintSource(store, table, row, shared = null) {
+  const cache=shared?.cache??new Map(),visiting=new Set();
+  const budget = record => {
+    const bytes=Buffer.byteLength(JSON.stringify(record));
+    if(bytes>MAX_COMMIT_BYTES) throw new TypeError('Recovery source record exceeds journal byte bounds');
+    return {nodes:0,references:0,maxNodes:20_000+bytes*32,maxReferences:2048+Math.floor(bytes/2)};
+  };
+  let work=budget(row);
+  const keyFor=(name,record)=>`row:${name}:${createHash('sha256').update(JSON.stringify(record)).digest('hex')}`;
+  const bounds = depth => {
+    if (depth > 32 || ++work.nodes > work.maxNodes) throw new TypeError('Recovery source provenance exceeds supported bounds');
+  };
+  const jsonColumns = new Set(['raw', 'quality', 'payload', 'config_version', 'forecast_version', 'fetch_metadata', 'canonical', 'provenance', 'context']);
   const evidenceFields = { observationId: 'observations', sourceObservationId: 'observations', coverageId: 'recorder_coverage',
     snapshotId: 'provider_snapshot_fetches', importId: 'imports', cycleId: 'learning_cycles', episodeId: 'learning_cycles' };
   const arrayFields = { observations: 'observations', coverage: 'recorder_coverage', journal: 'learning_journal' };
   const foreignFields = { observations: { import_id: 'imports' }, import_rows: { import_id: 'imports' },
     recorder_coverage: { observation_id: 'observations' }, provider_snapshot_fetches: { content_id: 'provider_snapshot_contents' },
-    fireplace_events: { target_id: 'fireplace_events' } };
+    fireplace_events: { target_id: 'fireplace_events' },
+    learning_cycle_definitions: { id: 'learning_cycles' }, learning_cycle_samples: { cycle_id: 'learning_cycles' },
+    learning_cycle_observations: { cycle_id: 'learning_cycles', sample_id: 'learning_cycle_samples' } };
   const tables = new Set(['annotations', 'counters', 'energy_audits', 'events', 'fireplace_events', 'import_rows', 'imports',
-    'learning_cycles', 'observations', 'provider_snapshot_contents', 'provider_snapshot_fetches', 'recorder_coverage', 'learning_journal']);
+    'learning_cycles', 'learning_cycle_definitions', 'learning_cycle_samples', 'learning_cycle_observations', 'observations', 'provider_snapshot_contents', 'provider_snapshot_fetches', 'recorder_coverage', 'learning_journal']);
   const ignored = new Set(['recoverySource', 'recoveryReferences', 'recoverySourceCoverage', 'recovery']);
   function reference(name, id, depth) {
     if (id == null) return null;
     bounds(depth);
-    if (++references > maxReferences || !tables.has(name)) throw new TypeError('Recovery source references exceed supported bounds');
-    const key = `${name}:${id}`;
-    if (cache.has(key)) return cache.get(key);
+    if (!tables.has(name)) throw new TypeError('Recovery source references exceed supported bounds');
+    const key = `ref:${name}:${id}`,cached=fingerprintCacheGet(cache,key);
+    if(cached!==undefined) {if(shared)shared.stats.cacheHits++;return cached;}
+    if(++work.references>work.maxReferences) throw new TypeError('Recovery source references exceed supported bounds');
+    if(shared)shared.stats.expandedReferences++;
     if (visiting.has(key)) throw new TypeError('Recovery source provenance contains a cycle');
     const target = store.db.prepare(`SELECT * FROM ${name === 'learning_journal' ? 'learning_journal_entries' : name} WHERE id=?`).get(id);
     if (!target) throw new TypeError('Recovery source provenance has a missing record');
@@ -90,65 +127,84 @@ export function sourceFingerprint(store, table, row) {
     try {
       // A sample belongs to a cycle whose last sample/context can point back to
       // it. Refer to the frozen cycle meaning, not its changing observation log.
-      // The cycle contribution itself still fingerprints all retained evidence.
-      const payload = name === 'learning_cycles' ? JSON.parse(target.payload) : null;
+      // Each immutable sample/interval is fingerprinted as a separate contribution.
+      const definition = name === 'learning_cycles' && store.db.prepare('SELECT payload FROM learning_cycle_definitions WHERE id=?').get(target.id);
+      if (name === 'learning_cycles' && !definition) throw new TypeError('Recovery cycle definition is missing');
+      const payload = definition ? JSON.parse(definition.payload) : null;
       const record = payload ? { input: target.input, started_at: target.started_at, payload: {
         treatmentKey: payload.treatmentKey, executionBasis: payload.executionBasis,
         modelConfig: payload.modelConfig, plan: payload.plan,
       } } : target;
       const value = identify(name, record, depth + 1);
-      if (cache.size >= 256) cache.delete(cache.keys().next().value);
-      cache.set(key, value); return value;
+      return fingerprintCachePut(cache,key,value);
     } finally { visiting.delete(key); }
   }
   function identify(name, record, depth) {
     bounds(depth);
     if (!tables.has(name)) throw new TypeError('Unsupported recovery source table');
-    let original = record;
-    if (name === 'learning_journal' && record.id != null) {
-      original = store.db.prepare('SELECT * FROM learning_journal_entries WHERE id=?').get(record.id) ?? record;
-      const seen = new Set();
-      while (original.source_entry_id != null) {
-        if (seen.has(original.id) || seen.size >= 16) throw new TypeError('Recovery journal source references are invalid');
-        seen.add(original.id);
-        original = store.db.prepare('SELECT * FROM learning_journal_entries WHERE id=?').get(original.source_entry_id);
-        if (!original) throw new TypeError('Recovery journal source is missing');
+    const cacheKey=keyFor(name,record),cached=fingerprintCacheGet(cache,cacheKey);
+    if(cached!==undefined) {if(shared)shared.stats.cacheHits++;return cached;}
+    const done=value=>fingerprintCachePut(cache,cacheKey,value);
+    // A small interval can refer to a much denser sample. Each record pays
+    // for its own byte-bounded normalization; its parent pays only for the
+    // reference lookup. Do not charge a whole transitive graph to a small FK.
+    const previousWork=work;work=budget(record);
+    try {
+      let original = record;
+      if (name === 'learning_journal' && record.id != null) {
+        original = store.db.prepare('SELECT * FROM learning_journal_entries WHERE id=?').get(record.id) ?? record;
+        const seen = new Set();
+        while (original.source_entry_id != null) {
+          if (seen.has(original.id) || seen.size >= 16) throw new TypeError('Recovery journal source references are invalid');
+          seen.add(original.id);
+          original = store.db.prepare('SELECT * FROM learning_journal_entries WHERE id=?').get(original.source_entry_id);
+          if (!original) throw new TypeError('Recovery journal source is missing');
+        }
       }
-    }
-    const key = name === 'import_rows' ? recordKey(name, original) : original.id == null ? null : String(original.id);
-    if (key !== null) {
-      const saved = store.db.prepare('SELECT DISTINCT fingerprint FROM recovery_members WHERE table_name=? AND record_key=? LIMIT 2').all(name, key);
-      if (saved.length > 1 || saved.some(item => !/^[a-f0-9]{64}$/.test(item.fingerprint)))
-        throw new TypeError('Recovery source identity is inconsistent');
-      if (saved.length) return saved[0].fingerprint;
-    }
-    if (name === 'observations' && original.unit === 'kWh') {
-      const energy = energyFingerprint(original);
-      if (energy !== null) return energy;
-    }
-    if (name === 'imports') return learningVersion({ table: name, kind: original.kind, sha256: original.sha256 });
-    function normalize(value, level, parent = '', top = false) {
-      bounds(level);
-      if (Array.isArray(value)) return value.map(item => normalize(item, level + 1, parent));
-      if (!value || typeof value !== 'object') return value;
-      const result = {};
-      for (const [field, raw] of Object.entries(value)) {
-        if (ignored.has(field) || top && (['id', 'source_entry_id', 'epoch'].includes(field) || name === 'learning_journal' && field === 'key')) continue;
-        let item = raw;
-        if (jsonColumns.has(field) && typeof item === 'string') { try { item = JSON.parse(item); } catch {} }
-        const referred = top && foreignFields[name]?.[field] || evidenceFields[field]
-          || field === 'id' && (parent === 'sensorRevert' ? 'learning_journal' : ['forecastVersion', 'forecast_version'].includes(parent) ? 'provider_snapshot_fetches'
-            : parent === 'value' && name === 'learning_journal' && original.kind === 'episode' ? 'learning_cycles' : null)
-          || field === 'contentId' && ['forecastVersion', 'forecast_version'].includes(parent) && 'provider_snapshot_contents';
-        if (referred) result[field] = reference(referred, item, level + 1);
-        else if (arrayFields[field] && Array.isArray(item)) result[field] = item.map(entry => entry && typeof entry === 'object'
-          ? normalize(entry, level + 1, field) : reference(arrayFields[field], entry, level + 1));
-        else if (field === 'id' && parent === 'payload' && name === 'learning_cycles') continue;
-        else result[field] = normalize(item, level + 1, field);
+      if(original!==record) work=budget(original);
+      const key = name === 'import_rows' ? recordKey(name, original) : original.id == null ? null : String(original.id);
+      if (key !== null) {
+        const saved = store.db.prepare('SELECT DISTINCT fingerprint FROM recovery_members WHERE table_name=? AND record_key=? LIMIT 2').all(name, key);
+        if (saved.length > 1 || saved.some(item => !/^[a-f0-9]{64}$/.test(item.fingerprint)))
+          throw new TypeError('Recovery source identity is inconsistent');
+        if (saved.length) return done(saved[0].fingerprint);
       }
-      return result;
-    }
-    return learningVersion({ table: name, row: normalize(original, depth + 1, '', true) });
+      if (name === 'observations' && original.unit === 'kWh') {
+        const energy = energyFingerprint(original);
+        if (energy !== null) return done(energy);
+      }
+      if (name === 'imports') return done(learningVersion({ table: name, kind: original.kind, sha256: original.sha256 }));
+      function normalize(value, level, parent = '', top = false) {
+        bounds(level);
+        if (Array.isArray(value)) return value.map(item => normalize(item, level + 1, parent));
+        if (!value || typeof value !== 'object') return value;
+        const result = {};
+        for (const [field, raw] of Object.entries(value)) {
+          if (ignored.has(field) || top && ((['id', 'source_entry_id', 'epoch'].includes(field) && !(name === 'learning_cycle_definitions' && field === 'id')) || name === 'learning_journal' && field === 'key')) continue;
+          let item = raw;
+          if (jsonColumns.has(field) && typeof item === 'string') { try { item = JSON.parse(item); } catch {} }
+          const referred = top && foreignFields[name]?.[field] || evidenceFields[field]
+            || field === 'id' && (parent === 'sensorRevert' ? 'learning_journal' : ['forecastVersion', 'forecast_version', 'lastForecastVersion'].includes(parent) ? 'provider_snapshot_fetches'
+              : parent === 'value' && name === 'learning_journal' && original.kind === 'episode' ? 'learning_cycles' : null)
+            || field === 'contentId' && ['forecastVersion', 'forecast_version', 'lastForecastVersion'].includes(parent) && 'provider_snapshot_contents';
+          if (referred) result[field] = reference(referred, item, level + 1);
+          else if (arrayFields[field] && Array.isArray(item)) result[field] = item.map(entry => entry && typeof entry === 'object'
+            ? normalize(entry, level + 1, field) : reference(arrayFields[field], entry, level + 1));
+          else if (field === 'id' && parent === 'payload' && name === 'learning_cycles') continue;
+          else result[field] = normalize(item, level + 1, field);
+        }
+        return result;
+      }
+      const normalized = normalize(original, depth + 1, '', true);
+      if (name === 'learning_cycles' && original.id != null) {
+        const definition = store.db.prepare('SELECT payload FROM learning_cycle_definitions WHERE id=?').get(original.id);
+        if (!definition) throw new TypeError('Recovery cycle definition is missing');
+        const headerWork=work;work=budget(definition);
+        try {normalized.definition=normalize(JSON.parse(definition.payload),depth+1);}
+        finally {work=headerWork;}
+      }
+      return done(learningVersion({ table: name, row: normalized }));
+    } finally {work=previousWork;}
   }
   return identify(table, row, 0);
 }

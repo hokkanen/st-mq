@@ -523,7 +523,7 @@ test('lightweight cycle summaries retain missing values and omit full observatio
   const store = new Store(':memory:'); t.after(() => store.close());
   store.cycle('mqtt', { id: 'invented-completed-cycle', status: 'completed', startedAt: start, endedAt: start + HOUR,
     assessment: { profitCents: -20, actualCostCents: 40, uncertaintyCents: 10, recoveryErrorCents: 5 },
-    actual: { costCents: 40, missingHours: 0, auxiliarySpaceObserved: true }, observations: [{ unusedForSummary: 'synthetic' }] });
+    actual: { costCents: 40, missingHours: 0, auxiliarySpaceObserved: true }, sourceReview: { unusedForSummary: 'synthetic' } });
   store.cycle('mqtt', { id: 'invented-incomplete-cycle', status: 'incomplete', startedAt: start + 2 * HOUR,
     endedAt: start + 3 * HOUR, incompleteReason: 'synthetic-gap', actual: { costCents: 50, missingHours: 0.5 } });
   const rows = store.cycleSummaries({ input: 'mqtt' });

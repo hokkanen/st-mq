@@ -81,9 +81,11 @@ function assertSource() {
 function selectProposedViews() {
   // Temporary views affect only this worker's read interpretation. Live charts,
   // control and other readers keep the previously published selection.
-  for (const table of RECOVERABLE_TABLES) db.exec(`CREATE TEMP VIEW active_${table} AS SELECT r.* FROM main.${table} r
-    WHERE NOT EXISTS(SELECT 1 FROM recovery_exclusions x WHERE x.generation='${generation}'
-      AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table)});`);
+  for (const table of RECOVERABLE_TABLES) {
+    const sql=db.prepare("SELECT sql FROM main.sqlite_schema WHERE type='view' AND name=?").get(`active_${table}`).sql;
+    db.exec(sql.replace(/^CREATE VIEW/i,'CREATE TEMP VIEW')
+      .replaceAll('(SELECT generation FROM history_selection WHERE id=1)',`'${generation}'`));
+  }
 }
 
 async function prepareSelection() {
@@ -165,33 +167,58 @@ async function prepareSelection() {
 }
 
 async function scanDependencies() {
-  // Indexed reverse references expand only the affected graph. Newly rejected
-  // roots become inputs to the next bounded pass, including later local work.
-  for (;;) {
-    const rows = db.prepare(`SELECT DISTINCT e.* FROM recovery_exclusions x
-      JOIN recovery_dependencies d ON d.source_table=x.table_name AND d.source_key=x.record_key
-      JOIN learning_journal_entries e ON e.id=CAST(d.owner_key AS INTEGER)
-      WHERE x.generation=? AND d.owner_table='learning_journal' AND e.input=? AND e.source_entry_id IS NULL
-      AND NOT EXISTS(SELECT 1 FROM recovery_exclusions old WHERE old.generation=?
-        AND old.table_name='learning_journal' AND old.record_key=d.owner_key)
-      AND ${publishedRoot} ORDER BY e.id LIMIT 64`).all(generation,input,generation,sourceEpoch);
-    if (!rows.length) break;
-    store.transaction(() => { for (const row of rows) {
-      exclude.run(generation,'learning_journal',String(row.id)); processed++;
-    } });
-    progress('checking'); await yieldTurn();
+  // Walk structural and evidence edges in bounded batches. A sample's source
+  // can invalidate a completed episode even though the episode header no
+  // longer embeds that sample. Keep original cycle evidence; invalidate its
+  // assessment and any journal decisions that used the affected cycle.
+  db.exec(`CREATE TEMP TABLE IF NOT EXISTS recovery_affected_sources(
+    table_name TEXT NOT NULL,record_key TEXT NOT NULL,visited INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS temp.recovery_affected_unvisited ON recovery_affected_sources(visited,table_name,record_key);
+    `);
+  db.prepare(`INSERT OR IGNORE INTO recovery_affected_sources(table_name,record_key)
+    SELECT table_name,record_key FROM recovery_exclusions WHERE generation=? AND table_name<>'cycle_assessments'`).run(generation);
+  const add=db.prepare(`INSERT OR IGNORE INTO recovery_affected_sources(table_name,record_key)
+    SELECT owner_table,owner_key FROM recovery_dependencies WHERE source_table=? AND source_key=?`);
+  for(;;) {
+    const rows=db.prepare('SELECT table_name,record_key FROM recovery_affected_sources WHERE visited=0 LIMIT 64').all();
+    if(!rows.length) {
+      // Existing affected rows can gain new dependants during live catch-up.
+      // Discover only unseen owners; an unchanged scan needs no writer yield.
+      const added=db.prepare(`INSERT OR IGNORE INTO recovery_affected_sources(table_name,record_key)
+        SELECT d.owner_table,d.owner_key FROM recovery_affected_sources a JOIN recovery_dependencies d
+        ON d.source_table=a.table_name AND d.source_key=a.record_key
+        WHERE NOT EXISTS(SELECT 1 FROM recovery_affected_sources known WHERE known.table_name=d.owner_table AND known.record_key=d.owner_key)`).run().changes;
+      if(!added) break;
+      continue;
+    }
+    store.transaction(()=>{for(const row of rows) {
+      add.run(row.table_name,row.record_key);
+      db.prepare('UPDATE recovery_affected_sources SET visited=1 WHERE table_name=? AND record_key=?').run(row.table_name,row.record_key);
+    }});
+    progress('checking');await yieldTurn();
+  }
+  let after=0;
+  for(;;) {
+    const rows=db.prepare(`SELECT e.id FROM recovery_affected_sources a JOIN learning_journal_entries e
+      ON e.id=CAST(a.record_key AS INTEGER) WHERE a.table_name='learning_journal' AND e.input=?
+      AND e.source_entry_id IS NULL AND e.id>? AND ${publishedRoot}
+      AND NOT EXISTS(SELECT 1 FROM recovery_exclusions x WHERE x.generation=? AND x.table_name='learning_journal' AND x.record_key=a.record_key)
+      ORDER BY e.id LIMIT 64`).all(input,after,sourceEpoch,generation);
+    if(!rows.length) break;
+    store.transaction(()=>{for(const row of rows) {exclude.run(generation,'learning_journal',String(row.id));after=row.id;processed++;}});
+    progress('checking');await yieldTurn();
   }
 }
 
 async function checkOtherInputs() {
-  const row = db.prepare(`SELECT 1 FROM recovery_exclusions x
-    JOIN recovery_dependencies d ON d.source_table=x.table_name AND d.source_key=x.record_key
-    JOIN learning_journal_entries e ON e.id=CAST(d.owner_key AS INTEGER)
-    WHERE x.generation=? AND d.owner_table='learning_journal' AND e.input<>?
+  const row = db.prepare(`SELECT 1 FROM recovery_affected_sources a
+    JOIN learning_journal_entries e ON e.id=CAST(a.record_key AS INTEGER)
+    WHERE a.table_name='learning_journal' AND e.input<>?
       AND (e.epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original')
         OR EXISTS(SELECT 1 FROM learning_journal_all selected WHERE (selected.source_entry_id=e.id OR selected.id=e.id)
           AND selected.input=e.input AND selected.epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original')))
-    LIMIT 1`).get(generation,input);
+    LIMIT 1`).get(input);
   if (row) fail('This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
     'recovery_other_input');
 }
@@ -205,14 +232,16 @@ async function invalidateAssessments() {
   let after = '';
   for (;;) {
     const rows = db.prepare(`WITH affected(id) AS (
-      SELECT d.owner_key FROM recovery_exclusions x JOIN recovery_dependencies d
+      SELECT record_key FROM recovery_affected_sources WHERE table_name='learning_cycles'
+      UNION SELECT d.owner_key FROM recovery_exclusions x JOIN recovery_dependencies d
         ON d.source_table=x.table_name AND d.source_key=x.record_key
         WHERE x.generation=? AND d.owner_table='learning_cycles'
       UNION SELECT d.source_key FROM recovery_exclusions x JOIN recovery_dependencies d
         ON d.owner_table=x.table_name AND d.owner_key=x.record_key
         WHERE x.generation=? AND x.table_name='learning_journal' AND d.source_table='learning_cycles'
       UNION SELECT id FROM learning_cycles WHERE input=? AND ? IS NOT NULL
-        AND ${RECOVERY_MODEL_TIME}>=? AND json_type(payload,'$.plan.model')='object')
+        AND ${RECOVERY_MODEL_TIME}>=? AND EXISTS(SELECT 1 FROM learning_cycle_definitions d
+          WHERE d.id=learning_cycles.id AND json_type(d.payload,'$.plan.model')='object'))
       SELECT c.id FROM affected a JOIN learning_cycles c ON c.id=a.id
       WHERE c.input=? AND c.id>? AND NOT EXISTS(SELECT 1 FROM recovery_exclusions done
         WHERE done.generation=? AND done.table_name='cycle_assessments' AND done.record_key=c.id)

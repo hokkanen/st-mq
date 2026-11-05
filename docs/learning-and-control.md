@@ -364,6 +364,14 @@ The dashboard status includes model, reference and evidence metadata; raw fittin
 samples and episode archives remain in learning/replay storage rather than every
 status response. This does not remove observations or reconstruction inputs.
 
+Cycle evidence is appended as immutable intervals with one shared provenance
+group per sample. A compact header holds current totals and execution state;
+the original model, plan and forecast are saved once. Recovery comparison advances
+incrementally, and final assessments stream the complete evidence in bounded
+pages through the live learning worker. A longer cycle retains all evidence
+without repeatedly rewriting or replaying its earlier intervals. The configured
+recovery timeout starts when the executed reduction ends.
+
 The planner uses the same weighted indoor
 average for prediction, limits and discomfort in every path, including bounded
 trials and recovery. Individual rooms have no automatic veto. An admitted

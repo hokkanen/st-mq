@@ -1,3 +1,4 @@
+import { seedCycleEvidence } from './helpers/cycle-evidence.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -164,8 +165,7 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
       kind, at, algorithmVersion: LEARNING_ALGORITHM, configVersion: { private: privateMarker },
       forecastVersion: { private: privateMarker }, key: kind, payload: { private: privateMarker },
     });
-    store.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
-      .run('fixture-cycle', privateMarker, at, at + 1000, 'completed', JSON.stringify({ assessment: { private: privateMarker } }));
+    store.cycle(privateMarker,{id:'fixture-cycle',startedAt:at,endedAt:at+1000,status:'completed',assessment:{private:privateMarker}});
     for (const [kind, header, row] of [
       ['stmq', 'unix_time,price,heat_on,temp_in,temp_ga,temp_out', '3,15,20,10,-1'],
       ['easee', 'unix_time,ch_curr1,ch_curr2,ch_curr3,eq_curr1,eq_curr2,eq_curr3', '1,2,3,4,5,6'],
@@ -774,4 +774,30 @@ test('paged streams keep stable unit ordering independently of insertion order',
       { source, unit, raw: { recorder: { policy: 'change-only' } } });
     getDatabaseOverview({ store, now: at });
   } finally { store.close(); }
+});
+
+
+test('cycle inventory counts implicit parent exclusions and restores every normalized evidence dataset',t=>{
+  const tables=['learning_cycles','learning_cycle_definitions','learning_cycle_samples','learning_cycle_observations'];
+  for(const [excluded,selected] of [
+    ['learning_cycles',[0,0,0,0]],['learning_cycle_definitions',[0,0,0,0]],
+    ['learning_cycle_samples',[1,1,1,1]],['learning_cycle_observations',[1,1,2,1]],
+  ]){
+    const store=new Store(':memory:');t.after(()=>store.close());
+    seedCycleEvidence(store,{cycle:{id:'invented-inventory-cycle',status:'completed',startedAt:at,endedAt:at+2000},
+      samples:[{at:at+1000,rows:[{start:at,end:at+1000,indoorC:21}]},
+        {at:at+2000,rows:[{start:at+1000,end:at+2000,indoorC:21}]}]});
+    const key=store.db.prepare(`SELECT id FROM ${excluded} ORDER BY id LIMIT 1`).get().id;
+    store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original',?,?)").run(excluded,String(key));
+    const overview=getDatabaseOverview({store,now:at+3000});
+    assert.equal(overview.catalogueComplete,true);
+    for(let index=0;index<tables.length;index++){const table=tables[index];
+      const value=overview.accounting.selection.tables.find(row=>row.name===table);
+      assert.equal(value.selectedRows,selected[index],excluded+' -> '+table);
+      assert.equal(value.retainedRows-value.excludedRows,selected[index]);
+    }
+    store.db.exec('DELETE FROM recovery_exclusions');
+    const restored=getDatabaseOverview({store,now:at+3000});
+    assert.deepEqual(tables.map(table=>restored.accounting.selection.tables.find(row=>row.name===table).selectedRows),[1,1,2,2]);
+  }
 });

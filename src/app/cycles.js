@@ -1,74 +1,104 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCycle, phaseAt } from '../control/planner.js';
-import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
-import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
+import { advanceReference, observedState, rebuildCycleWorking, assessCycle } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { CONTROL_DEFAULTS } from './config.js';
+import { sealCycleWorking, validateCycleWorking, cycleWorkingIntact } from '../domain/cycle-working-state.js';
 
 const HOUR = 3600000;
 const number = Number.isFinite;
 const dateKey = now => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now));
 const mean = rows => rows.length ? rows.reduce((sum, x) => sum + x, 0) / rows.length : null;
 const summary = result => { const { trajectory, ...values } = result ?? {}; return values; };
-const recoveryTotals = (trajectory, observations) => {
-  let costCents = 0, energyKwh = 0, auxiliaryKwh = 0;
-  for (const step of trajectory) {
-    const start = step.at - step.durationHours * HOUR;
-    for (const observed of observations) if (observed.phase === 'recovery') {
-      const hours = Math.max(0, Math.min(step.at, observed.end) - Math.max(start, observed.start)) / HOUR;
-      if (!hours) continue;
-      energyKwh += (step.spaceHeatingPowerKw ?? step.powerKw) * hours;
-      auxiliaryKwh += step.auxiliaryKw * hours;
-      costCents += step.costCents * hours / step.durationHours
-        * (step.powerKw ? (step.spaceHeatingPowerKw ?? step.powerKw)/step.powerKw : 1);
-    }
-  }
-  return { costCents, energyKwh, auxiliaryKwh };
-};
+const sampleEndpoint = sample => Object.fromEntries(['timestamp','windowStart','windowEnd','phase','indoorC','indoorEstimated','indoorTrendCPerHour',
+  'priceCents','priceStart','priceEnd'].filter(key => Object.hasOwn(sample,key)).map(key => [key,sample[key]]));
 
 export class CycleTracker {
   constructor({ store, input, config = {} }) {
     this.store = store; this.input = input; this.config = { ...CONTROL_DEFAULTS, ...config };
     this.key = `cycle:active:${input}`;
   }
-  active() { return this.store.getState(this.key); }
+  active() {
+    const pointer = this.store.getState(this.key);
+    return pointer ? this.store.cycleById({ id: pointer.id, input: this.input }) : null;
+  }
+  workingKey(cycle) { return `cycle:working:${cycle.id}`; }
+  readWorking(cycle) {
+    const value = this.store.getState(this.workingKey(cycle));
+    if (value === null) return null;
+    validateCycleWorking(value,cycle.id);
+    return cycleWorkingIntact(value) ? value : null;
+  }
+  saveWorking(cycle,value) {
+    this.store.setState(this.workingKey(cycle),sealCycleWorking({ ...value, id: cycle.id,
+      revision: this.fireplaceContext?.fireplaceRevision ?? 0 }));
+  }
+  events(cycle) { return this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? []; }
+  workingJob() {
+    const cycle = this.active(); if (!cycle) return null;
+    const saved = this.readWorking(cycle);
+    if (saved?.count === cycle.observationCount && saved.revision === (this.fireplaceContext?.fireplaceRevision ?? 0)
+      && isDeepStrictEqual(saved.observer,cycle.observerState)
+      && isDeepStrictEqual(saved.reference?.continuation?.state ?? null,cycle.referenceState ?? null)
+      && (!saved.reference?.continuation || (cycle.observationCount === 0
+        ? saved.reference.continuation.origin === null && saved.reference.continuation.previousEnd === null
+        : saved.reference.continuation.origin === cycle.startedAt
+          && saved.reference.continuation.previousEnd === cycle.lastSample?.timestamp
+          && Math.abs(saved.reference.continuation.elapsed-(cycle.lastSample.timestamp-cycle.startedAt)/HOUR)
+            <= Math.max(1,Math.abs(saved.reference.continuation.elapsed))*1e-10))) {
+      // A known cache can be intact but stale under different frozen inputs.
+      // The shared evaluator checks its binding without replaying any interval.
+      try { advanceReference(cycle,[],this.events(cycle),saved.reference); return null; }
+      catch (error) { if (!(error instanceof TypeError)) throw error; }
+    }
+    return { id: cycle.id, count: cycle.observationCount, fireplaceEvents: this.events(cycle) };
+  }
+  adoptWorking(result) {
+    return this.store.transaction(() => {
+      const cycle = this.active();
+      if (!cycle || result.id !== cycle.id || result.count !== cycle.observationCount) throw new Error('Cycle reconstruction became stale');
+      const reference = result.reference?.continuation?.state ?? null;
+      if (!isDeepStrictEqual(cycle.observerState,result.observer)
+        || !isDeepStrictEqual(cycle.referenceState ?? null,reference)) cycle.stableSince = null;
+      cycle.observerState = result.observer; cycle.referenceState = reference;
+      this.saveWorking(cycle,result); this.save(cycle);
+    });
+  }
   correctFireplace(context, now) {
-    if (!context.fireplaceExcludedRanges?.length) { this.fireplaceContext = context; return; }
-    this.store.transaction(() => {
+    if (context.fireplaceExcludedRanges?.length) this.store.transaction(() => {
       const from = Math.min(...context.fireplaceExcludedRanges.map(range => range.start));
       const to = Math.max(...context.fireplaceExcludedRanges.map(range => range.end));
-      for (const row of this.store.db.prepare('SELECT payload FROM active_learning_cycles AS learning_cycles WHERE input=? AND started_at<? AND COALESCE(ended_at,?)>?')
-        .all(this.input, to, now, from)) {
-        const cycle = JSON.parse(row.payload);
-        if (!fireplaceEpisodeAffected({ ...cycle, endedAt: cycle.endedAt ?? now }, context)) continue;
+      for (const { id } of this.store.db.prepare('SELECT id FROM active_learning_cycles WHERE input=? AND started_at<? AND COALESCE(ended_at,?)>?')
+        .iterate(this.input,to,now,from)) {
+        const cycle = this.store.cycleById({ id, input: this.input });
+        if (!fireplaceEpisodeAffected({ ...cycle, endedAt: cycle.endedAt ?? now },context)) continue;
         cycle.fireplaceCorrectionRevision = context.fireplaceRevision;
         if (cycle.assessment) cycle.assessment = { ...cycle.assessment, profitCents: null, recoveryErrorCents: null,
           basis: 'unassessed-corrected-fireplace-history' };
-        // Rebuild this observer under its original frozen model using actual
-        // temperatures/equipment and corrected fireplace inputs, never new coefficients.
         if (cycle.status === 'active') {
-          let state = { ...cycle.plan.initialState };
-          for (const row of cycle.observations) {
-            if (row.eligible === false || ![row.outdoorC, row.thermalCompressorDuty, row.thermalAuxKw].every(number)
-              || ['partial', 'unknown'].includes(row.floorOverrideMode)
-              || cycle.plan.schedule.floorOverride && !['on', 'off'].includes(row.floorOverrideMode)) { state = null; break; }
-            state = predictThermalStep(cycle.plan.model, state, { outdoorC: row.outdoorC,
-              solarRadiationWm2: row.solarRadiationWm2, compressorDuty: row.thermalCompressorDuty,
-              auxKw: row.thermalAuxKw, supplyC: row.supplyC, brineC: row.brineC,
-              floorOverrideMode: row.floorOverrideMode, treatmentKey: row.treatmentKey, fireplaceKgPerHour: fireplaceRate(context.fireplaceEvents, row.start, row.end) }, (row.end - row.start) / HOUR);
-            if (row.indoorEndpoint !== false && number(row.indoorC)) state.indoorC = row.indoorC;
-          }
-          cycle.observerState = state && { indoorC: state.indoorC, reserveC: state.reserveC, slabC: state.slabC };
-          cycle.stableSince = null;
+          cycle.observerState = null; cycle.stableSince = null;
+          this.store.setState(this.workingKey(cycle),null);
         }
-        this.store.cycle(this.input, cycle);
-        if (cycle.status === 'active') this.store.setState(this.key, cycle);
+        this.store.cycle(this.input,cycle);
       }
     });
     this.fireplaceContext = context;
+    // Isolated synchronous fixtures share the same bounded reconstruction.
+    // File-backed live operation yields this work to the admitted worker.
+    if (this.store.path === ':memory:') {
+      const job = this.workingJob(); if (job) this.adoptWorking(rebuildCycleWorking(this.store,job));
+    }
   }
-  save(cycle) { this.store.cycle(this.input, cycle); this.store.setState(this.key, cycle.status === 'completed' || cycle.status === 'incomplete' ? null : cycle); }
+  save(cycle) {
+    return this.store.transaction(() => {
+    this.store.cycle(this.input,cycle);
+    const pointer = ['completed','incomplete'].includes(cycle.status) ? null : { id: cycle.id };
+    if ((this.store.getState(this.key)?.id ?? null) !== (pointer?.id ?? null)) this.store.setState(this.key,pointer);
+    if (!pointer) this.store.db.prepare('DELETE FROM state WHERE key=?').run(this.workingKey(cycle));
+    });
+  }
   budget(now) {
     const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
     if (previous && !number(previous.endedAt)) return 0;
@@ -116,6 +146,7 @@ export class CycleTracker {
   }
   start(plan, sample, now, { executed = false } = {}) {
     if (this.active()) return this.active();
+    if (!Number.isSafeInteger(now) || sample?.timestamp !== now) throw new TypeError('A cycle requires its actual acknowledged start sample.');
     plan = structuredClone({ ...plan, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });
     const common = { intervals: plan.intervals, model: plan.model, initialState: plan.initialState, targetC: plan.targetC,
       occupancy: plan.occupancy, maxDropC: plan.maxDropC, maxRiseC: plan.maxRiseC,
@@ -123,8 +154,8 @@ export class CycleTracker {
     plan.prediction = summary(evaluateCycle({ ...common, schedule: plan.schedule }));
     plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
-      executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observations: [], lastSample: sample,
-      observerState: { ...plan.initialState }, estimatedIndoorUsed: plan.equipment?.indoorEstimated === true,
+      executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observationCount: 0, phases: [], lastSample: sampleEndpoint(sample), lastForecastVersion: sample.provenance?.forecastVersion ?? null,
+      observerState: { ...plan.initialState }, referenceState: null, estimatedIndoorUsed: plan.equipment?.indoorEstimated === true,
       actual: { costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
         compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0,
@@ -141,6 +172,7 @@ export class CycleTracker {
         this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
       }
       this.save(cycle);
+      this.saveWorking(cycle,{ count: 0, observer: cycle.observerState, reference: null });
       this.store.event('cycle-started', { id: cycle.id, input: this.input, trial: plan.trial, reference: plan.referenceLabel }, now);
     });
     return cycle;
@@ -150,7 +182,7 @@ export class CycleTracker {
     cycle.status = 'incomplete'; cycle.endedAt = now; cycle.incompleteReason = reason;
     this.store.transaction(() => {
       this.save(cycle);
-      const phases = [...new Set(cycle.observations.map(row => row.phase))];
+      const phases = cycle.phases;
       if (phases.length && now > cycle.startedAt) appendLearningRecord(this.store, this.input, 'episode', {
         id: cycle.id, startedAt: cycle.startedAt, endedAt: now, phases,
         treatmentKey: cycle.treatmentKey ?? 'native', responseComplete: true,
@@ -161,6 +193,7 @@ export class CycleTracker {
   }
   shorten(now, reason) {
     const cycle = this.active(); if (!cycle) return;
+    if ((cycle.executionSchedule ?? cycle.plan.schedule).reductionEnd <= now) return;
     // Original prediction/reference stays immutable. Only actual requested execution changes.
     cycle.executionSchedule ??= { ...cycle.plan.schedule };
     cycle.executionSchedule.preheatEnd = Math.min(cycle.executionSchedule.preheatEnd, now);
@@ -169,8 +202,20 @@ export class CycleTracker {
     cycle.adjustments ??= []; cycle.adjustments.push({ at: now, reason });
     this.save(cycle);
   }
-  record(sample, now, { thermalState, equipment = {}, controlIndoor = null } = {}) {
+  record(sample,now,options = {}) {
+    return this.store.transaction(() => this.#recordSample(sample,now,options));
+  }
+  #recordSample(sample, now, { thermalState, equipment = {}, controlIndoor = null } = {}) {
     const cycle = this.active(); if (!cycle) return null;
+    const pending = this.workingJob();
+    if (pending) {
+      if (this.store.path !== ':memory:') throw new Error('Cycle reconstruction must precede live recording');
+      this.adoptWorking(rebuildCycleWorking(this.store,pending));
+      const rebuilt = this.active();
+      cycle.observerState = rebuilt.observerState; cycle.referenceState = rebuilt.referenceState; cycle.stableSince = rebuilt.stableSince;
+    }
+    const working = this.readWorking(cycle);
+    const rows = [];
     const previous = cycle.lastSample, dt = (now - previous.timestamp) / HOUR;
     if (dt <= 0) return null;
     const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
@@ -229,20 +274,11 @@ export class CycleTracker {
         a.spaceHeatingKwh+=spaceKwh;a.spaceHeatingCostCents+=spaceCents;a.routeCoveredHours+=hours;
         a.dhwKwh+=Math.max(0,energy-spaceKwh);a.dhwCostCents+=Math.max(0,energy-spaceKwh)*price;
         if (phase==='recovery') {a.spaceHeatingRecoveryKwh+=spaceKwh;a.spaceHeatingRecoveryCostCents+=spaceCents;}
-        if (cycle.observerState && number(values.outdoorC) && !['partial', 'unknown'].includes(values.floorOverrideMode)
-          && (!cycle.plan.schedule.floorOverride || ['on', 'off'].includes(values.floorOverrideMode))) {
-          const observer=predictThermalStep(cycle.plan.model,cycle.observerState,{outdoorC:values.outdoorC,
-            solarRadiationWm2:values.solarRadiationWm2,phase,targetC:cycle.plan.targetC,roomBoostC:values.roomBoostC??0,
-            compressorDuty:values.thermalCompressorDuty,auxKw:values.thermalAuxKw,
-            supplyC: values.supplyC, brineC: values.brineC, floorOverrideMode: values.floorOverrideMode, treatmentKey: values.treatmentKey,
-            fireplaceKgPerHour: fireplaceRate(this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [], cursor, end)},hours);
-          cycle.observerState={indoorC:observer.indoorC,reserveC:observer.reserveC,slabC:observer.slabC};
-        } else cycle.observerState=null;
       } else {a.routeMissingHours+=hours;cycle.observerState=null;}
       if (values.energyBasis !== 'measured') a.metered = false;
       } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false;
         a.auxiliaryRouteKnown = false; a.metered = false; cycle.observerState=null; }
-      cycle.observations.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}), outdoorC: values.outdoorC,
+      rows.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}), outdoorC: values.outdoorC,
         solarRadiationWm2: values.solarRadiationWm2, supplyC: values.supplyC ?? null, brineC: values.brineC ?? null,
         floorOverrideMode: values.floorOverrideMode ?? null, treatmentKey: values.treatmentKey ?? null, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
@@ -251,23 +287,30 @@ export class CycleTracker {
           anchorAt: controlIndoor.anchorAt, estimatedSensor: controlIndoor.estimatedSensor } } : {}),
         thermalCompressorDuty:values.thermalCompressorDuty??null,thermalAuxKw:values.thermalAuxKw??null,
         compressorDuty:values.compressorDuty??null,auxKw:values.auxKw??null,
-        provenance: sample.provenance ?? null });
+        roomBoostC: values.roomBoostC ?? 0,
+        compressorPowerKw: values.compressorPowerKw ?? null, circulationKw: values.circulationKw ?? null,
+        compressorActivityObserved: values.compressorActivityObserved ?? null, auxiliaryObserved: values.auxiliaryObserved ?? null,
+        auxiliaryRouteKnown: values.auxiliaryRouteKnown ?? null, auxRoute: values.auxRoute ?? null, energyBasis: values.energyBasis ?? null });
+      cycle.observerState = observedState(cycle,cycle.observerState,rows.at(-1),this.events(cycle));
       cursor = end;
     }
-    cycle.lastSample = sample;
-    if (cycle.observerState && number(sample.indoorC) && !sample.indoorEstimated) cycle.observerState.indoorC=sample.indoorC;
-    if (cycle.observations.length > 3000) { this.cancel(now, 'cycle-observation-limit'); return null; }
-    if (now - cycle.startedAt > this.config.recoveryTimeoutHours * HOUR) {
-      this.cancel(now, 'recovery-not-established-before-timeout'); return null;
+    cycle.lastSample = sampleEndpoint(sample);
+    cycle.lastForecastVersion = sample.provenance?.forecastVersion ?? null;
+    cycle.observationCount += rows.length;
+    cycle.phases = [...new Set([...cycle.phases,...rows.map(row => row.phase)])];
+    const referenceState = advanceReference(cycle,rows,this.events(cycle),working.reference);
+    cycle.referenceState = referenceState.continuation?.state ?? null;
+    if (referenceState.unavailable) cycle.stableSince = null;
+    this.store.transaction(() => {
+      this.store.appendCycleEvidence(this.input,cycle,rows,{ sampleAt: now, provenance: sample.provenance ?? null,
+        context: { controlIndoor, integral: equipment.integral ?? null, fireplaceRevision: this.fireplaceContext?.fireplaceRevision ?? 0 } });
+      this.saveWorking(cycle,{ count: cycle.observationCount, observer: cycle.observerState, reference: referenceState });
+    });
+    if (now - schedule.reductionEnd > this.config.recoveryTimeoutHours * HOUR) {
+      this.cancel(now,'recovery-not-established-before-timeout'); return null;
     }
-    if (now < schedule.reductionEnd) { this.save(cycle); return null; }
-    const intervals = cycle.observations.map(o => ({ start: o.start, end: o.end,
-      outdoorC: o.outdoorC, solarRadiationWm2: o.solarRadiationWm2, price: o.price }));
-    if (intervals.some(i => !number(i.outdoorC) || !number(i.price))) { this.save(cycle); return null; }
-    const reference = evaluateCycle({ schedule: cycle.plan.reference, intervals, model: cycle.plan.model,
-      initialState: cycle.plan.initialState, targetC: cycle.plan.targetC, config: cycle.modelConfig ?? this.config,
-      occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC, maxRiseC: cycle.plan.maxRiseC,
-      equipment: { ...cycle.plan.equipment, fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [] }, includeTail: false });
+    if (now < schedule.reductionEnd || referenceState.unavailable) return null;
+    const reference = { endState: referenceState.continuation.state };
     const reserve = cycle.observerState?.reserveC;
     const recoveryIndoor = number(sample.indoorC) && !sample.indoorEstimated ? sample.indoorC
       : controlIndoor && !controlIndoor.stale ? controlIndoor.value : null;
@@ -284,10 +327,10 @@ export class CycleTracker {
     if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
-      cycle.status = 'completed'; cycle.endedAt = now;
       if (cycle.estimatedIndoorUsed || (a.temperatureMissingHours ?? 0) > 0) {
         // The control operation ended conservatively. An inferred endpoint or
         // unobserved trajectory cannot establish measured recovery or savings.
+        cycle.status = 'completed'; cycle.endedAt = now;
         cycle.assessment = { profitCents: null, recoveryErrorCents: null, actualCostCents: a.costCents,
           basis: 'unassessed-indoor-observation-gap', recoveryBasis: 'Conservative control estimate; physical recovery not validated',
           referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
@@ -298,94 +341,23 @@ export class CycleTracker {
         });
         return { id: cycle.id, complete: false, recoveryComplete: false };
       }
-      // Assess the executed recovery under the frozen model and original settings,
-      // rather than comparing a short observed episode to a 48-hour forecast total.
-      const originalCoverage = intervals.every(i => cycle.plan.intervals.some(x => x.start <= i.start && x.end >= i.end));
-      const predictionIntervals = originalCoverage ? intervals.map(i => {
-        const original = cycle.plan.intervals.find(x => x.start <= i.start && x.end > i.start);
-        return { ...i, outdoorC: original.outdoorC, solarRadiationWm2: original.solarRadiationWm2, price: original.price };
-      }) : null;
-      const common = { model: cycle.plan.model, initialState: cycle.plan.initialState, targetC: cycle.plan.targetC,
-        config: cycle.modelConfig ?? this.config, occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC, maxRiseC: cycle.plan.maxRiseC,
-        equipment: cycle.plan.equipment ?? {}, includeTail: false };
-      const predicted = predictionIntervals && !cycle.adjustments?.length
-        ? evaluateCycle({ ...common, schedule: cycle.plan.schedule, intervals: predictionIntervals }) : null;
-      // Parameter calibration uses the actually executed actions and the same
-      // contemporaneous weather/solar estimates as the assessment. A shortened
-      // action is not falsely labelled an error in the original prediction.
-      const calibration = evaluateCycle({ ...common, equipment: { ...common.equipment,
-        fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? common.equipment.fireplaceEvents ?? [] }, schedule, intervals });
-      const originalRecovery = predicted ? recoveryTotals(predicted.trajectory, cycle.observations) : null;
-      const calibratedRecovery = recoveryTotals(calibration.trajectory, cycle.observations);
-      const fireplaceEvents = this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [];
-      const firePresent = cycle.observations.some(row => fireplaceAffectsLearning({
-        fireplaceKgPerHour: fireplaceRate(fireplaceEvents, row.start, row.end) }));
-      const floorTreatmentComparable = !cycle.plan.schedule.floorOverride || cycle.observations.every(row =>
-        row.treatmentKey === cycle.treatmentKey && row.floorOverrideMode === (row.phase === 'preheat' ? 'on' : 'off'));
-      const comparableSpace=floorTreatmentComparable && a.routeMissingHours<=0.001 && a.routeCoveredHours>0
-        && !cycle.fireplaceCorrectionRevision && (!firePresent || fireplaceEvidenceReady(cycle.plan.model));
-      const trajectoryErrors = predicted ? cycle.observations.map(o => {
-        const step=predicted.trajectory.find(row => row.at>=o.end && row.at-row.durationHours*HOUR<o.end);
-        return step && number(o.indoorC) ? {error:Math.abs(step.indoorC-o.indoorC),hours:(o.end-o.start)/HOUR}:null;
-      }).filter(Boolean):[];
-      const trajectoryHours=trajectoryErrors.reduce((s,r)=>s+r.hours,0);
-      cycle.assessment = { profitCents: comparableSpace ? reference.spaceHeatingCostCents - a.spaceHeatingCostCents : null,
-        wholeCycleProfitCents:null, wholeCycleProfitReason:'DHW demand, delivery and tank recovery are not counterfactually modelled.',
-        referenceCostCents: reference.spaceHeatingCostCents, actualCostCents: a.costCents,
-        actualSpaceHeatingCostCents:a.spaceHeatingCostCents,dhwCostCents:a.dhwCostCents,
-        recoveryErrorCents: originalRecovery && comparableSpace ? Math.abs(originalRecovery.costCents - a.spaceHeatingRecoveryCostCents) : null,
-        uncertaintyCents: Math.max(5, reference.uncertaintyCents + (a.metered ? 0 : Math.abs(a.costCents) * 0.35)),
-        basis: comparableSpace ? 'estimated-space-heating-execution-and-reference'
-          : !floorTreatmentComparable ? 'unassessed-floor-treatment-not-confirmed'
-          : cycle.fireplaceCorrectionRevision ? 'unassessed-corrected-fireplace-history'
-          : firePresent && !fireplaceEvidenceReady(cycle.plan.model) ? 'unassessed-fireplace-response' : 'unassessed-missing-space-heating-attribution',
-        recoveryPredictionBasis: originalRecovery ? 'Frozen model and original forecast over the observed recovery period'
-          : cycle.adjustments?.length ? 'Unavailable: executed schedule changed' : 'Unavailable: original forecast did not cover the complete cycle',
-        calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
-        recoveryBasis: 'Comparable room temperature and reserve reconstructed with the frozen cycle model, and selected slab when configured, held for one hour; DHW service excluded',
-        referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
-      const episode = { id: cycle.id, treatmentKey: cycle.treatmentKey ?? 'native', complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
-        ...(cycle.plan.userTrial ? { userTrial: cycle.plan.userTrial } : {}),
-        energyBasis: a.metered ? 'measured' : 'estimated', compressorKwh: a.compressorKwh,
-        compressorRunHours: a.compressorRunHours, recoveryHours: (now - schedule.reductionEnd) / HOUR,
-        recoveryEnergyKwh: a.spaceHeatingRecoveryKwh, spaceHeatingAuxKwh: a.spaceHeatingAuxKwh,
-        dhwAuxKwh: a.dhwAuxKwh, predictedEnergyKwh: calibration.spaceHeatingKwh,
-        actualEnergyKwh: a.spaceHeatingKwh,
-        predictedRecoveryEnergyKwh: calibratedRecovery.energyKwh,
-        predictedRecoveryAuxKwh: calibratedRecovery.auxiliaryKwh,
-        predictedSpaceHeatingAuxKwh: calibration.auxiliaryKwh,
-        recoveryAuxKwh: a.recoveryAuxKwh, compressorActivityObserved: a.compressorActivityObserved, auxiliaryObserved: a.auxiliaryObserved, auxiliaryRouteKnown: a.auxiliaryRouteKnown,
-        frozenRecoveryMultiplier: cycle.plan.model.energy.recoveryMultiplier,
-        frozenAuxiliaryRiskScale: cycle.plan.model.energy.auxiliaryRiskScale ?? 1,
-        forecastValidation:{roomBoostC:schedule.roomBoostC??0,preheatHours:(schedule.preheatEnd-schedule.preheatStart)/HOUR,
-          eligible:Boolean(predicted && comparableSpace && trajectoryHours>0),
-          temperatureMaeC:trajectoryHours?trajectoryErrors.reduce((s,r)=>s+r.error*r.hours,0)/trajectoryHours:null,
-          minimumTemperatureErrorC:predicted?Math.abs(Math.min(...predicted.trajectory.map(r=>r.indoorC))-Math.min(...cycle.observations.map(r=>r.indoorC))):null,
-          energyRelativeError:predicted && a.spaceHeatingKwh>=.1?Math.abs(predicted.spaceHeatingKwh-a.spaceHeatingKwh)/a.spaceHeatingKwh:null,
-          costRelativeError:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents)/Math.max(5,Math.abs(a.spaceHeatingCostCents)):null,
-          costAbsoluteErrorCents:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents):null,
-          recoveryCostErrorCents:cycle.assessment.recoveryErrorCents,
-          reductionHours:(schedule.reductionEnd-schedule.reductionStart)/HOUR,
-          basis:'frozen-advance-forecast',adjusted:Boolean(cycle.adjustments?.length)},
-        phases: [...new Set(cycle.observations.map(row => row.phase))],
-        provenance: { basis: 'committed-history', forecastAlgorithm: cycle.plan.algorithmVersion ?? 'unversioned-frozen-forecast', forecastVersion: cycle.lastSample.provenance?.forecastVersion ?? null } };
-      if (!floorTreatmentComparable
-        || cycle.fireplaceCorrectionRevision || firePresent && !fireplaceEvidenceReady(cycle.plan.model)) {
-        // Keep the attempt and actual observations, without letting assumed wood
-        // heat calibrate recovery energy or certify advance control performance.
-        episode.complete = false;
-        episode.responseComplete = true;
-      }
-      // Completion and calibration are one durable operation. A crash after
-      // this commit leaves an unapplied journal entry, not a lost episode.
-      this.store.transaction(() => {
-        this.save(cycle);
-        appendLearningRecord(this.store, this.input, 'episode', episode, { config: this.config, seed: this.learningSeed?.() ?? null });
-        this.store.event('cycle-completed', { id: cycle.id, assessment: cycle.assessment }, now);
-      });
-      return episode;
+      this.save(cycle);
+      const job = { id: cycle.id, count: cycle.observationCount, now, fireplaceEvents: this.events(cycle) };
+      return this.store.path === ':memory:' ? this.complete(job,assessCycle(this.store,job)) : { assessmentJob: job };
     }
     this.save(cycle); return null;
+  }
+  complete(job,result) {
+    const cycle = this.active();
+    if (!cycle || cycle.id !== job.id || cycle.observationCount !== job.count) throw new Error('Cycle assessment became stale');
+    cycle.status = 'completed'; cycle.endedAt = job.now; cycle.assessment = result.assessment;
+    this.store.transaction(() => {
+      this.save(cycle);
+      appendLearningRecord(this.store,this.input,'episode',result.episode,
+        { config: this.config, seed: this.learningSeed?.() ?? null });
+      this.store.event('cycle-completed',{ id: cycle.id, assessment: cycle.assessment },job.now);
+    });
+    return result.episode;
   }
   metrics(baselineC) {
     const cycles = this.store.cycleSummaries({ input: this.input, completedOnly: true, limit: 30 });

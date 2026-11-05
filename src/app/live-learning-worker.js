@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { Store } from '../storage/store.js';
+import { rebuildCycleWorking, assessCycle } from './cycle-evaluation.js';
 import { admittedReader, storageStep } from '../storage/worker-admission.js';
 import { appendLearningRecord, committedLearningSample, replayLearningJournalSteps } from './committed-learning.js';
 import { evaluateThermalModel, restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
@@ -77,7 +78,11 @@ async function calculate(message) {
   try {
     let answer;
     if (message.operation === 'replay') answer = await replay(message);
-    else if (message.operation === 'sample') {
+    else if (['cycle-working','cycle-assess'].includes(message.operation)) {
+      store.db.exec('BEGIN');
+      try { answer = { result: (message.operation === 'cycle-working' ? rebuildCycleWorking : assessCycle)(store,message.options) }; }
+      finally { store.db.exec('ROLLBACK'); }
+    } else if (message.operation === 'sample') {
       store.db.exec('BEGIN');
       try { answer = { result: committedLearningSample({ ...message.options, store, input: workerData.input }) }; }
       finally { store.db.exec('ROLLBACK'); }

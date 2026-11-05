@@ -2914,7 +2914,7 @@ representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or
 silently remove evidence.
 
-Current physical schema 36 retains a chronological coverage index for seeking
+Current physical schema 37 retains a chronological coverage index for seeking
 the next boundary in one source/device/signal stream. Charts retain the original
 recovery selection, equal-start ID precedence and full successor timestamps,
 including boundaries beyond the drawn range. They do not materialize all retained
