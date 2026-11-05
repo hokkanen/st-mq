@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { H66_REGISTERS } from '../domain/telemetry.js';
-import { validateExplorerOverrides } from '../control/heating-explorer.js';
+import { validateExplorerOverrides, explorerOverrideChanges, applyExplorerOverrides } from '../control/heating-explorer.js';
 
 const PREVIEW_MS = 5 * 60_000;
 const INPUT_MAX_AGE_MS = 2 * 60_000;
@@ -27,8 +27,11 @@ function validTrial(trial) {
     || !Number.isFinite(trial.expiresAt) || trial.latestStartAt < trial.approvedAt - INPUT_MAX_AGE_MS
     || trial.expiresAt <= trial.latestStartAt || trial.expiresAt - trial.approvedAt > (48 + 168) * 3_600_000
     || !/^[a-f0-9]{64}$/.test(trial.binding) || !/^[a-f0-9]{64}$/.test(trial.scopeBinding)) return false;
+  // Trial permission is already stored in plan.config. Keep the persisted
+  // limits contract unchanged; the checkbox is a preview-only input.
+  if (Object.hasOwn(trial.limits, 'learningTrials')) return false;
   try { validateExplorerOverrides(trial.limits); } catch { return false; }
-  if (ACTIVE.has(trial.status) && (!trial.plan?.schedule || trial.plan.userTrial?.id !== trial.id
+  if (ACTIVE.has(trial.status) && (!trial.plan?.schedule || typeof trial.plan.config?.learningTrials !== 'boolean' || trial.plan.userTrial?.id !== trial.id
     || !Number.isFinite(trial.plan.schedule.reductionEnd))) return false;
   if (trial.status === 'running' && typeof trial.cycleId !== 'string') return false;
   return true;
@@ -98,7 +101,7 @@ export class HeatingExplorer {
     const trial = this.trial();
     if (!trial) return null;
     const { binding, scopeBinding, plan, version, ...visible } = trial;
-    return visible;
+    return { ...visible, learningTrials: typeof plan?.config?.learningTrials === 'boolean' ? plan.config.learningTrials : null };
   }
   binding() {
     const e = this.engine, checkpoint = e.checkpoint, native = e.h66Status?.();
@@ -160,7 +163,7 @@ export class HeatingExplorer {
     return this.calculate(snapshot, limits, true);
   }
   async calculate(snapshot, limits, preview) {
-    const normalized = validateExplorerOverrides(limits);
+    const normalized = explorerOverrideChanges(snapshot.input, limits);
     const key = JSON.stringify(normalized);
     let task = snapshot.cache.get(key);
     if (!task) {
@@ -207,9 +210,14 @@ export class HeatingExplorer {
     const { reason, latestStartAt, expiresAt } = this.approvalScope(preview.plan);
     if (reason) throw failure(reason);
     const id = randomUUID();
-    const context = { id, approvedAt: now, latestStartAt, expiresAt, limits: preview.limits,
+    const persistedLimits = { ...preview.limits };
+    delete persistedLimits.learningTrials;
+    const context = { id, approvedAt: now, latestStartAt, expiresAt, limits: persistedLimits,
       snapshotAt: preview.snapshot.input.now, basis: 'admin-approved-one-cycle-scenario' };
-    const plan = structuredClone({ ...preview.plan, userTrial: context });
+    const reviewed = applyExplorerOverrides(preview.snapshot.input, preview.limits);
+    const permission = reviewed.config.learningTrials;
+    if (typeof permission !== 'boolean') throw failure('Captured learning trial permission is unavailable. Refresh the plan.');
+    const plan = structuredClone({ ...preview.plan, config: { ...preview.plan.config, ...reviewed.config }, userTrial: context });
     const trial = { version: 1, ...context, status: 'pending', binding: preview.snapshot.binding,
       scopeBinding: this.scopeBinding(), plan };
     this.engine.store.transaction(() => {
@@ -280,6 +288,9 @@ export class HeatingExplorer {
       && plan.schedule && trial.plan?.schedule
       && digest(plan.schedule)===digest(trial.plan?.schedule)
       && digest(plan.userTrial)===digest(trial.plan?.userTrial)
+      && plan.trial===trial.plan.trial
+      && plan.config?.learningTrials===trial.plan.config.learningTrials
+      && plan.config?.maxTrialCostCents===trial.plan.config.maxTrialCostCents
       && now<trial.expiresAt && (trial.status==='running'||now<=trial.latestStartAt)
       && this.engine.canControl() && !this.engine.suspended && this.engine.config.input!=='offline'
       && this.scopeBinding()===trial.scopeBinding);

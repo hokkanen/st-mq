@@ -410,3 +410,32 @@ test('changing Automatic to Pause preserves an independently approved running cy
   assert.equal(r.engine.executor.status().legacyOutstanding,false);
   assert.equal(r.engine.automationStatus().home.enabled,false);
 });
+
+test('reviewed trial permission stays in plan configuration while the explorer captures the automatic allowance', async t => {
+  const r = setup(t), explorer = r.engine.heatingExplorer;
+  r.engine.control.trialBudgetCentsPerDay = 0;
+  r.engine.cycles.config.trialBudgetCentsPerDay = 0;
+  const plan = r.plan();
+  assert.equal(r.engine.control.learningTrials, false);
+  explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
+    checkpoint: r.engine.checkpoint, observations: {}, equipment: {}, trialBudgetRemainingCents: 0 },
+  { phase: 'normal', reasons: [], plan: null });
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run(_input, overrides) { return { version: 1,
+    executablePlan: { ...structuredClone(plan), config: { ...plan.config,
+      maxTrialCostCents: overrides.maxTrialCostCents ?? r.engine.control.maxTrialCostCents } } }; }, async close() {} };
+  const view = await explorer.view(), preview = await explorer.simulate({ snapshotId: view.snapshotId,
+    limits: { learningTrials: true, maxTrialCostCents: 151, maxReductionHours: 8, minimumHomeBenefitCents: -1000 } });
+  explorer.apply({ previewId: preview.previewId });
+  assert(!Object.hasOwn(explorer.trial().limits, 'learningTrials'));
+  assert.equal(explorer.trial().plan.config.learningTrials, true);
+  r.engine.tick(); await r.settle();
+  assert.equal(explorer.input.config.learningTrials, false, 'The automatic baseline retains saved permission');
+  assert.equal(explorer.input.currentConfig.learningTrials, true, 'The reviewed cycle uses its bound permission');
+  assert.equal(explorer.input.currentConfig.maxTrialCostCents, 151);
+  assert.equal(explorer.input.trialBudgetRemainingCents, 0, 'A manual allowance cannot become the automatic baseline');
+  assert.equal(r.engine.control.learningTrials, false);
+  explorer.cancel({}); r.engine.tick(); await r.settle();
+  assert.equal(explorer.input.currentConfig.learningTrials, false);
+  assert.equal(explorer.input.trialBudgetRemainingCents, 0);
+});

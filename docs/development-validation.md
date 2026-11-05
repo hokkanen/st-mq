@@ -1689,8 +1689,10 @@ parent card, Escape and focus restoration, pinned comparisons and draft retentio
 family simulation, explicit admin approval, stale-input rejection and layouts
 from 280 to 1920 px in both themes, including both sides of the 650 px breakpoint.
 It checks exact desktop/mobile field placement, Away replacement, equal visible
-input/selector widths, input alignment, the final two advanced fields, touch and
-keyboard selection, invalid inputs, busy/error retry behavior, and section-start
+input/selector widths, input alignment, the upper region ending with the telemetry
+limit, and the separate Learning trials box with its border-heading checkbox.
+It checks disabled value preservation, sparse edit intent, local Reset versus
+explicit Refresh, touch and keyboard selection, invalid inputs, busy/error retry behavior, and section-start
 jumps with Advanced settings open or closed. It also checks absent and partial uncertainty bands,
 provisional comfort limits and the provenance of a captured indoor estimate.
 It builds an isolated temporary UI unless `STMQ_UI_DIST` selects an existing

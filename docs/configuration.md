@@ -705,6 +705,11 @@ is a minimum deduction from nominal savings: the greater of this setting and the
 paired physical-stress deduction applies, rather than adding the setting twice.
 The manual planner can override them for one explicitly reviewed cycle, including
 a negative minimum benefit when deliberately accepting estimated extra cost.
+Its separate Learning trials box inherits automatic trial permission, the
+per-cycle limit and the captured remaining daily allowance. Changing trial
+permission or learning priority grants no extra allowance; only an explicit
+budget change supplies a separate reviewed one-cycle allowance. These edits do
+not change saved automatic settings.
 Home's Heating strategy & comfort panel explains the effective policy and independent limits.
 Shared reduction ceilings default to 12 hours occupied and 24 hours away; explicit
 installation overrides retain their values. These are maxima, not requested

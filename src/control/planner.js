@@ -613,7 +613,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   if (preheatSafety && !preheatSafety.hotSafe) return rejected('scheduled-preheat-comfort-uncertain');
   const allowance=plan.trial?Math.max(0,-benefit,trialSafety.costExposureCents,plan.trialOpportunityCostCents??0):0;
   const opportunity = trialOpportunity({ schedule: plan.schedule, baseline: referencePrediction, equipment, initialState, intervals });
-  if (plan.trial ? prediction.severe || !readiness.trialReady || duration > configuredMaximum || !opportunity.useful
+  if (plan.trial ? prediction.severe || !readiness.trialReady || !number(trialBudgetRemainingCents) || trialBudgetRemainingCents < 0 || duration > configuredMaximum || !opportunity.useful
     || !trialSafety.comfortSafe || !number(trialSafety.costExposureCents) || allowance > Math.min(c.maxTrialCostCents,trialBudgetRemainingCents)
     : !economics.admitted)
     return rejected('scheduled-cycle-no-longer-admissible');
@@ -650,7 +650,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const away = settings.occupancy.mode === 'away';
   const readiness = learningReadiness(checkpoint, c, equipment);
   const targetReached = (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay;
-  const canTrial = readiness.trialReady && trialBudgetRemainingCents >= 0;
+  const canTrial = readiness.trialReady && number(trialBudgetRemainingCents) && trialBudgetRemainingCents >= 0;
   const configuredMaximum = equipment.h66Available ? (away ? c.maxAwayReductionHours : c.maxReductionHours) : c.maxUnobservedReductionHours;
   const testedMaximum = validatedReductionHours(model);
   const economicMaximum = readiness.initialReady ? configuredMaximum : readiness.actionValidated ? Math.min(configuredMaximum, testedMaximum) : 0;

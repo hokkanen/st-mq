@@ -13,12 +13,62 @@ test('strategy changes preserve independent monetary fields, zero and the manual
   assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0);
   assert.equal(state.snapshot().limits.homeDiscomfortCentsPerDegreeSquaredHour,0);
   state.edit('minimumHomeBenefitCents',0);await state.compare();
-  assert.deepEqual(requests.at(-1).body.limits,{savingsStrategy:'gentle',minimumHomeBenefitCents:0,
-    homeDiscomfortCentsPerDegreeSquaredHour:0,maxTrialCostCents:150});
+  assert.deepEqual(requests.at(-1).body.limits,{savingsStrategy:'gentle'});
   state.edit('savingsStrategy','balanced');state.edit('savingsStrategy','gentle');
   assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0,'An explicitly edited zero remains authoritative');
   state.reset();state.edit('savingsStrategy','gentle');
   assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0,'Reset restores the configured monetary policy');
+});
+
+test('learning edits submit only changed intent and Reset restores the captured baseline without a request', async () => {
+  const requests = [], controls = [{ key: 'learningTrials', value: false },
+    { key: 'maxTrialCostCents', value: 150 }, { key: 'learningPriorityPriceCents', value: 15 }];
+  const original = makeResult({ controls, current: { schedule: { reductionStart: now, reductionEnd: now + 900000 } },
+    learningContext: { automaticEnabled: false, perCycleLimitCents: 150, remainingAutomaticAllowanceCents: 0,
+      allowanceBasis: 'captured-automatic' } });
+  const state = createHeatingExplorerState({ clock: () => now, request: async (path, body) => {
+    requests.push({ path, body }); return structuredClone(path.endsWith('/simulate')
+      ? { ...original, previewId: 'changed-preview', scenario: { ...original.scenario, estimatedBenefitCents: 999 },
+        learningContext: { ...original.learningContext, allowanceBasis: 'reviewed-one-cycle' } } : original);
+  } });
+  await state.load(); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, {}, 'Untouched fields do not create permission or an allowance');
+  state.edit('learningTrials', true); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, { learningTrials: true });
+  state.edit('learningPriorityPriceCents', 20); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, { learningTrials: true, learningPriorityPriceCents: 20 });
+  state.edit('maxTrialCostCents', 151); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, { learningTrials: true, maxTrialCostCents: 151, learningPriorityPriceCents: 20 });
+  state.updateTrial({ id: 'actual-cycle', status: 'running' });
+  const count = requests.length; state.reset();
+  assert.equal(requests.length, count);
+  assert.deepEqual(state.snapshot().result.current, original.current);
+  assert.deepEqual(state.snapshot().result.learningContext, original.learningContext);
+  assert.equal(state.snapshot().result.activeTrial.id, 'actual-cycle', 'Reset does not cancel or resurrect actual cycle state');
+  assert.deepEqual(state.snapshot().limits, { learningTrials: false, maxTrialCostCents: 150, learningPriorityPriceCents: 15 });
+  assert.equal(state.snapshot().dirty, false); assert.equal(state.snapshot().result.previewId, null);
+  assert.equal(await state.apply(), false);
+  state.edit('maxTrialCostCents', 151); state.edit('maxTrialCostCents', 150); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, {}, 'Returning to the original value removes the budget override');
+  state.edit('maxTrialCostCents', null); state.edit('learningPriorityPriceCents', null); await state.compare();
+  assert.deepEqual(requests.at(-1).body.limits, {}, 'Disabled learning drafts cannot block an ordinary preview or grant an allowance');
+  assert.equal(state.snapshot().limits.maxTrialCostCents, null, 'Disabled values are retained until edited or reset');
+});
+
+test('Reset preserves an unknown original allowance and Refresh explicitly replaces the captured context', async () => {
+  let generation = 0;
+  const state = createHeatingExplorerState({ clock: () => now, request: async () => makeResult({
+    snapshotId: `context-${++generation}`, controls: [{ key: 'learningTrials', value: generation > 1 },
+      { key: 'maxTrialCostCents', value: 150 }, { key: 'learningPriorityPriceCents', value: 15 }],
+    learningContext: { remainingAutomaticAllowanceCents: generation === 1 ? null : 25 } }) });
+  await state.load(); state.edit('learningTrials', true); state.edit('maxTrialCostCents', 151); state.reset();
+  assert.equal(generation, 1);
+  assert.equal(state.snapshot().result.learningContext.remainingAutomaticAllowanceCents, null);
+  assert.equal(state.snapshot().limits.learningTrials, false);
+  await state.load(); state.edit('learningTrials', false); state.reset();
+  assert.equal(generation, 2);
+  assert.equal(state.snapshot().result.learningContext.remainingAutomaticAllowanceCents, 25);
+  assert.equal(state.snapshot().limits.learningTrials, true);
 });
 test('validation explanation uses complete sentences and does not turn zero observed duration into an execution ban',()=>{
   const text=heatingEvidenceText({initialReady:true,actionValidated:false,validatedReductionHours:0,
@@ -46,12 +96,13 @@ test('exploration pins conditions and changes only local values until explicit c
   assert.deepEqual(state.snapshot().limits, { maxReductionHours: 8, maxDropC: 1.5 });
   await state.compare();
   assert.deepEqual(requests[1], { path: '/api/heating/explorer/simulate', body: {
-    snapshotId: 'synthetic-snapshot', limits: { maxReductionHours: 8, maxDropC: 1.5 },
+    snapshotId: 'synthetic-snapshot', limits: { maxReductionHours: 8 },
   } });
   assert.equal(state.snapshot().dirty, false);
   assert.equal(state.snapshot().limits.maxReductionHours, 8, 'server current controls do not reset a hypothetical draft');
   state.reset();
-  assert.equal(state.snapshot().dirty, true);
+  assert.equal(state.snapshot().dirty, false);
+  assert.equal(state.snapshot().result.previewId, null);
   assert.equal(state.snapshot().limits.maxReductionHours, 4);
   assert.equal(requests.length, 2, 'reset is also read only');
 });
@@ -195,7 +246,7 @@ test('unknown uncertainty breaks the chart allowance without becoming zero certa
 
 
 test('cycle approval explains paid trials, modeled exposure and its separate control authority',()=>{
-  const text=heatingApprovalText({controls:[{key:'maxTrialCostCents',value:150}],scenario:{trial:true,
+  const text=heatingApprovalText({controls:[{key:'maxTrialCostCents',value:150}],learningContext:{allowanceBasis:'reviewed-one-cycle'},scenario:{trial:true,
     estimatedBenefitCents:-25,trialExposureCents:40,outcomes:{maxIndoorDropC:1.25}}});
   assert.match(text,/extra cost.*€0.25/);assert.match(text,/exposure €0.40.*€1.50/);
   assert.match(text,/drop below Normal: 1.25 °C/);assert.match(text,/even if Home automation is paused or disabled/);

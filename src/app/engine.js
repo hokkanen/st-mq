@@ -1694,10 +1694,12 @@ export class Engine {
       this.pendingPlan = null;
       this.store.setState(`pending-plan:${input}`, null);
     }
-    const scoped = scopedTrial ? applyExplorerOverrides({ settings: baseSettings, config: this.control }, scopedTrial.limits)
+    const scoped = scopedTrial ? applyExplorerOverrides({ settings: baseSettings, config: this.control }, {
+      ...scopedTrial.limits, learningTrials: scopedTrial.plan.config.learningTrials })
       : { settings: baseSettings, config: this.control };
     const settings = scoped.settings, planningConfig = scoped.config;
-    const planningBudget = scopedTrial?.limits?.maxTrialCostCents ?? this.cycles.budget(now);
+    const automaticTrialBudget = this.cycles.budget(now);
+    const planningBudget = scopedTrial?.limits?.maxTrialCostCents ?? automaticTrialBudget;
     const reviewedCycle = Boolean(scopedTrial);
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
       comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
@@ -1794,7 +1796,7 @@ export class Engine {
       currentSettings: currentScopeActive ? settings : baseSettings, currentConfig: currentScopeActive ? planningConfig : this.control,
       thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride },
       equipment: this.plant ? { ...equipment, h66Available: true, preheatAvailable: true } : equipment,
-      trialBudgetRemainingCents: planningBudget },
+      trialBudgetRemainingCents: automaticTrialBudget },
     { ...decision, plan: actualPlan && actualSchedule ? { ...actualPlan, schedule: actualSchedule } : actualPlan }, forceNormal);
     const cycleSchedule = this.cycles.active()?.executionSchedule ?? decision.plan?.schedule;
     decision.owner = this.cycles.active()?.plan.executionOwner ?? this.cycles.active()?.id ?? `plan:${decision.plan?.generatedAt ?? now}`;

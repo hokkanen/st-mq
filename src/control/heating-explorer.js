@@ -32,13 +32,14 @@ const CONTROL_DETAILS = Object.freeze({
   maxPreheatHours:{help:'The longest preheat before a reduction, in hours. Preheat stores warmth ahead of expensive electricity. The planner chooses whether and how long to preheat while checking the temperature rise, recovery and complete-cycle cost.'},
   preheatRoomBoostC:{help:'The maximum increase of the heat pump’s native ROOM setting during preheat. This setting shifts the heating curve; it does not request the same increase in indoor temperature. The model assumes roughly 3 °C more heating-water temperature per 1 °C ROOM increase. Native limits may require a smaller increase; the separate allowed indoor rise still applies.'},
   maxUnobservedReductionHours:{advanced:true,help:'The reduction ceiling used when current native heat-pump telemetry is unavailable. For example, 0.5 h means 30 minutes. With native telemetry available, the ordinary reduction ceiling applies instead. This is separate from model training or startup. Actual command capability and restoration remain required.'},
-  maxTrialCostCents:{advanced:true,help:'The estimated cost-exposure budget for one manually reviewed learning cycle, in cents: 150 cents is €1.50. It covers modeled extra cost and a better saving opportunity the experiment might displace. This reviewed budget is separate from the automatic daily experiment budget. Zero permits only trials with no modeled extra cost or displaced saving. It is an estimate, not a guarantee of the final bill.'},
+  maxTrialCostCents:{advanced:true,help:'The estimated cost-exposure budget for one manually reviewed learning cycle, in cents: 150 cents is €1.50. It covers modeled extra cost and a better saving opportunity the experiment might displace. Leaving this value unchanged retains the automatic per-cycle limit and remaining daily allowance. Changing it supplies a separate reviewed one-cycle allowance; it does not enable trials. Zero permits only trials with no modeled extra cost or displaced saving. It is an estimate, not a guarantee of the final bill.'},
   minimumHomeBenefitCents:{advanced:true,help:'The minimum conservative estimated saving required to start a cycle, in cents, before adding the other penalties. Zero requires a positive saving after those penalties. A negative value explicitly permits estimated extra cost. Full preheat, reduction, recovery and remaining heat debt are included in the electricity-cost comparison.'},
   homeDiscomfortCentsPerDegreeSquaredHour:{advanced:true,help:'An economic penalty for extra indoor-temperature deviation compared with Normal heating, within the permitted limits. Hot and cold deviations from the normal reference are squared and integrated over time, then compared with Normal heating. If Normal stays at the reference, a 1 °C deviation for 2 h gives 2 °C²h; a 2 °C deviation for 1 h gives 4 °C²h. Multiply by this rate in cents. Zero removes this penalty while keeping the temperature limits.'},
   cycleStartCostCents:{advanced:true,help:'An extra economic hurdle for starting a new cycle, in cents. For example, 10 cents requires the estimated saving to cover an extra 10 cents before starting. Zero adds no start penalty. This is a planning preference, not an electricity charge, and is not charged again when continuing the same cycle.'},
   cycleHourCostCents:{advanced:true,help:'An extra economic penalty per additional preheat and reduction hour, in cents per hour. For example, 5 c/h over 3 extra hours adds a 15-cent hurdle. Recovery hours are not counted by this penalty; recovery electricity is already included in energy cost. Zero removes this duration penalty.'},
   economicUncertaintyFloorCents:{advanced:true,help:'A minimum deduction from nominal estimated savings, in cents. The planner uses the greater of this amount and the deduction indicated by its paired physical stress cases. For example, 10 cents means deducting at least 10 cents, not adding 10 cents to an existing larger deduction. Zero adds no minimum; the stress checks still apply.'},
   learningPriorityPriceCents:{advanced:true,help:'The current all-in electricity price at or below which learning gets greater priority, in cents per kWh. At 15 c/kWh, the planner is more willing to spend its experiment budget on useful information. This is not a trial price ceiling. Budget, temperature and equipment checks still apply, and an upcoming expensive-price opportunity is protected.'},
+  learningTrials: { advanced: true, help: 'Allow learning trials in this preview and any explicitly approved cycle. The initial choice follows automatic trial permission. Changing this checkbox does not change saved settings or grant a new budget. Leaving the budget unchanged retains the captured automatic allowance; changing it supplies a separate reviewed allowance for this one cycle. Equipment, temperature and evidence checks remain required.' },
 });
 
 /** Only explicit household policy and a reviewed one-cycle budget can be explored.
@@ -51,6 +52,8 @@ export function validateExplorerOverrides(overrides = {}) {
   for (const [key, value] of Object.entries(overrides)) {
     if (key === 'savingsStrategy') {
       if (!HEATING_STRATEGIES.some(option => option.id === value)) throw new TypeError('Unknown savings strategy');
+    } else if (key === 'learningTrials') {
+      if (typeof value !== 'boolean') throw new TypeError('Learning trial permission must be a boolean');
     } else {
       const spec = Object.hasOwn(LIMITS, key) ? LIMITS[key] : null;
       if (!spec) throw new TypeError(`Unsupported heating scenario limit: ${key}`);
@@ -62,8 +65,15 @@ export function validateExplorerOverrides(overrides = {}) {
   return result;
 }
 
+/** Presence alone is not an edit, especially for a reviewed trial allowance. */
+export function explorerOverrideChanges(input, overrides = {}) {
+  const current = policy(input);
+  return Object.fromEntries(Object.entries(validateExplorerOverrides(overrides))
+    .filter(([key, value]) => value !== current[key]));
+}
+
 export function applyExplorerOverrides(input, overrides = {}) {
-  const changes = validateExplorerOverrides(overrides), result = structuredClone(input);
+  const changes = explorerOverrideChanges(input, overrides), result = structuredClone(input);
   result.config = { ...CONTROL_DEFAULTS, ...result.config };
   result.settings = { ...result.settings, comfort: { ...result.settings.comfort } };
   for (const [key, value] of Object.entries(changes)) {
@@ -73,12 +83,12 @@ export function applyExplorerOverrides(input, overrides = {}) {
       result.config[key] = value;
       if (key === 'preheatRoomBoostC') result.settings.preheatRoomBoostC = value;
       if (key === 'maxTrialCostCents') {
-        result.config.learningTrials = true;
         result.trialBudgetRemainingCents = value;
         result.equipment = { ...result.equipment, trialBudgetRemainingCents: value };
       }
     }
   }
+  if (!finite(result.trialBudgetRemainingCents)) result.trialBudgetRemainingCents = null;
   return result;
 }
 
@@ -88,6 +98,7 @@ function policy(input) {
     maxPreheatHours: c.maxPreheatHours, preheatRoomBoostC: c.preheatRoomBoostC,
     maxUnobservedReductionHours: c.maxUnobservedReductionHours, maxTrialCostCents: c.maxTrialCostCents,
     learningPriorityPriceCents:c.learningPriorityPriceCents,
+    learningTrials: c.learningTrials,
     ...heatingEconomics(c),
     maxDropC: input.settings.comfort.maxDropC, maxRiseC: input.settings.comfort.maxRiseC ?? 1.5,
     savingsStrategy: input.settings.savingsStrategy ?? DEFAULT_HEATING_STRATEGY };
@@ -240,7 +251,7 @@ function constraints(input, decision, evidence, selected) {
       value: maxBoost, unit: '°C',
       detail: 'Initial estimates permit preheat with native ROOM headroom and conservative temperature checks. Demonstrated increases describe observed support; simulations add no evidence.' });
   }
-  if (!evidence.trialReady || !(input.trialBudgetRemainingCents >= 0)) result.push({ key: 'trialReadiness',
+  if (!evidence.trialReady || !finite(input.trialBudgetRemainingCents) || input.trialBudgetRemainingCents < 0) result.push({ key: 'trialReadiness',
     label: 'Learning trial readiness', kind: 'evidence', status: 'blocking', value: null, unit: null,
     detail: 'Experiments require enabled permission, current compressor and hot-water routing observations, a measured indoor average, budget for their estimated exposure and cold/hot stress checks. Zero budget still permits zero-exposure trials. Economic cycles can use the initialized model within current input, equipment and configured limits while experiment prerequisites are missing.' });
   for (const reason of decision.reasons.filter(reason => ['missing-or-stale-indoor', 'awaiting-normal-temperature-reference',
@@ -276,7 +287,7 @@ function illustrate(input, changes, current, scenario, args, normal) {
 /** Pure, bounded comparison. Call in the explorer worker, never on a live tick.
  * All alternatives share one copied snapshot and the ordinary planner. */
 export function exploreHeatingPlan(input, overrides = {}, options = {}) {
-  const changes = validateExplorerOverrides(overrides);
+  const changes = explorerOverrideChanges(input, overrides);
   const frozen = applyExplorerOverrides(input, {}), hypothetical = applyExplorerOverrides(frozen, changes);
   const currentPolicy = policy(frozen), scenarioPolicy = policy(hypothetical);
   const changedKeys = Object.keys(changes).filter(key => scenarioPolicy[key] !== currentPolicy[key]);
@@ -357,6 +368,8 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   controls.push({ key: 'savingsStrategy', label: 'Savings strategy', ...CONTROL_DETAILS.savingsStrategy, value: currentPolicy.savingsStrategy,
     effectiveValue: effectivePolicy.savingsStrategy, scenarioValue: scenarioPolicy.savingsStrategy,
     options: HEATING_STRATEGIES.map(item => ({ value: item.id, label: `${item.label} (${item.retainedBenefitFraction * 100}%)` })) });
+  controls.push({ key: 'learningTrials', label: 'Enable learning trials', type: 'checkbox', ...CONTROL_DETAILS.learningTrials,
+    value: currentPolicy.learningTrials, effectiveValue: effectivePolicy.learningTrials, scenarioValue: scenarioPolicy.learningTrials });
   const indoor = frozen.observations?.indoor;
   const indoorAvailable = finite(indoor?.value) && indoor.stale !== true
     && finite(indoor.observedAt) && indoor.observedAt <= frozen.now;
@@ -367,6 +380,10 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
       uncertaintyC: indoorAvailable ? indoorUncertaintyAt(frozen.equipment, 0, frozen.now) : null,
       estimateValidUntil: finite(frozen.equipment?.indoorEstimateValidUntil) ? frozen.equipment.indoorEstimateValidUntil : null },
     controls, limits: scenarioPolicy, changedKeys, current, refreshedCurrent,
+    learningContext: { automaticEnabled: currentPolicy.learningTrials,
+      perCycleLimitCents: currentPolicy.maxTrialCostCents,
+      remainingAutomaticAllowanceCents: finite(frozen.trialBudgetRemainingCents) ? frozen.trialBudgetRemainingCents : null,
+      allowanceBasis: Object.hasOwn(changes, 'maxTrialCostCents') ? 'reviewed-one-cycle' : 'captured-automatic' },
     currentDiffersFromRecalculation: compare(current, refreshedCurrent).changed,
     scenario, normal, comparison: compare(current, scenario), constraints: boundaries, opportunities, evidence,
     illustrative: illustrate(hypothetical, changes, current, scenario, scenarioArgs, scenarioBaseline),

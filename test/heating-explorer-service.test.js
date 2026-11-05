@@ -54,17 +54,33 @@ test('invalid planning clocks cannot provide fresh comparison snapshots', async 
   }
 });
 
+test('reviewed learning permission uses existing plan configuration and leaves persisted limits unchanged', async t => {
+  const r = fixture(t), view = await r.service.view();
+  const preview = await r.service.simulate({ snapshotId: view.snapshotId,
+    limits: { learningTrials: false, maxTrialCostCents: 150 } });
+  assert.equal(preview.application.allowed, true);
+  const response = r.service.apply({ previewId: preview.previewId });
+  const saved = r.store.getState(r.service.key);
+  assert.equal(saved.plan.config.learningTrials, false);
+  assert.equal(response.activeTrial.learningTrials, false);
+  assert(!Object.hasOwn(saved.limits, 'learningTrials'));
+  assert(!Object.hasOwn(saved.plan.userTrial.limits, 'learningTrials'));
+  assert(!Object.hasOwn(saved.limits, 'maxTrialCostCents'), 'An unchanged amount is not a separate reviewed allowance');
+  assert.equal(r.engine.control.learningTrials, true);
+  assert.equal(r.engine.control.maxTrialCostCents, 150);
+});
+
 test('failure of an evicted comparison cannot remove its newer in-flight replacement', async t => {
   const r = fixture(t), view = await r.service.view(), jobs = [];
   r.worker.run = () => new Promise((resolve, reject) => jobs.push({ resolve, reject }));
   const simulate = value => r.service.simulate({ snapshotId: view.snapshotId, limits: { maxReductionHours: value } });
-  const first = simulate(12), rejected = assert.rejects(first, /first comparison failed/);
+  const first = simulate(11), rejected = assert.rejects(first, /first comparison failed/);
   const pending = Array.from({ length: 8 }, (_, index) => simulate(index + 1));
-  pending.push(simulate(12));
+  pending.push(simulate(11));
   assert.equal(jobs.length, 10);
   jobs[0].reject(new Error('first comparison failed'));
   await rejected;
-  pending.push(simulate(12));
+  pending.push(simulate(11));
   assert.equal(jobs.length, 10, 'the repeated request shares the newer calculation');
   for (const job of jobs.slice(1)) job.resolve({ version: 1, executablePlan: null });
   await Promise.all(pending);
@@ -225,6 +241,12 @@ test('copying a genuine approval id cannot authorize a different schedule or wid
   assert.equal(r.service.authorizes(original),true);
   const shifted=structuredClone(original);shifted.schedule.reductionEnd+=HOUR;
   assert.equal(r.service.authorizes(shifted),false);
+  const permission=structuredClone(original);permission.config.learningTrials=!permission.config.learningTrials;
+  assert.equal(r.service.authorizes(permission),false);
+  const classification=structuredClone(original);classification.trial=!classification.trial;
+  assert.equal(r.service.authorizes(classification),false);
+  const allowance=structuredClone(original);allowance.config.maxTrialCostCents=10000;
+  assert.equal(r.service.authorizes(allowance),false);
   const widened=structuredClone(original);widened.userTrial.limits.maxTrialCostCents=10000;
   assert.equal(r.service.authorizes(widened),false);
   assert.equal(r.service.authorizes(structuredClone(original)),true);

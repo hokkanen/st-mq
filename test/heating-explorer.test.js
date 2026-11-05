@@ -101,13 +101,50 @@ test('reviewed policy can permit an experiment without positive predicted saving
 test('an explicit one-cycle learning allowance is separate from an exhausted automatic allowance',()=>{
   const input=heatingExplorerFixture({price:2,hours:12});
   input.prices.forEach(row=>{row.allInCentsPerKWh=2;});
-  const proposed=applyExplorerOverrides(input,{maxTrialCostCents:150,maxDropC:3,maxRiseC:3,maxUnobservedReductionHours:4});
-  assert.equal(proposed.trialBudgetRemainingCents,150);
+  const proposed=applyExplorerOverrides(input,{learningTrials:true,maxTrialCostCents:151,maxDropC:3,maxRiseC:3,maxUnobservedReductionHours:4});
+  assert.equal(proposed.trialBudgetRemainingCents,151);
   assert.equal(proposed.config.learningTrials,true);
   assert.equal(proposed.config.maxUnobservedReductionHours,4);
   assert.equal(input.trialBudgetRemainingCents,0);
   assert.equal(input.config.learningTrials,false);
   assert.ok(exploreHeatingPlan(proposed,{},options).executablePlan);
+});
+
+test('unchanged learning fields and permission/priority edits preserve automatic trial restrictions', () => {
+  const input = heatingExplorerFixture(), before = structuredClone(input);
+  const same = applyExplorerOverrides(input, { learningTrials: false, maxTrialCostCents: 150, learningPriorityPriceCents: 15 });
+  assert.equal(same.config.learningTrials, false);
+  assert.equal(same.trialBudgetRemainingCents, 0);
+  for (const changes of [{ learningTrials: true }, { learningPriorityPriceCents: 20 },
+    { learningTrials: true, learningPriorityPriceCents: 20, maxTrialCostCents: 150 }]) {
+    const mapped = applyExplorerOverrides(input, changes);
+    assert.equal(mapped.trialBudgetRemainingCents, 0);
+    assert.equal(mapped.config.maxTrialCostCents, 150);
+  }
+  const changedBudget = applyExplorerOverrides(input, { maxTrialCostCents: 151 });
+  assert.equal(changedBudget.config.learningTrials, false, 'Budget changes do not grant trial permission');
+  assert.equal(changedBudget.trialBudgetRemainingCents, 151);
+  const zero = applyExplorerOverrides(input, { learningTrials: true, maxTrialCostCents: 0 });
+  assert.equal(zero.config.learningTrials, true); assert.equal(zero.trialBudgetRemainingCents, 0);
+  assert.deepEqual(input, before);
+});
+
+test('learning context reports the captured allowance and never invents a missing original budget', () => {
+  const input = heatingExplorerFixture(); input.config.learningTrials = true;
+  for (const remaining of [0, 25, null, undefined]) {
+    input.trialBudgetRemainingCents = remaining;
+    const result = exploreHeatingPlan(input, { maxTrialCostCents: 150, learningTrials: true }, options);
+    assert.equal(result.learningContext.remainingAutomaticAllowanceCents, remaining ?? null);
+    assert.equal(result.learningContext.perCycleLimitCents, 150);
+    assert.equal(result.learningContext.allowanceBasis, 'captured-automatic');
+    assert(!result.changedKeys.includes('maxTrialCostCents'));
+    if (remaining == null) assert.equal(result.scenario.trial, false);
+    if (result.scenario.trial) assert(result.scenario.trialExposureCents <= remaining);
+  }
+  const explicit = exploreHeatingPlan(input, { maxTrialCostCents: 151 }, options);
+  assert.equal(explicit.learningContext.remainingAutomaticAllowanceCents, null);
+  assert.equal(explicit.learningContext.allowanceBasis, 'reviewed-one-cycle');
+  for (const bad of [0, 1, 'true', 'false', null]) assert.throws(() => validateExplorerOverrides({ learningTrials: bad }), /boolean/);
 });
 
 test('initial operation beyond demonstrated duration never manufactures validation', () => {
@@ -127,7 +164,7 @@ test('initial operation beyond demonstrated duration never manufactures validati
 test('strict scenario input rejects evidence, protection, arbitrary fields and invalid limits', () => {
   for (const input of [null, [], 4, { maxDropC: 35.01 }, { maxRiseC: 0 }, { maxReductionHours: 47 },
     { maxAwayReductionHours: 47 }, { maxPreheatHours: 25 }, { maxDropC: '1.5' }, { maxDropC: NaN },
-    { preheatRoomBoostC: 2.5 }, { learningTrials: true }, { trialBudgetRemainingCents: 999 },
+    { preheatRoomBoostC: 2.5 }, { learningTrials: 'true' }, { trialBudgetRemainingCents: 999 },
     { model: {} }, { thermalValidated: true }, { maxUnobservedReductionHours: 47 },
     { savingsStrategy: 'aggressive' }, JSON.parse('{"__proto__":{}}')])
     assert.throws(() => validateExplorerOverrides(input));
@@ -348,7 +385,7 @@ test('explorer worker executes the pure API and reports strict validation errors
   });
   const response = await request({ id: 1, input: heatingExplorerFixture(), overrides: {}, options });
   assert.equal(response.id, 1); assert.ok(response.result.scenario);
-  const rejected = await request({ id: 2, input: heatingExplorerFixture(), overrides: { learningTrials: true } });
+  const rejected = await request({ id: 2, input: heatingExplorerFixture(), overrides: { learningTrials: 'true' } });
   assert.equal(rejected.id, 2); assert.equal(rejected.error.name, 'TypeError');
 });
 

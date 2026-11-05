@@ -55,12 +55,28 @@ The main controls remain visible on narrow and wide screens. Less frequently
 changed budget and economic controls are under **Advanced settings**, initially
 folded. Each control has an explanation popup available by click, tap or keyboard.
 Savings strategy changes only the share of the best eligible conservative saving
-to retain; the monetary fields remain independent. Learning priority price
-threshold and Reduction limit without pump telemetry are the final two advanced
-fields, in that order. **Explore different limits ↓** jumps to the section heading
+to retain; the monetary fields remain independent. Reduction limit without pump
+telemetry ends the upper Advanced settings region. A separate **Learning trials**
+box follows, with **Enable learning trials** in its heading. Its two body inputs
+are **One-cycle experiment budget** and **Learning priority price threshold**;
+both remain visible but disabled when trials are unchecked. **Explore different limits ↓** jumps to the section heading
 below the window header, keeping Advanced settings open or closed as chosen.
 Enter durations and monetary limits directly; several limits can be reviewed together. These are one-cycle
 preferences, with wider ranges than the automatic defaults.
+
+The checkbox initially follows automatic trial permission. An untouched budget
+keeps the captured automatic per-cycle limit and remaining daily allowance;
+changing only the checkbox or priority grants no new allowance. Only changing the
+budget supplies a separate allowance for the reviewed cycle. Zero permits only
+zero-exposure trials. An uncaptured remaining allowance stays unavailable, never
+an invented zero or full budget. Home automatic permission remains independent.
+
+**Reset to captured baseline** restores the loaded plan, settings and budget
+context locally without another optimization or request. It does not cancel an
+active cycle. **Refresh conditions** explicitly captures a new baseline, retaining
+edited drafts; a later Reset restores that new baseline. A live plan change makes
+the older comparison stale instead of silently rewriting its original context.
+Closing and reopening the window retains the capture and draft until Refresh.
 
 | Explorer control | Related automatic configuration | Manual range |
 | --- | --- | --- |
@@ -71,6 +87,7 @@ preferences, with wider ranges than the automatic defaults.
 | Allowed average temperature rise | `controller.max_rise_c` | 0.25–35 °C |
 | Maximum preheat | `controller.max_preheat_hours` | 0.25–24 hours |
 | ROOM setting increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C, within native ROOM headroom |
+| Enable learning trials | `controller.learning_trials` | Boolean; reviewed cycle only, independent of saved permission |
 | One-cycle experiment budget | `controller.max_trial_cost_cents` | Nonnegative cents; separate from the automatic daily experiment budget |
 | Minimum estimated saving | `controller.minimum_home_benefit_cents` | Cents; a negative value explicitly permits estimated extra cost |
 | Temperature deviation penalty | `controller.home_discomfort_cents_per_degree_squared_hour` | Nonnegative cents per °C²-hour |
