@@ -66,7 +66,7 @@ test('Home policy displays named strategies and saved bounds without inventing m
   const common = { preheatRoomBoostC: 5, comfort: { maxDropC: 1, maxRiseC: 1.5 } };
   for (const [id, label] of [['gentle', 'Gentle'], ['balanced', 'Balanced'], ['savings', 'More savings']]) {
     const values = homePolicyValues({ settings: { ...common, savingsStrategy: id } });
-    assert.equal(values.strategy, label);
+    assert.equal(values.strategy, `${label} (${({gentle:60,balanced:80,savings:100})[id]}%)`);
     assert.equal(values.strategyId, id);
     assert.equal(values.preheat, '5 °C');
     assert.equal(values.maximumRise, '1.5 °C');

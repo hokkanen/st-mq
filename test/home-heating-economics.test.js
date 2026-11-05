@@ -50,7 +50,7 @@ test('small robust benefits are eligible by default and monetary preferences rem
   const input = fixture({ price: 1.1 });
   for (const savingsStrategy of ['gentle', 'balanced', 'savings']) {
     const admission = economicAdmission({ ...input, settings: { savingsStrategy } });
-    assert.equal(admission.admitted, savingsStrategy !== 'gentle');
+    assert.equal(admission.admitted, true);
     assert.ok(admission.lowerBenefitCents > 0);
     const configured=economicAdmission({...input,args:{...input.args,config:{minimumHomeBenefitCents:10}},settings:{savingsStrategy}});
     assert.equal(configured.admitted,false);
@@ -69,14 +69,59 @@ test('a large price spike can clear conservative paired costs without negative d
 });
 
 test('named strategies share physical predictions and default to More savings', () => {
-  for (const [price, expected] of [[1, [false, false, false]], [2, [false, true, true]], [10, [true, true, true]]]) {
+  assert.throws(() => economicAdmission({ ...fixture(), settings: { savingsStrategy: 'unknown' } }), /Savings strategy/);
+  for (const [price, expected] of [[1, [false, false, false]], [2, [true, true, true]], [10, [true, true, true]]]) {
     const input = fixture({ price });
     const admissions = ['gentle', 'balanced', 'savings'].map(savingsStrategy =>
       economicAdmission({ ...input, settings: { savingsStrategy } }));
     assert.deepEqual(admissions.map(row => row.admitted), expected);
-    assert.deepEqual(admissions.map(row => row.minimumCents), [2, 0, 0]);
+    assert.deepEqual(admissions.map(row => row.minimumCents), [0, 0, 0]);
     assert.equal(new Set(admissions.map(row => row.lowerBenefitCents)).size, 1, 'Policy cannot change the physical forecast');
     assert.deepEqual(economicAdmission(input), admissions[2]);
+  }
+});
+
+test('strategy retention selects shorter cycles from the same economically admitted candidates', () => {
+  const input = heatingExplorerFixture({ hours: 24, maxReductionHours: 12, validatedHours: 24, price: 10 });
+  const results = ['gentle', 'balanced', 'savings'].map(savingsStrategy => chooseCycle({ ...input,
+    settings: { ...input.settings, savingsStrategy } }));
+  const best = results[2].plan.economics.lowerBenefitCents;
+  assert.deepEqual(results.map(row => (row.plan.schedule.reductionEnd - row.plan.schedule.reductionStart) / HOUR), [4, 6, 8]);
+  for (const [index, fraction] of [.6, .8, 1].entries()) {
+    const result = results[index];
+    assert.ok(result.plan.economics.lowerBenefitCents >= best * fraction);
+    assert.equal(result.plan.economics.minimumCents, 0);
+    assert.equal(result.plan.economics.discomfortCents, 0);
+    assert.deepEqual(result.diagnostics, results[2].diagnostics, 'Strategy changes selection, not admission or physical search');
+  }
+});
+
+test('monetary overrides, retained start penalties and continuation are independent of strategy', () => {
+  const input = fixture({ price: 5000 });
+  input.args.config = { minimumHomeBenefitCents: 2, homeDiscomfortCentsPerDegreeSquaredHour: 5,
+    cycleStartCostCents: 7, cycleHourCostCents: 3 };
+  const results = ['gentle', 'balanced', 'savings'].map(savingsStrategy =>
+    economicAdmission({ ...input, settings: { savingsStrategy } }));
+  assert.deepEqual(results[0], results[1]); assert.deepEqual(results[1], results[2]);
+  assert.equal(results[0].minimumCents, 2);
+  assert.equal(results[0].burdenCents, 10, 'A new one-hour cycle includes both start and duration penalties');
+  const continued = economicAdmission({ ...input, continuing: true });
+  assert.equal(continued.minimumCents, 0);
+  assert.equal(continued.burdenCents, 3, 'Continuation omits the start penalty but keeps the duration penalty');
+  input.args.config.minimumHomeBenefitCents = -2;
+  assert.equal(economicAdmission({ ...input, continuing: true }).minimumCents, -2);
+});
+
+test('uncertainty floor takes precedence only when greater and remains in continuation', () => {
+  const input = fixture({ price: 5000 }), original = economicAdmission(input);
+  assert.ok(original.uncertaintyCents > 0);
+  input.args.config.economicUncertaintyFloorCents = original.uncertaintyCents / 2;
+  assert.deepEqual(economicAdmission(input), original, 'A smaller floor adds no second deduction');
+  input.args.config.economicUncertaintyFloorCents = original.uncertaintyCents + 10;
+  for (const continuing of [false, true]) {
+    const result = economicAdmission({ ...input, continuing });
+    assert.equal(result.uncertaintyCents, original.uncertaintyCents + 10);
+    assert.equal(result.lowerBenefitCents, original.lowerBenefitCents - 10);
   }
 });
 

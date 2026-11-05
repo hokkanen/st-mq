@@ -39,7 +39,7 @@ test('hypothetical comparison caches identical frozen inputs without changing st
   assert.equal(a.snapshotId, b.snapshotId); assert.equal(a.application.allowed, true);
   assert.equal(a.executablePlan, undefined); assert.equal(a.binding, undefined);
   assert.deepEqual(r.store.db.prepare('SELECT * FROM state ORDER BY key').all(), before);
-  assert.equal(r.engine.pendingPlan, undefined); assert.equal(r.engine.control.maxReductionHours, 4);
+  assert.equal(r.engine.pendingPlan, undefined); assert.equal(r.engine.control.maxReductionHours, 12);
   assert.equal(r.store.learningJournal({ input: 'simulated' }).length, 0);
   await assert.rejects(r.service.simulate({ ...payload, surprise: true }), /Unsupported/);
   await assert.rejects(r.service.simulate({ ...payload, limits: { severeDropC: 9 } }), /Unsupported/);
@@ -87,7 +87,7 @@ test('one reviewed schedule is durable and one-shot; cancellation shortens the a
   const result = r.service.apply({ previewId: preview.previewId }), trial = result.activeTrial;
   assert.equal(trial.status, 'pending'); assert.equal(trial.limits.maxDropC, 2);
   assert.equal(trial.plan, undefined); assert.equal(trial.binding, undefined); assert.equal(trial.scopeBinding, undefined);
-  assert.deepEqual(r.engine.settings, settings); assert.equal(r.engine.control.maxReductionHours, 4);
+  assert.deepEqual(r.engine.settings, settings); assert.equal(r.engine.control.maxReductionHours, 12);
   assert.equal(r.engine.pendingPlan.userTrial.id, trial.id);
   assert.throws(() => r.service.apply({ previewId: preview.previewId }), /expired/);
   const cycle = { id: 'simulated:cycle', startedAt: r.now, plan: r.engine.pendingPlan };

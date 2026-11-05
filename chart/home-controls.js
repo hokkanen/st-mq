@@ -80,7 +80,7 @@ export function homePolicyValues(status = {}) {
     ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without native heat-pump observations, reduction is capped at ${amount(parameters.maxUnobservedReductionHours)} h. Demonstrated response, comfort and forecast coverage can shorten these limits.`
     : 'Configured duration limits are unavailable.';
   return {
-    strategy: strategy?.label ?? 'Unavailable', strategyId: strategy?.id ?? null,
+    strategy: strategy ? `${strategy.label} (${strategy.retainedBenefitFraction * 100}%)` : 'Unavailable', strategyId: strategy?.id ?? null,
     preheat: Number.isFinite(settings.preheatRoomBoostC) ? `${amount(settings.preheatRoomBoostC)} °C` : 'Unavailable',
     maximumRise: Number.isFinite(comfort.maxRiseC) ? `${amount(comfort.maxRiseC)} °C` : 'Unavailable',
     limits: Number.isFinite(comfort.maxDropC) && Number.isFinite(comfort.maxRiseC)

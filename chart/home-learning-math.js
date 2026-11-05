@@ -151,7 +151,7 @@ export function dutyCalculation() {
 }
 
 export function economicCalculation(strategyId,config={}) {
-  const policy=heatingEconomics(config,strategyId);
+  const policy=heatingEconomics(config);
   const strategy = HEATING_STRATEGIES.find(option => option.id === strategyId);
   return calculation([
     equation('Electrical energy and cost', 'E = Σ(P_space × Δt);  C = Σ(P_space × Δt × price) + C_tail',
@@ -159,9 +159,9 @@ export function economicCalculation(strategyId,config={}) {
     equation('Conservative benefit', 'B_low = B_nominal − max(cost_floor, B_nominal − min(B_nominal, B_stress−, B_stress+))',
       'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths. The configured cost_floor (default zero) sets a minimum uncertainty deduction; it is not added to a larger stress deduction.'),
     equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + hour_weight × extra_hours + start_weight × start',
-      `${strategy ? `${strategy.label}: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These configurable decision penalties increase the saving required to choose a cycle; they are not electricity charges.`),
+      `Independent monetary policy: minimum_benefit = ${policy.minimumHomeBenefitCents} ct and discomfort_weight = ${policy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. hour_weight = ${policy.cycleHourCostCents} ct/h and start_weight = ${policy.cycleStartCostCents} ct. These configurable decision penalties increase the saving required to choose a cycle; they are not electricity charges.`),
     equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
-      `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
+      `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. The configured temperature deviation penalty is compared first, then combined preheat and reduction duration. With a zero temperature penalty, duration decides. Strategy changes do not change monetary settings.`),
   ], ['During continuation the minimum estimated saving and cycle start penalty are omitted; remaining temperature deviation and duration penalties still count. Gentle is not an off switch. Automatic permission or explicit one-cycle approval determines whether a reviewed plan is applied.',
     'The stress directions vary heat response and loss by 15%, initial reserve/slab by 0.5 °C, duty by 0.08, source electricity by its operating-point allowance, and AUX exposure by 50%. These cases are engineering allowances, not calibrated probabilities or a guarantee of annual savings.']);
 }

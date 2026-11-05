@@ -14,6 +14,7 @@ import { build, preview } from 'vite';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-explorer-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-heating-explorer-screenshots-'));
+console.log(`Synthetic planner browser artifacts: ${artifacts}`);
 const now = Date.parse('2026-09-30T12:00:00Z');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pending = new Map(), errors = [];
@@ -78,7 +79,7 @@ try {
     throw new Error(`UI did not settle: ${expression}; errors: ${errors.join(', ')}`);
   };
   const keyPress = async key => {
-    const [code, windowsVirtualKeyCode] = { Enter: ['Enter', 13], ' ': ['Space', 32], Tab: ['Tab', 9], Escape: ['Escape', 27] }[key];
+    const [code, windowsVirtualKeyCode] = { Enter: ['Enter', 13], ' ': ['Space', 32], Tab: ['Tab', 9], Escape: ['Escape', 27], ArrowDown: ['ArrowDown', 40], ArrowUp: ['ArrowUp', 38], Home: ['Home', 36], End: ['End', 35] }[key];
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode,
       ...(key === 'Enter' ? { nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' } : {}) });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
@@ -140,6 +141,8 @@ try {
       const body = options.body ? JSON.parse(options.body) : undefined;
       if (path.startsWith('/api/heating/explorer')) {
         explorerFixture.requests.push({path, body});
+        if(explorerFixture.refreshFailure&&path==='/api/heating/explorer')return new Response(JSON.stringify({error:'Synthetic private backend detail'}),{status:503});
+        if(explorerFixture.holdComparison&&path.endsWith('/simulate'))await new Promise(resolve=>{explorerFixture.releaseComparison=resolve;});
         if (explorerFixture.stale && path.endsWith('/simulate')) return new Response(JSON.stringify({error:'Synthetic stale snapshot'}), {status:409});
         if (path.endsWith('/apply')) {
           explorerFixture.value.activeTrial = { id:'synthetic-cycle',status:'pending',approvedAt:${now},latestStartAt:${now + hour},expiresAt:${now + 12 * hour},limits:{maxReductionHours:6}};
@@ -255,6 +258,7 @@ try {
     /Normal temperature reference · 21.25 °C.*Learning/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-opportunities').textContent`), /€0.55.*6 h/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-context').textContent`), /estimate for one unavailable room.*±0.2 °C.*no learning evidence/);
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent`), /stored heat.*does not mean continuous extra heating.*estimate/);
   await keyPress('Escape');
   await until(`!document.getElementById('heating-explorer-dialog').open`);
   assert.equal(await evaluate(`document.activeElement.id`), 'home-planned-change');
@@ -266,7 +270,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true', 'An older close cannot collapse a reopened heating plan');
   assert.equal(await evaluate('document.activeElement.id'), 'heating-explorer-close');
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
-  for (const [width, height] of [[320,740],[390,844],[650,900],[651,900],[1280,1000],[1920,1080]]) {
+  for (const [width, height] of [[280,740],[320,740],[390,844],[650,900],[651,900],[768,1024],[1024,768],[1280,1000],[1920,1080]]) {
     await send('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
     for (const theme of ['light', 'dark']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
@@ -283,12 +287,15 @@ try {
           return {id,left:bounds.left,right:bounds.right,controls:[...grid.querySelectorAll('.heating-explorer-control')].map(control=>{
             const input=control.querySelector('input,select'),r=control.getBoundingClientRect();
             const shown=control.querySelector('.app-select-trigger')??input;
+            const field=(input.type==='number'?control.querySelector('.heating-explorer-control-input'):shown).getBoundingClientRect();
             return {key:input.id.replace('heating-limit-',''),visible:shown.checkVisibility(),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,overflow:control.scrollWidth>control.clientWidth+1,
+              field:{left:field.left,right:field.right,top:field.top,bottom:field.bottom,width:field.width,height:field.height},
               help:Boolean(control.querySelector('.status-detail-trigger'))};
           })};
         });
         return{width:d.getBoundingClientRect().width,scroll:d.scrollWidth,client:d.clientWidth,page:document.documentElement.scrollWidth,grids};
       })()`);
+      writeFileSync(join(artifacts,`${width}-${theme}-geometry.json`),JSON.stringify(layout,null,2));
       const label=`${width}px ${theme}`,all=layout.grids.flatMap(grid=>grid.controls);
       assert(layout.width<=width&&layout.scroll<=layout.client+1&&layout.page<=width,`${label}: no horizontal overflow`);
       assert.equal(all.length,allControls.length,`${label}: every control remains available`);
@@ -297,18 +304,104 @@ try {
       for(const grid of layout.grids){
         assert(grid.controls.every(row=>row.visible&&row.help&&!row.overflow&&row.width>0&&row.left>=grid.left-1&&row.right<=grid.right+1),`${label}: controls and help fit ${grid.id}`);
         const columns=grid.id==='heating-explorer-advanced-controls'?(width<=650?1:2):(width<=650?2:3);
-        for(let i=0;i<grid.controls.length;i++){
-          const row=grid.controls[i],same=grid.controls[Math.floor(i/columns)*columns];
-          assert(Math.abs(row.top-same.top)<1,`${label}: aligned rows in ${grid.id}`);
-          if(i%columns)assert(grid.controls[i-1].right<row.left,`${label}: no column overlap`);
-          if(i>=columns){const above=grid.controls[i-columns];assert(above.bottom<row.top&&Math.abs(above.left-row.left)<1,`${label}: no row overlap`);}
+        const rows=[...grid.controls].sort((a,b)=>Math.abs(a.top-b.top)<1?a.left-b.left:a.top-b.top);
+        if(grid.id==='heating-explorer-controls') assert.deepEqual(rows.map(row=>row.key),width<=650
+          ?['savingsStrategy','preheatRoomBoostC','maxDropC','maxRiseC','maxReductionHours','maxPreheatHours']
+          :['savingsStrategy','maxDropC','maxReductionHours','preheatRoomBoostC','maxRiseC','maxPreheatHours'],`${label}: exact main control order`);
+        else assert.deepEqual(rows.slice(-2).map(row=>row.key),['learningPriorityPriceCents','maxUnobservedReductionHours'],`${label}: final advanced fields`);
+        for(let i=0;i<rows.length;i++){
+          const row=rows[i],same=rows[Math.floor(i/columns)*columns];
+          assert(Math.abs(row.top-same.top)<1&&Math.abs(row.field.top-same.field.top)<1,`${label}: aligned labels and input boxes in ${grid.id}`);
+          assert(Math.abs(row.field.width-rows[0].field.width)<1,`${label}: equal visible numeric and selector box widths: ${JSON.stringify({row,first:rows[0]})}`);
+          assert(Math.abs(row.field.left-row.left)<1&&Math.abs(row.field.right-row.right)<1,`${label}: boxes fill their column`);
+          if(i%columns)assert(rows[i-1].right<row.left,`${label}: no column overlap`);
+          if(i>=columns){const above=rows[i-columns];assert(above.bottom<row.top&&Math.abs(above.left-row.left)<1,`${label}: no row overlap`);}
         }
       }
       await screenshot(`${width}-${theme}-plan`);
       await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
       await screenshot(`${width}-${theme}-controls`);
+      for(const folded of [true,false]) {
+        for(const position of ['start','end']) {
+          await evaluate(`document.getElementById('heating-explorer-advanced').open=${!folded};
+            document.getElementById('heating-explorer-dialog').scrollTop=${position==='start'?'0':'99999'};
+            document.getElementById('heating-explorer-jump').click()`);
+          await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
+          const jump=await evaluate(`(() => {const heading=document.getElementById('heating-simulator-title').getBoundingClientRect(),header=document.querySelector('.heating-explorer-header').getBoundingClientRect();
+            return {top:heading.top,headerBottom:header.bottom,open:document.getElementById('heating-explorer-advanced').open,
+              focused:document.activeElement===document.querySelector('#heating-explorer-controls .app-select-trigger')};})()`);
+          assert.equal(jump.open,!folded,`${label}: jump preserves fold state`);
+          assert(jump.focused,`${label}: jump focuses the visible strategy selector`);
+          assert(Math.abs(jump.top-jump.headerBottom-24)<2,`${label}: jump aligns the section heading below the sticky header: ${JSON.stringify(jump)}`);
+        }
+      }
     }
   }
+  for(const [width,height] of [[320,740],[1280,1000]]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.getElementById('heating-explorer-jump').click()`);
+    const economics=await evaluate(`Object.fromEntries(['minimumHomeBenefitCents','homeDiscomfortCentsPerDegreeSquaredHour','cycleStartCostCents','cycleHourCostCents','economicUncertaintyFloorCents'].map(key=>[key,document.getElementById('heating-limit-'+key).value]))`);
+    await evaluate(`document.querySelector('#heating-explorer-controls .app-select-trigger').focus()`);
+    await keyPress('Enter');await keyPress('Home');await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'gentle','Keyboard selects Gentle');
+    await evaluate(`document.querySelector('#heating-explorer-controls .app-select-trigger').focus()`);
+    await keyPress('Enter');await keyPress('End');await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'savings','Keyboard selects More savings');
+    assert.deepEqual(await evaluate(`Object.fromEntries(Object.keys(${JSON.stringify(economics)}).map(key=>[key,document.getElementById('heating-limit-'+key).value]))`),economics,'Strategy leaves every monetary field unchanged');
+    await evaluate(`document.getElementById('heating-explorer-reset').click()`);
+    assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'balanced','Reset restores configured strategy');
+    await evaluate(`document.getElementById('heating-explorer-opportunities').querySelector('button').click()`);
+    assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Opportunity button applies only the hypothetical draft');
+    assert.equal(await evaluate(`document.activeElement.id`),'heating-explorer-calculate','Opportunity focuses comparison');
+    await evaluate(`document.getElementById('heating-explorer-reset').click()`);
+    assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'4','Reset restores configured duration');
+  }
+  const awayInput=heatingExplorerFixture();
+  awayInput.settings.occupancy={mode:'away',returnAt:new Date(awayInput.now+48*hour).toISOString()};
+  awayInput.config.maxAwayReductionHours=24;
+  const awayControls=exploreHeatingPlan(awayInput,{}, {includeOpportunities:false}).controls;
+  await evaluate(`explorerFixture.value.controls=${JSON.stringify(awayControls)};document.getElementById('heating-explorer-refresh').click()`);
+  await until(`document.getElementById('heating-limit-maxAwayReductionHours')&&!document.getElementById('heating-explorer-refresh').disabled`);
+  for(const width of [320,1280]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+    const away=await evaluate(`(() => {const input=document.getElementById('heating-limit-maxAwayReductionHours'),row=input.closest('.heating-explorer-control');
+      const controls=[...document.getElementById('heating-explorer-controls').children].map(e=>({key:e.dataset.key,rect:e.getBoundingClientRect()}));
+      return {value:input.value,label:row.querySelector('label').textContent,keys:controls.sort((a,b)=>Math.abs(a.rect.top-b.rect.top)<1?a.rect.left-b.rect.left:a.rect.top-b.rect.top).map(e=>e.key)};})()`);
+    assert.equal(away.value,'24'); assert.equal(away.label,'Maximum reduction while away');
+    assert.deepEqual(away.keys,width<=650?['savingsStrategy','preheatRoomBoostC','maxDropC','maxRiseC','maxAwayReductionHours','maxPreheatHours']
+      :['savingsStrategy','maxDropC','maxAwayReductionHours','preheatRoomBoostC','maxRiseC','maxPreheatHours']);
+    await evaluate(`document.getElementById('heating-explorer-jump').click()`);
+    await screenshot(`${width}-away-controls`);
+  }
+  await evaluate(`explorerFixture.value.controls=${JSON.stringify(fixture.controls)};document.getElementById('heating-explorer-refresh').click()`);
+  await until(`document.getElementById('heating-limit-maxReductionHours')&&!document.getElementById('heating-explorer-refresh').disabled`);
+  await send('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:2,mobile:true});
+  await send('Emulation.setTouchEmulationEnabled',{enabled:true,maxTouchPoints:1});
+  const tap=async selector=>{
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'})`);
+    const point=await evaluate(`(() => {const node=document.querySelector(${JSON.stringify(selector)}),r=node.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;return {x,y,hit:node.contains(document.elementFromPoint(x,y))};})()`);
+    assert(point.hit,`Touch target is reachable: ${selector}`);
+    await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y}]});
+    await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  };
+  await tap('#heating-explorer-jump');
+  await tap('#heating-explorer-controls .app-select-trigger');
+  await until(`document.querySelector('.app-select-popup:not([hidden]) [role="option"]')`);
+  await tap('.app-select-popup:not([hidden]) [role="option"][data-index="0"]');
+  assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'gentle','Touch selects Gentle');
+  await tap('#heating-explorer-reset');
+  assert.equal(await evaluate(`document.getElementById('heating-limit-savingsStrategy').value`),'balanced');
+  const beforeInvalid=await evaluate(`explorerFixture.requests.length`);
+  await evaluate(`document.getElementById('heating-limit-preheatRoomBoostC').value='1.5';document.getElementById('heating-limit-preheatRoomBoostC').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit()`);
+  assert.equal(await evaluate(`explorerFixture.requests.length`),beforeInvalid,'Fractional ROOM settings fail native validation before a request');
+  await evaluate(`document.getElementById('heating-explorer-reset').click();document.getElementById('heating-limit-maxReductionHours').value='';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('heating-explorer-form').requestSubmit()`);
+  assert.equal(await evaluate(`explorerFixture.requests.length`),beforeInvalid,'An empty required limit cannot submit');
+  await evaluate(`document.getElementById('heating-explorer-reset').click()`);
+  await tap('.heating-explorer-footnotes > summary');
+  assert.equal(await evaluate(`document.querySelector('.heating-explorer-footnotes').open`),true,'Touch opens estimate explanations');
+  await tap('.heating-explorer-footnotes > summary');
+  assert.equal(await evaluate(`document.querySelector('.heating-explorer-footnotes').open`),false);
+  await send('Emulation.setTouchEmulationEnabled',{enabled:false});
   for(const [width,height,theme]of [[320,740,'light'],[1280,1000,'dark']]){
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
     await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-advanced').open=true`);
@@ -341,6 +434,21 @@ try {
   assert.match(await evaluate(`document.getElementById('heating-explorer-metrics').textContent`), /€0.55/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-illustrative').textContent`), /Illustrative 8 h reduction.*cannot be applied/);
   assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart path').length`), 2);
+  const comparisonRequests=await evaluate(`explorerFixture.requests.length`);
+  await evaluate(`explorerFixture.holdComparison=true;document.getElementById('heating-explorer-form').requestSubmit();document.getElementById('heating-explorer-form').requestSubmit()`);
+  await until(`Boolean(explorerFixture.releaseComparison)`);
+  assert.equal(await evaluate(`explorerFixture.requests.length`),comparisonRequests+1,'Busy comparisons suppress duplicate submissions');
+  assert(await evaluate(`document.getElementById('heating-explorer-calculate').disabled&&document.getElementById('heating-explorer-reset').disabled&&document.getElementById('heating-explorer-refresh').disabled&&[...document.querySelectorAll('#heating-explorer-form input,#heating-explorer-form select')].every(e=>e.disabled)&&!document.getElementById('heating-explorer-close').disabled`),'Busy state disables draft changes while Close remains available');
+  await evaluate(`explorerFixture.holdComparison=false;explorerFixture.releaseComparison();explorerFixture.releaseComparison=null`);
+  await until(`!document.getElementById('heating-explorer-calculate').disabled`);
+  for(const width of [320,1280]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.querySelector('.heating-explorer-breakdown > summary').click()`);
+    assert(await evaluate(`document.querySelector('.heating-explorer-breakdown').open&&document.querySelectorAll('#heating-explorer-breakdown tbody tr').length>=3`),'Energy and recovery breakdown opens');
+    assert(await evaluate(`(()=>{const d=document.getElementById('heating-explorer-dialog');return d.scrollWidth<=d.clientWidth+1;})()`),'Expanded breakdown fits the window');
+    await evaluate(`document.querySelector('.heating-explorer-breakdown > summary').click()`);
+    assert.equal(await evaluate(`document.querySelector('.heating-explorer-breakdown').open`),false);
+  }
   await evaluate(`globalThis.originalHeatingTrajectory = structuredClone(explorerFixture.value.scenario.trajectory);
     explorerFixture.value.scenario.trajectory = originalHeatingTrajectory.map(point => ({...point, uncertaintyC:null}));
     document.getElementById('heating-explorer-form').requestSubmit()`);
@@ -413,6 +521,15 @@ try {
   await until(`document.getElementById('heating-explorer-message').textContent.includes('Refresh conditions')`);
   assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),true);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Stale comparison preserves draft');
+  await evaluate(`explorerFixture.stale=false;explorerFixture.refreshFailure=true;document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-message').textContent`),/unavailable/);
+  assert.doesNotMatch(await evaluate(`document.getElementById('heating-explorer-message').textContent`),/Synthetic private backend detail/);
+  assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Failed refresh retains the draft');
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),true,'Failed refresh keeps old preview fenced');
+  await evaluate(`explorerFixture.refreshFailure=false;document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled&&!document.getElementById('heating-explorer-calculate').disabled`);
+  assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Successful retry retains the draft');
   await evaluate(`explorerFixture.recorded=true`);
   await until(`await explorerFixture.poll();return !document.getElementById('heating-explorer-dialog').open`);
   const beforeRecorded = await evaluate(`explorerFixture.requests.length`);

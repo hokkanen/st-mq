@@ -438,11 +438,11 @@ test('Home separates outcomes, model equations and planning without repeating gr
   assert(display.policyRows.some(row => row.key === 'Valve override lease'));
   assert(!display.evidenceRows.some(row => row.key === 'Room comfort projection'));
   const economics = display.policyRows.find(row => row.key === 'Worthwhile cycle threshold');
-  assert.match(economics.value, /2 ct/);
+  assert.match(economics.value, /0 ct/);
   assert.match(economics.calculation.paragraphs.join(' '), /not an off switch/);
   assert.doesNotMatch(JSON.stringify(display), /savings preference \/ 100|50 − 40a|0–100/);
-  assert.equal(display.policyRows.find(row => row.key === 'Savings strategy').value, 'Gentle');
-  assert.match(economics.calculation.equations.find(row => row.label === 'Starting hurdle').legend, /minimum_benefit = 2 ct.*discomfort_weight = 5 ct/);
+  assert.equal(display.policyRows.find(row => row.key === 'Savings strategy').value, 'Gentle (60%)');
+  assert.match(economics.calculation.equations.find(row => row.label === 'Starting hurdle').legend, /minimum_benefit = 0 ct.*discomfort_weight = 0 ct/);
 });
 
 

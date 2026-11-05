@@ -14,7 +14,7 @@ const LIMITS = Object.freeze({
   maxDropC: { label: 'Allowed average temperature drop', min: 0, max: 35, step: .25, unit: '°C' },
   maxRiseC: { label: 'Allowed average temperature rise', min: .25, max: 35, step: .25, unit: '°C' },
   maxPreheatHours: { label: 'Maximum preheat', min: .25, max: 24, step: .25, unit: 'h' },
-  preheatRoomBoostC: { label: 'Preheat ROOM setting increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
+  preheatRoomBoostC: { label: 'ROOM setting increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
   maxTrialCostCents: { label: 'One-cycle experiment budget', min: 0, max: 1_000_000_000, step: 1, unit: 'cents' },
   minimumHomeBenefitCents: { label: 'Minimum estimated saving', min: -1_000_000_000, max: 1_000_000_000, step: 1, unit: 'cents' },
   homeDiscomfortCentsPerDegreeSquaredHour:{label:'Temperature deviation penalty',min:0,max:1_000_000_000,step:1,unit:'c/°C²h'},
@@ -24,7 +24,7 @@ const LIMITS = Object.freeze({
   learningPriorityPriceCents:{label:'Learning priority price threshold',min:0,max:1_000_000_000,step:1,unit:'c/kWh'},
 });
 const CONTROL_DETAILS = Object.freeze({
-  savingsStrategy:{help:'Chooses how strongly the planner pursues estimated savings within the temperature limits. More savings seeks the greatest conservative saving. Balanced may prefer a milder cycle retaining at least 80% of that saving; Gentle retains at least 60% and uses higher default economic hurdles. The monetary fields show the values used for this preview.'},
+  savingsStrategy:{help:'Chooses how much of the best eligible conservative saving to retain: Gentle 60%, Balanced 80%, More savings 100%. Among qualifying cycles, the planner prefers the lowest temperature deviation penalty, then the shortest combined preheat and reduction. With a zero temperature penalty, duration decides. Monetary settings and temperature limits are independent of this choice. The percentages are relative to the best eligible cycle, not a promised reduction in your heating bill.'},
   maxReductionHours:{help:'The longest reduction the planner may choose while the home is occupied, in hours. It may choose a shorter reduction or none. The normal-temperature limits and forecast coverage still apply; this is a ceiling, not a requested duration.'},
   maxAwayReductionHours:{help:'The longest reduction the planner may choose while the home is away, in hours. Native frost protection remains active. The declared return time and recovery are included when assessing the return to occupied comfort.'},
   maxDropC:{help:'The largest permitted drop of the weighted indoor average below its normal reference, in °C. For example, a 21 °C reference and 1.5 °C drop give a 19.5 °C lower boundary. Prediction and sensor-estimate uncertainty are included. Zero permits no predicted drop below the reference.'},
@@ -88,7 +88,7 @@ function policy(input) {
     maxPreheatHours: c.maxPreheatHours, preheatRoomBoostC: c.preheatRoomBoostC,
     maxUnobservedReductionHours: c.maxUnobservedReductionHours, maxTrialCostCents: c.maxTrialCostCents,
     learningPriorityPriceCents:c.learningPriorityPriceCents,
-    ...heatingEconomics(c,input.settings.savingsStrategy),
+    ...heatingEconomics(c),
     maxDropC: input.settings.comfort.maxDropC, maxRiseC: input.settings.comfort.maxRiseC ?? 1.5,
     savingsStrategy: input.settings.savingsStrategy ?? DEFAULT_HEATING_STRATEGY };
 }
@@ -353,10 +353,10 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   const controls = Object.entries(LIMITS).filter(([key]) => key !== (frozen.settings.occupancy.mode === 'away' ? 'maxReductionHours' : 'maxAwayReductionHours'))
     .map(([key, spec]) => ({ key, ...spec, ...CONTROL_DETAILS[key], value: currentPolicy[key], effectiveValue: effectivePolicy[key], scenarioValue: scenarioPolicy[key],
       ...(['minimumHomeBenefitCents','homeDiscomfortCentsPerDegreeSquaredHour'].includes(key)
-        ? { usesStrategyDefault: frozen.config?.[key] == null } : {}) }));
+        ? { usesStrategyDefault: false } : {}) }));
   controls.push({ key: 'savingsStrategy', label: 'Savings strategy', ...CONTROL_DETAILS.savingsStrategy, value: currentPolicy.savingsStrategy,
     effectiveValue: effectivePolicy.savingsStrategy, scenarioValue: scenarioPolicy.savingsStrategy,
-    options: HEATING_STRATEGIES.map(item => ({ value: item.id, label: item.label })) });
+    options: HEATING_STRATEGIES.map(item => ({ value: item.id, label: `${item.label} (${item.retainedBenefitFraction * 100}%)` })) });
   const indoor = frozen.observations?.indoor;
   const indoorAvailable = finite(indoor?.value) && indoor.stale !== true
     && finite(indoor.observedAt) && indoor.observedAt <= frozen.now;

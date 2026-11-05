@@ -74,7 +74,7 @@ export function validateSettings(input = {}) {
 export const CONTROL_DEFAULTS = Object.freeze({
   auxIntegralA2: -990, auxHysteresisC: 30, compressorIntegralA1: null, compressorHysteresisC: null,
   a2Basis: 'absolute', heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025,
-  maxReductionHours: 4, maxAwayReductionHours: 12, maxUnobservedReductionHours: 0.5,
+  maxReductionHours: 12, maxAwayReductionHours: 24, maxUnobservedReductionHours: 0.5,
   maxPreheatHours: 2, preheatRoomBoostC: 5, heatPumpModelConfirmed: false, learningTrials: true, trialBudgetCentsPerDay: 300,
   maxTrialCostCents: 150, learningTrialTargetPerDay: 4,learningPriorityPriceCents:15,recoveryTimeoutHours: 48,
   recoveryCompressorOnly: true, recoveryHoldMinutes: 60, recoveryComfortMarginC: 0.5,

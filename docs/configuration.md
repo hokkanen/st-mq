@@ -683,15 +683,19 @@ configuration defaults.
 ## Heating strategies and limits
 
 Home `controller.savings_strategy` selects Gentle, Balanced or More savings;
-More savings is the default. The minimum estimated saving before penalties is respectively
-2, 0 or 0 cents. These are decision rules, not annual savings predictions.
+More savings is the default. These choices retain at least 60%, 80% or 100% of the
+best eligible positive conservative saving, respectively. Among those choices,
+the planner prefers the lowest configured temperature deviation penalty, then
+the shortest combined preheat and reduction duration. With a zero temperature
+penalty, duration decides. Strategy never changes monetary settings. These are
+decision rules, not annual savings predictions.
 Optional nonnegative overrides make each monetary policy explicit:
 `controller.minimum_home_benefit_cents`,
 `controller.home_discomfort_cents_per_degree_squared_hour`,
 `controller.cycle_start_cost_cents`, `controller.cycle_hour_cost_cents` and
-`controller.economic_uncertainty_floor_cents`. Omitted values retain the strategy
-minimum saving and temperature deviation penalty, with zero cycle start and duration
-penalties and a zero configured minimum uncertainty deduction. Zero removes the
+`controller.economic_uncertainty_floor_cents`. Omitted values use a zero minimum
+saving, temperature deviation penalty, cycle start and duration penalties, and
+configured minimum uncertainty deduction, independently of strategy. Zero removes the
 corresponding penalty or configured minimum deduction; it does not
 remove configured temperature bounds, physical stress cases or restoration.
 These are preferences and engineering margins, not measured electricity charges.
@@ -702,6 +706,9 @@ paired physical-stress deduction applies, rather than adding the setting twice.
 The manual planner can override them for one explicitly reviewed cycle, including
 a negative minimum benefit when deliberately accepting estimated extra cost.
 Home's Heating strategy & comfort panel explains the effective policy and independent limits.
+Shared reduction ceilings default to 12 hours occupied and 24 hours away; explicit
+installation overrides retain their values. These are maxima, not requested
+durations. Without pump telemetry the separate default ceiling remains 0.5 hours.
 Garage has no savings strategy or economic temperature changes.
 
 `controller.learning_trials` enables bounded learning experiments.

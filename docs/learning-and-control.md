@@ -330,8 +330,9 @@ control behavior.
 
 Home's **Heating strategy & comfort** separates the decision policy from the
 **Home heat model**. **Savings strategy** offers **Gentle**, **Balanced**
-and **More savings** (default). These choices change the economic hurdle and continuous
-comfort cost, including duration within an allowed band. They do not relax hard
+and **More savings** (default), retaining at least 60%, 80% or 100% of the best
+eligible positive conservative saving. These choices change only that retention
+percentage; monetary preferences remain independent. They do not relax hard
 occupied-average upper/lower bounds for ordinary automation. An explicitly
 reviewed manual cycle may override those policy limits without changing defaults;
 see the [manual planner](heating-plan-explorer.md#use-a-scenario-for-one-cycle).
@@ -355,14 +356,17 @@ predictor. Observed response ratios may exceed two when real compressor runtime
 contradicts a small Normal-demand estimate; physical duty remains bounded to
 zero through one.
 
-A new cycle's conservative benefit must exceed the strategy's minimum of 2,
-0 or 0 cents respectively, plus 5, 0 or 0 cents per hot/cold
-°C²-hour of the weighted indoor average, zero additional start and duration penalties by default.
+A new cycle's conservative benefit must exceed the configured minimum saving,
+plus the temperature deviation, cycle start and duration penalties. All four
+default to zero, independently of strategy; the temperature penalty measures
+extra hot/cold °C²-hours of the weighted indoor average compared with Normal.
 These defaults are explicitly overridable through the monetary policy fields in
 [configuration](configuration.md#heating-strategies-and-limits), including zero;
 configured comfort limits and physical stress checks still apply. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
-at least 60%, 80% or 100% of the best positive conservative benefit is selected.
+at least 60%, 80% or 100% of the best positive conservative benefit is selected,
+ordered by configured temperature deviation penalty then combined preheat and
+reduction duration. With a zero temperature penalty, duration decides.
 Gentle can still start a sufficiently worthwhile cycle. Use **Paused** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
 
 These decision rules consume the heat model's thermal predictions, uncertainty

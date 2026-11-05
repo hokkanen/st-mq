@@ -1,18 +1,15 @@
-/** Named decision policies for Home heating. These coefficients govern
- * economic selection only; temperature, protection and learning gates stay separate. */
+/** Named retention preferences for Home heating. Monetary policy, temperature,
+ * protection and learning gates stay independent of the selected strategy. */
 export const DEFAULT_HEATING_STRATEGY = 'savings';
 export const HEATING_STRATEGIES = Object.freeze([
   Object.freeze({ id: 'gentle', label: 'Gentle',
-    description: 'Require a larger estimated benefit and favour shorter, milder changes.',
-    minimumHomeBenefitCents: 2, homeDiscomfortCentsPerDegreeSquaredHour: 5,
+    description: 'Prefer a milder cycle retaining at least 60% of the best conservative saving.',
     retainedBenefitFraction: .6 }),
   Object.freeze({ id: 'balanced', label: 'Balanced',
-    description: 'Balance worthwhile savings with the duration and effect of heating changes.',
-    minimumHomeBenefitCents: 0, homeDiscomfortCentsPerDegreeSquaredHour: 0,
+    description: 'Prefer a milder cycle retaining at least 80% of the best conservative saving.',
     retainedBenefitFraction: .8 }),
   Object.freeze({ id: 'savings', label: 'More savings',
-    description: 'Pursue the greatest estimated benefit within the configured comfort limits.',
-    minimumHomeBenefitCents: 0, homeDiscomfortCentsPerDegreeSquaredHour: 0,
+    description: 'Retain 100% of the best conservative saving within the configured comfort limits.',
     retainedBenefitFraction: 1 }),
 ]);
 
@@ -23,11 +20,10 @@ export function heatingStrategy(value = DEFAULT_HEATING_STRATEGY) {
 }
 
 /** Explicit installation/one-cycle policy overrides; never fitted coefficients. */
-export function heatingEconomics(config = {}, strategy) {
-  const selected=heatingStrategy(strategy);
+export function heatingEconomics(config = {}) {
   return {
-    minimumHomeBenefitCents:config.minimumHomeBenefitCents??selected.minimumHomeBenefitCents,
-    homeDiscomfortCentsPerDegreeSquaredHour:config.homeDiscomfortCentsPerDegreeSquaredHour??selected.homeDiscomfortCentsPerDegreeSquaredHour,
+    minimumHomeBenefitCents:config.minimumHomeBenefitCents??0,
+    homeDiscomfortCentsPerDegreeSquaredHour:config.homeDiscomfortCentsPerDegreeSquaredHour??0,
     cycleStartCostCents:config.cycleStartCostCents??0,
     cycleHourCostCents:config.cycleHourCostCents??0,
     economicUncertaintyFloorCents:config.economicUncertaintyFloorCents??0,

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { validateSettings, controlConfiguration, loadConfig, configurationSource } from '../src/app/config.js';
-import { HEATING_STRATEGIES, heatingStrategy } from '../src/domain/heating-strategy.js';
+import { HEATING_STRATEGIES, heatingStrategy, heatingEconomics } from '../src/domain/heating-strategy.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
@@ -25,6 +25,27 @@ test('Home defaults to More savings and Garage rejects every automatic savings s
   assert.throws(() => garageSettings({ aggressiveness: 50 }), /Unknown garage setting/);
   assert.throws(() => garageSettings({ frontRequired: false }), /Unknown garage setting/);
   assert.throws(() => controlConfiguration({ savings_aggressiveness: 50 }), /Unknown controller setting/);
+});
+
+test('shared duration and monetary defaults keep existing configuration keys and explicit overrides', () => {
+  const defaults = controlConfiguration({});
+  assert.equal(defaults.maxReductionHours, 12);
+  assert.equal(defaults.maxAwayReductionHours, 24);
+  assert.equal(defaults.maxUnobservedReductionHours, .5);
+  assert.deepEqual(heatingEconomics(defaults), { minimumHomeBenefitCents: 0,
+    homeDiscomfortCentsPerDegreeSquaredHour: 0, cycleStartCostCents: 0, cycleHourCostCents: 0,
+    economicUncertaintyFloorCents: 0 });
+  const configured = controlConfiguration({ max_reduction_hours: 4, max_away_reduction_hours: 12,
+    minimum_home_benefit_cents: 2, home_discomfort_cents_per_degree_squared_hour: 5,
+    cycle_start_cost_cents: 3, cycle_hour_cost_cents: 1, economic_uncertainty_floor_cents: 4 });
+  assert.equal(configured.maxReductionHours, 4); assert.equal(configured.maxAwayReductionHours, 12);
+  assert.deepEqual(heatingEconomics(configured), { minimumHomeBenefitCents: 2,
+    homeDiscomfortCentsPerDegreeSquaredHour: 5, cycleStartCostCents: 3, cycleHourCostCents: 1,
+    economicUncertaintyFloorCents: 4 });
+  for (const { id } of HEATING_STRATEGIES) {
+    const config = controlConfiguration({ savings_strategy: id });
+    assert.deepEqual(heatingEconomics(config), heatingEconomics(defaults));
+  }
 });
 
 test('configuration startup and reload accept named strategies and reject retired fields without rewriting sources', async t => {

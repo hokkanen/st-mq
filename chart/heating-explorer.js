@@ -3,7 +3,6 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { confirmAction } from './confirmation.js';
 import { actionReceiptRecent } from './action-receipts.js';
 import { setStatusDetail, closeStatusDetails } from './status-details.js';
-import { HEATING_STRATEGIES } from '../src/domain/heating-strategy.js';
 
 const endpoint = '/api/heating/explorer';
 const hour = 3_600_000;
@@ -80,11 +79,6 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     receipt: actionReceiptRecent(receipt?.at, clock()) ? receipt : null,
     stale: stale || !!result && Number.isFinite(result.expiresAt) && clock() >= result.expiresAt });
   const notify = () => onChange(snapshot());
-  function followStrategyDefaults() {
-    const strategy = HEATING_STRATEGIES.find(strategy => strategy.id === limits.savingsStrategy);
-    if (strategy) for (const control of result?.controls ?? []) if (control.usesStrategyDefault && !edited.has(control.key)
-      && Object.hasOwn(strategy, control.key)) limits[control.key] = strategy[control.key];
-  }
   async function run(path, body, { reset = false, mutation = false, preserveDraft = false } = {}) {
     if (busy) return false;
     const draft = preserveDraft ? new Map([...edited].map(key => [key, limits[key]])) : null;
@@ -106,7 +100,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
           for (const control of next.controls ?? []) if (draft?.has(control.key)) {
             limits[control.key] = draft.get(control.key); edited.add(control.key);
           }
-          followStrategyDefaults(); dirty = edited.size > 0;
+          dirty = edited.size > 0;
         }
         message = reset ? draft?.size ? 'Conditions refreshed. Your edited limits are kept; compare again.' : ''
           : 'Comparison ready. Live settings are unchanged.';
@@ -128,7 +122,6 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       if (busy || !result?.controls?.some(control => control.key === key)) return;
       edited.add(key);
       limits[key] = value; dirty = true;
-      if (key === 'savingsStrategy') followStrategyDefaults();
       notify();
     },
     reset() {
@@ -209,6 +202,21 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     if (className) node.className = className;
     return node;
   };
+  function scrollToLimits(focus) {
+    const heading = $('heating-simulator-title');
+    const header = dialog.querySelector('.heating-explorer-header');
+    heading.style.scrollMarginTop = `${header.offsetHeight + 24}px`;
+    // A closed advanced fold can leave too little content below the heading
+    // for start alignment. Reserve only the missing scroll room, even if the
+    // extra content grows an auto-sized dialog to its maximum height.
+    dialog.style.setProperty('--heating-explorer-scroll-tail', '0px');
+    const top = dialog.scrollTop + heading.getBoundingClientRect().top - header.getBoundingClientRect().bottom - 24;
+    const maximumHeight = Number.parseFloat(document.defaultView.getComputedStyle(dialog).maxHeight);
+    const height = Number.isFinite(maximumHeight) ? Math.max(dialog.clientHeight, maximumHeight) : dialog.clientHeight;
+    dialog.style.setProperty('--heating-explorer-scroll-tail', `${Math.max(0, Math.ceil(top + height - dialog.scrollHeight))}px`);
+    heading.scrollIntoView({ block: 'start' });
+    focus?.focus({ preventScroll: true });
+  }
   function timeline(id, summary) {
     const list = $(id); list.replaceChildren();
     const phases = summary?.phases?.length ? summary.phases : [{ phase: summary?.phase ?? 'normal', start: null, end: null }];
@@ -219,7 +227,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         && atTime(phase.start).split(',')[0] === atTime(phase.end).split(',')[0];
       const timing = element('time', Number.isFinite(phase.start) ? `${atTime(phase.start)}${Number.isFinite(phase.end) ? ` – ${sameDate ? clockFormat.format(phase.end) : atTime(phase.end)}` : ' onward'}` : 'No scheduled change');
       if (Number.isFinite(phase.start)) timing.dateTime = new Date(phase.start).toISOString();
-      const description = phase.phase === 'recovery' ? 'Returns toward normal warmth. Completion time is an estimate.'
+      const description = phase.phase === 'recovery' ? 'Includes checking indoor and stored heat against Normal heating. It does not mean continuous extra heating. Completion time is an estimate.'
         : phase.phase === 'reduction' ? 'Reduced space-heating demand; protection and required services remain.'
           : phase.phase === 'preheat' ? 'Builds warmth ahead of the reduction, within average limits.'
             : 'Normal heating demand.';
@@ -229,10 +237,11 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   function renderControls(result) {
     controls.clear(); $('heating-explorer-controls').replaceChildren();
     $('heating-explorer-advanced-controls').replaceChildren();
-    const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours', 'maxUnobservedReductionHours', 'maxTrialCostCents', 'learningPriorityPriceCents', 'minimumHomeBenefitCents', 'homeDiscomfortCentsPerDegreeSquaredHour', 'cycleStartCostCents', 'cycleHourCostCents', 'economicUncertaintyFloorCents'];
+    const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours', 'maxTrialCostCents', 'minimumHomeBenefitCents', 'homeDiscomfortCentsPerDegreeSquaredHour', 'cycleStartCostCents', 'cycleHourCostCents', 'economicUncertaintyFloorCents', 'learningPriorityPriceCents', 'maxUnobservedReductionHours'];
     const orderedControls = [...(result.controls ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     for (const control of orderedControls) {
       const row = element('div', null, 'heating-explorer-control');
+      row.dataset.key = control.key;
       const label = element('label', control.label); const id = `heating-limit-${control.key}`; label.htmlFor = id;
       const heading = element('div', null, 'heating-explorer-control-label');
       const explanation = element('span', null, 'heating-explorer-control-help');
@@ -242,6 +251,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       heading.append(label, explanation);
       const input = element(control.options ? 'select' : 'input'); input.id = id;
       const wrapper = element('div', null, 'heating-explorer-control-input');
+      if (control.unit) wrapper.dataset.unit = control.unit;
       if (control.options) for (const option of control.options) {
         const node = element('option', option.label); node.value = option.value; input.append(node);
       } else {
@@ -300,7 +310,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         const button = element('button', 'Explore these limits', 'secondary-button'); button.type = 'button';
         button.addEventListener('click', () => {
           for (const [key, value] of Object.entries(opportunity.overrides)) actions.edit(key, value);
-          $('heating-explorer-form').scrollIntoView({ block: 'nearest' }); $('heating-explorer-calculate').focus({ preventScroll: true });
+          scrollToLimits($('heating-explorer-calculate'));
         }); card.append(button);
       }
       opportunities.append(card);
@@ -487,13 +497,14 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   dialog.addEventListener('close', () => {
     if (dialog.open) return;
     closeStatusDetails(document);
+    dialog.style.removeProperty('--heating-explorer-scroll-tail');
     opener.setAttribute('aria-expanded', 'false'); opener.focus({ preventScroll: true });
   });
   $('heating-explorer-refresh').addEventListener('click', () => { void actions.load({ preserveDraft: true }); });
   $('heating-explorer-reset').addEventListener('click', () => actions.reset());
   $('heating-explorer-jump').addEventListener('click', () => {
-    $('heating-explorer-form').scrollIntoView({ block: 'center' });
-    controls.values().next().value?.input.focus({ preventScroll: true });
+    const first = controls.values().next().value;
+    scrollToLimits(first?.row.querySelector('.app-select-trigger') ?? first?.input);
   });
   $('heating-explorer-form').addEventListener('submit', event => { event.preventDefault(); void actions.compare(); });
   $('heating-explorer-apply').addEventListener('click', async () => {
@@ -515,12 +526,17 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     if (await actions.cancel()) await afterMutation();
   });
   const Observer = document.defaultView?.ResizeObserver;
-  if (Observer) new Observer(() => {
-    const margin = `${dialog.querySelector('.heating-explorer-header').offsetHeight + 24}px`;
-    $('heating-explorer-comparison-section').style.scrollMarginTop = margin;
-    $('heating-explorer-form').style.scrollMarginTop = margin;
-    if (dialog.open && renderedResult?.previewId) renderChart(renderedResult);
-  }).observe(dialog);
+  if (Observer) {
+    const observer = new Observer(() => {
+      const margin = `${dialog.querySelector('.heating-explorer-header').offsetHeight + 24}px`;
+      $('heating-explorer-comparison-section').style.scrollMarginTop = margin;
+      $('heating-explorer-form').style.scrollMarginTop = margin;
+      $('heating-simulator-title').style.scrollMarginTop = margin;
+      if (dialog.open && renderedResult?.previewId) renderChart(renderedResult);
+    });
+    observer.observe(dialog);
+    observer.observe(dialog.querySelector('.heating-explorer-header'));
+  }
   return { open, close, actions,
     update(next) {
       const previous = status; status = next; receivedAt = Date.now();

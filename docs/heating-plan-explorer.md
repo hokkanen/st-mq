@@ -10,7 +10,10 @@ one-cycle application.
 
 The plan describes the selected preheat, reduction and recovery phases. Times
 use Finnish local time. Recovery completion is an estimate, not a fixed command
-deadline. Reduced heating changes native heat demand; it does not promise that
+deadline. The predicted recovery period includes checking indoor and stored heat
+against Normal heating and a settling interval; it can include ordinary heating
+and does not mean continuous extra heating, even without a visible indoor drop.
+Reduced heating changes native heat demand; it does not promise that
 the compressor will stop. The normal recovery hold and restoration duties still
 apply; see [planning and recovery](learning-and-control.md#planning-and-recovery).
 The Home card's **Planned actions** row shows the next scheduled action and its
@@ -25,8 +28,9 @@ recovery**. Missing timing remains explicitly unavailable. Simulation uses
 to inspect the plan and alternatives, even when no action is scheduled.
 
 Configured policy limits, learning evidence, forecast coverage and equipment
-readiness have different effects. For example, raising the configured four-hour
-reduction ceiling cannot manufacture evidence for eight-hour reductions. The
+readiness have different effects. For example, raising a configured reduction ceiling cannot manufacture evidence for longer
+reductions. Shared defaults are 12 hours occupied and 24 hours away; an explicit
+installation override can set a shorter ceiling. The
 planner starts from explicit initial estimates and refines them with observed
 response. Lack of previous trials is not a separate execution prohibition.
 Preheat also requires evidence for its actual native ROOM increase. A longer
@@ -50,6 +54,11 @@ duration. Several limits can be changed together.
 The main controls remain visible on narrow and wide screens. Less frequently
 changed budget and economic controls are under **Advanced settings**, initially
 folded. Each control has an explanation popup available by click, tap or keyboard.
+Savings strategy changes only the share of the best eligible conservative saving
+to retain; the monetary fields remain independent. Learning priority price
+threshold and Reduction limit without pump telemetry are the final two advanced
+fields, in that order. **Explore different limits ↓** jumps to the section heading
+below the window header, keeping Advanced settings open or closed as chosen.
 Enter durations and monetary limits directly; several limits can be reviewed together. These are one-cycle
 preferences, with wider ranges than the automatic defaults.
 
@@ -61,15 +70,15 @@ preferences, with wider ranges than the automatic defaults.
 | Allowed average temperature drop | `controller.max_drop_c` | 0–35 °C |
 | Allowed average temperature rise | `controller.max_rise_c` | 0.25–35 °C |
 | Maximum preheat | `controller.max_preheat_hours` | 0.25–24 hours |
-| Preheat ROOM setting increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C, within native ROOM headroom |
+| ROOM setting increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C, within native ROOM headroom |
 | One-cycle experiment budget | `controller.max_trial_cost_cents` | Nonnegative cents; separate from the automatic daily experiment budget |
-| Minimum estimated saving | Savings strategy's benefit hurdle | Cents; a negative value explicitly permits estimated extra cost |
+| Minimum estimated saving | `controller.minimum_home_benefit_cents` | Cents; a negative value explicitly permits estimated extra cost |
 | Temperature deviation penalty | `controller.home_discomfort_cents_per_degree_squared_hour` | Nonnegative cents per °C²-hour |
 | Cycle start penalty | `controller.cycle_start_cost_cents` | Nonnegative cents |
 | Preheat/reduction duration penalty | `controller.cycle_hour_cost_cents` | Nonnegative cents per extra preheat/reduction hour |
 | Minimum savings uncertainty deduction | `controller.economic_uncertainty_floor_cents` | Minimum savings deduction, in nonnegative cents |
 | Learning priority price threshold | `controller.learning_priority_price_cents` | Nonnegative cents per kWh; priority threshold, not a trial price ceiling |
-| Savings strategy | `controller.savings_strategy` | Gentle, Balanced, More savings |
+| Savings strategy | `controller.savings_strategy` | Gentle (60%), Balanced (80%), More savings (100%); percentage only |
 
 Duration ranges fit the bounded 48-hour forecast and its recovery coverage; they
 are not promises that forecasts or the selected schedule cover the full range.

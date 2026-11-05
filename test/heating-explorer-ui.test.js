@@ -3,22 +3,22 @@ import assert from 'node:assert/strict';
 import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
-test('strategy defaults update untouched fields and the request preserves every displayed value including zero and the manual budget',async()=>{
+test('strategy changes preserve independent monetary fields, zero and the manual budget',async()=>{
   const requests=[],controls=[{key:'savingsStrategy',value:'balanced'},
     {key:'minimumHomeBenefitCents',value:0,usesStrategyDefault:true},
     {key:'homeDiscomfortCentsPerDegreeSquaredHour',value:0,usesStrategyDefault:true},
     {key:'maxTrialCostCents',value:150}];
   const state=createHeatingExplorerState({clock:()=>now,request:async(path,body)=>{requests.push({path,body});return makeResult({controls});}});
   await state.load();state.edit('savingsStrategy','gentle');
-  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,2);
-  assert.equal(state.snapshot().limits.homeDiscomfortCentsPerDegreeSquaredHour,5);
+  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0);
+  assert.equal(state.snapshot().limits.homeDiscomfortCentsPerDegreeSquaredHour,0);
   state.edit('minimumHomeBenefitCents',0);await state.compare();
   assert.deepEqual(requests.at(-1).body.limits,{savingsStrategy:'gentle',minimumHomeBenefitCents:0,
-    homeDiscomfortCentsPerDegreeSquaredHour:5,maxTrialCostCents:150});
+    homeDiscomfortCentsPerDegreeSquaredHour:0,maxTrialCostCents:150});
   state.edit('savingsStrategy','balanced');state.edit('savingsStrategy','gentle');
   assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0,'An explicitly edited zero remains authoritative');
   state.reset();state.edit('savingsStrategy','gentle');
-  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,2,'Reset restores inherited strategy behavior');
+  assert.equal(state.snapshot().limits.minimumHomeBenefitCents,0,'Reset restores the configured monetary policy');
 });
 test('validation explanation uses complete sentences and does not turn zero observed duration into an execution ban',()=>{
   const text=heatingEvidenceText({initialReady:true,actionValidated:false,validatedReductionHours:0,
@@ -213,7 +213,7 @@ test('refresh retains explicit draft values while updating untouched defaults an
   await state.load({preserveDraft:true});const draft=state.snapshot();
   assert.equal(draft.limits.maxDropC,2);assert.equal(draft.limits.maxReductionHours,6);
   assert.equal(draft.limits.savingsStrategy,'gentle');assert.equal(draft.limits.minimumHomeBenefitCents,0);
-  assert.equal(draft.limits.homeDiscomfortCentsPerDegreeSquaredHour,5);
+  assert.equal(draft.limits.homeDiscomfortCentsPerDegreeSquaredHour,0);
   assert.equal(draft.dirty,true);assert.equal(draft.stale,false);assert.equal(await state.apply(),false);
   state.reset();assert.equal(state.snapshot().limits.maxDropC,1.5);
   assert.equal(state.snapshot().limits.savingsStrategy,'balanced');

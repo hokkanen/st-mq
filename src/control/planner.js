@@ -342,7 +342,8 @@ export function evaluateCycle({ schedule = null, intervals, model, initialState,
 /** Shared selection, pending-plan and continuation comparison. Scenarios use
  * the same physical error on both independently simulated action paths. */
 export function economicAdmission({ prediction, referencePrediction, args, schedule, reference = null, settings = {}, continuing = false }) {
-  const policy = heatingEconomics(args.config,settings.savingsStrategy);
+  heatingStrategy(settings.savingsStrategy);
+  const policy = heatingEconomics(args.config);
   const benefitCents = referencePrediction.costCents - prediction.costCents;
   let lowerBenefitCents = benefitCents;
   let unsafe = prediction.severe;

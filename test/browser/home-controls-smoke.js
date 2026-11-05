@@ -181,7 +181,7 @@ try {
   ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
-  await until(`globalThis.homeFixture?.poll && document.getElementById('home-savings-strategy')?.textContent === 'Balanced'`);
+  await until(`globalThis.homeFixture?.poll && document.getElementById('home-savings-strategy')?.textContent === 'Balanced (80%)'`);
   await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
   await evaluate(`homeFixture.planningReference = true; await homeFixture.poll()`);
   await until(`document.getElementById('reference').textContent === '21.4 °C'`);
@@ -262,7 +262,7 @@ try {
     homeFixture.savingsStrategy = 'savings'; await homeFixture.poll()`);
   assert.equal(await evaluate(`savedPreferences.fold.open && document.activeElement === savedPreferences.summary
     && savedPreferences.value === document.getElementById('home-savings-strategy')
-    && savedPreferences.value.textContent === 'More savings'`), true,
+    && savedPreferences.value.textContent === 'More savings (100%)'`), true,
     'Status refresh updates preference values without replacing the fold or losing keyboard focus');
   await keyPress(' ');
   assert.equal(await evaluate(`document.getElementById('home-preferences-details').open`), false,

@@ -1686,8 +1686,12 @@ household backups.
 
 The heating-explorer suite checks the Home preview opener without toggling its
 parent card, Escape and focus restoration, pinned comparisons and draft retention,
-family simulation, explicit admin approval, stale-input rejection and narrow
-layouts in both themes. It also checks absent and partial uncertainty bands,
+family simulation, explicit admin approval, stale-input rejection and layouts
+from 280 to 1920 px in both themes, including both sides of the 650 px breakpoint.
+It checks exact desktop/mobile field placement, Away replacement, equal visible
+input/selector widths, input alignment, the final two advanced fields, touch and
+keyboard selection, invalid inputs, busy/error retry behavior, and section-start
+jumps with Advanced settings open or closed. It also checks absent and partial uncertainty bands,
 provisional comfort limits and the provenance of a captured indoor estimate.
 It builds an isolated temporary UI unless `STMQ_UI_DIST` selects an existing
 build. It uses synthetic response fixtures and captures a
