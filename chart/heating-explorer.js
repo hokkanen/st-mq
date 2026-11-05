@@ -147,7 +147,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       result = { ...structuredClone(baseline), activeTrial, previewId: null,
         application: { ...baseline.application, allowed: false, reason: 'Compare a scenario before applying it.' } };
       limits = Object.fromEntries(result.controls.map(control => [control.key, control.value])); dirty = false;
-      message = 'Captured plan and automatic settings restored.'; error = false;
+      message = 'Preview reset to the captured baseline. Live settings are unchanged.'; error = false;
       edited.clear(); notify();
     },
     compare() {
