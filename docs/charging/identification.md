@@ -491,6 +491,10 @@ returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; Tesla's qualified baseline can do so under the unreachable-peer
 exception. Absent a match, the shared 0.30 kWh extra-energy allowance
 ends probing for either vehicle.
+An economic forecast refresh cannot interrupt an already admitted probe on
+either charging adapter, including while a native read is pending. The original
+probe deadline and captured economic return remain fixed. Explicit control or
+session changes, native restrictions and authority/readiness checks still apply.
 An independent five-minute maximum and loss of established current power evidence
 also end probing; initial metering absence uses only the bounded startup described
 above. These limits do not expire the saved identification evidence. Metering

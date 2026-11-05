@@ -184,6 +184,26 @@ test('Shelly awaiting its first fresh meter stops at the original deadline witho
   assert.equal(starts(f).length, startsBefore, 'Restart cannot renew a meterless probe');
 });
 
+test('Shelly runtime economic replanning preserves the probe deadline and captured return', async t => {
+  const f = await fixture(t, { charging: false });
+  await f.update(); await f.update();
+  const original = structuredClone(f.item().identification.probe);
+  assert.ok(original); assert.equal(f.fields.start_charging.value, true);
+  const before = f.writes.length;
+  f.setNow(f.now + 1000);
+  f.setPlan({ id: 'synthetic-new-economic-plan', feasible: true, startAt: FUTURE + MINUTE,
+    deadlineAt: FUTURE + 61 * MINUTE, periods: [{ startAt: FUTURE + MINUTE, endAt: null }] });
+  await f.update();
+  assert.equal(f.item().identification.probe.deadlineAt, original.deadlineAt);
+  assert.equal(f.item().identification.probe.returnStartAt, original.returnStartAt);
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.writes.length, before, 'Economic replanning cannot interrupt or renew an admitted probe');
+  f.setNow(original.deadlineAt); await f.update();
+  assert.equal(f.fields.start_charging.value, false, 'The original deadline still ends extra charging');
+  assert.equal(f.item().identification.probe.deadlineAt, original.deadlineAt);
+  assert.equal(f.card().vehicle.id, null, 'Permission and zero draw cannot identify the car');
+});
+
 test('Shelly confirms its 6 A preparation before a probe with no fresh meter, retaining restoration until measured stop', async t => {
   const f = await fixture(t, { charging: false, retainedOnly: true, durable: true, initialMeterFresh: false });
   await f.update();

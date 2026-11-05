@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -60,7 +60,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
   controller = adapter.createController({ clock: () => now, initialState: controllerState, canControl: () => authority && admitted,
-    hasAuthority: () => authority, saveState: stateFor('controller').set });
+    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
@@ -305,6 +305,65 @@ test('an unchanged controller refresh preserves native authorization while its r
   } finally {
     f.adapter.read = read; release(); await refresh;
   }
+});
+
+for (const permission of ['probe', 'Charge now', 'Automatic off'])
+test(`an economic plan refresh cannot interrupt ${permission} start permission`, async t => {
+  const identification = { id: 'synthetic-independent-probe', connectedAt: START, phase: 'waiting', mode: 'probe',
+    probeUntil: START + 2 * MINUTE, returnStartAt: START + 30 * MINUTE };
+  const f = await fixture(t, { getIdentification: () => permission === 'probe' ? identification : null });
+  const plan = { id: 'synthetic-future-plan', startAt: START + 30 * MINUTE, feasible: true,
+    periods: [{ startAt: START + 30 * MINUTE, endAt: null }] };
+  const input = { enabled: permission !== 'Automatic off', plan,
+    ...(permission === 'Charge now' ? { chargeNow: { connectedAt: START, requestedAt: START } } : {}) };
+  await f.controller.update(input);
+  assert.equal((await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status, 'Accepted');
+  const read = f.adapter.read;
+  let release, entered;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.read = async options => { entered(); await new Promise(resolve => { release = resolve; }); return read(options); };
+  const refresh = f.controller.update({ ...input, plan: { ...plan, id: 'synthetic-refreshed-plan',
+    startAt: START + 31 * MINUTE, periods: [{ startAt: START + 31 * MINUTE, endAt: null }] } });
+  await reading;
+  try {
+    const started = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+      timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+    assert.equal(started[2].idTagInfo.status, 'Accepted', 'an unrelated economic forecast cannot deny independent Start permission');
+    if (permission === 'probe') assert.equal(f.controller.status().identification.probeUntil, identification.probeUntil,
+      'the original probe deadline is unchanged');
+  } finally { f.adapter.read = read; release(); await refresh; }
+});
+
+for (const boundary of ['pause', 'controls revision', 'replan', 'invalidate', 'expiry', 'disconnect', 'fault', 'authority', 'pending input'])
+test(`an economic refresh during a probe retains the ${boundary} Start boundary`, async t => {
+  const identification = { id: 'synthetic-fenced-probe', connectedAt: START, phase: 'waiting', mode: 'probe',
+    probeUntil: START + 30_000, returnStartAt: START + 30 * MINUTE };
+  const f = await fixture(t, { getIdentification: () => identification });
+  const plan = { id: 'synthetic-future-plan', startAt: START + 30 * MINUTE, feasible: true,
+    periods: [{ startAt: START + 30 * MINUTE, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  const authorize = async () => (await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status;
+  assert.equal(await authorize(), 'Accepted');
+  const read = f.adapter.read;
+  let release, entered, replacement;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.read = async options => { entered(); await new Promise(resolve => { release = resolve; }); return read(options); };
+  const refresh = f.controller.update({ enabled: true, plan: { ...plan, id: 'synthetic-refreshed-plan',
+    startAt: START + 31 * MINUTE, periods: [{ startAt: START + 31 * MINUTE, endAt: null }] } });
+  await reading;
+  try {
+    assert.equal(await authorize(), 'Accepted');
+    if (boundary === 'pause') replacement = f.controller.update({ sessionPause: { connectedAt: START, requestedAt: f.now } });
+    else if (boundary === 'controls revision') replacement = f.controller.update({ controlsRevision: 1 });
+    else if (boundary === 'replan') replacement = f.controller.update({ replan: true });
+    else if (boundary === 'invalidate') f.controller.invalidate();
+    else if (boundary === 'expiry') f.advance(30_000);
+    else if (boundary === 'disconnect') await f.status('Available');
+    else if (boundary === 'fault') await f.status('Faulted');
+    else if (boundary === 'authority') f.authority(false);
+    else f.admission(false);
+    assert.equal(await authorize(), 'Blocked', 'economic independence cannot bypass a current Start restriction');
+  } finally { f.adapter.read = read; release(); await refresh; await replacement; }
 });
 
 test('refreshing start permission retains its original expiry and immediate revocation boundaries', async t => {

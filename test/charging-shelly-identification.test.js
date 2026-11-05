@@ -335,6 +335,38 @@ test('Shelly economic probe uses the existing current limit and returns to econo
   assert.equal(f.writes.filter(call => call.role === 'start_charging' && call.value === true).length, starts);
 });
 
+test('Shelly an economic refresh during a native read preserves the bounded probe and due Stop', async t => {
+  const f = fixture(t); f.request = null;
+  const economic = { enabled: true, plan: { id: 'synthetic-original-plan',
+    periods: [{ startAt: NOW + 3600_000, endAt: null }] } };
+  await f.update(economic);
+  f.request = probe(); await f.update(economic);
+  assert.equal(f.fields.start_charging.value, true);
+  const writes = f.writes.length, refresh = f.adapter.refresh;
+  let release, entered, held = false;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.refresh = async () => {
+    if (!held) { held = true; entered(); await new Promise(resolve => { release = resolve; }); }
+    await refresh();
+  };
+  const pending = f.update(economic);
+  await reading;
+  const replacement = f.update({ enabled: true, plan: { id: 'synthetic-new-plan',
+    periods: [{ startAt: NOW + 7200_000, endAt: null }] } });
+  try {
+    assert.equal(f.fields.start_charging.value, true, 'The admitted probe remains permitted during the read');
+  } finally { release(); await pending; await replacement; f.adapter.refresh = refresh; }
+  assert.equal(f.controller.status().phase, 'identifying');
+  assert.equal(f.controller.status().identification.probeUntil, NOW + 120_000);
+  assert.equal(f.controller.status().identification.returnStartAt, NOW + 3600_000);
+  assert.equal(f.writes.length, writes, 'A new economic forecast cannot insert a Stop or restart the probe');
+  f.now = NOW + 120_000; f.request = { ...probe('pausing'), pauseUntil: f.now + 90_000 };
+  const view = await f.update(economic);
+  assert.equal(view.pauseConfirmed, true);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(view.owned.startAt, f.request.pauseUntil, 'The due identification pause retains its exact deadline');
+});
+
 test('Shelly probe retains tighter fuse, native and vehicle restrictions', async t => {
   for (const block of ['vehicle', 'native', 'manual']) {
     const f = fixture(t); f.request = probe();

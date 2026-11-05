@@ -368,8 +368,8 @@ function selectExecution(plan, previous, now, deadlineRequest, connectedAt) {
 // Only instruction inputs can supersede an in-flight native action. Forecast
 // costs, source diagnostics and allocation estimates may change while the same
 // execution remains selected; those updates still reach the next reconciliation.
-function controlIntent(input) {
-  const plan = input.plan, revision = plan?.priceRevision;
+function controlIntent(input, independentStart = false) {
+  const plan = independentStart ? null : input.plan, revision = plan?.priceRevision;
   return {
     enabled: input.enabled === true, readyBy: input.readyBy, timezone: input.timezone,
     takeover: input.takeover ?? null, takeoverMode: input.takeoverMode ?? null,
@@ -1217,10 +1217,14 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
       if (typeof input.takeover !== 'string' && takeoverState !== 'pending') { takeoverState = null; takeoverAttempt = null; }
       const next = { ...desired, ...input, takeover: typeof input.takeover === 'string' ? input.takeover : null };
-      // An unchanged refresh does not replace the current charging instruction.
-      // Keep its original bounded start permission through the awaited reads;
-      // actual input changes and explicit invalidation still revoke immediately.
-      if (!isDeepStrictEqual(controlIntent(next), controlIntent(desired))) {
+      // Routine reads retain the original bounded Start lease. An admitted
+      // probe, Charge now or Automatic off owns permission independently of
+      // the economic forecast. Actual instruction changes still revoke here;
+      // original expiry, connection and native guards remain authoritative.
+      const independentStart = desired.enabled !== true || chargeNowActive()
+        || identification?.mode === 'probe' && ['waiting', 'charging'].includes(identification.phase)
+          && identification.connectedAt === state.session?.connectedAt && clock() < identification.probeUntil;
+      if (!isDeepStrictEqual(controlIntent(next, independentStart), controlIntent(desired, independentStart))) {
         adapter.setStartPermission?.(null);
         generation++; abort?.abort();
       }
