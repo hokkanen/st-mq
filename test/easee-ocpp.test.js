@@ -2070,3 +2070,34 @@ test('a new authorized Start cannot supersede newer buffered evidence for the un
   assert.equal(reply[0], 4); assert.equal(f.saved.activeId, id);
   assert.equal(f.saved.transactions[0].endedByNewStart, undefined);
 });
+
+test('bounded start diagnostics distinguish charger acknowledgement, authorization and an original transaction replay', async t => {
+  const virtualTag='fixture-diag-tag';
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},virtualTag),client=await f.connect();
+  f.startPermitted=false;
+  const payload={connectorId:1,idTag:virtualTag,timestamp:new Date(at).toISOString(),meterStart:0};
+  const blocked=await client.call('StartTransaction',payload,'original-blocked');
+  assert.equal(blocked[2].idTagInfo.status,'Blocked');
+  let progress=f.local.status().startProgress;
+  assert.deepEqual(progress.transaction,{receivedAt:at,sourceAt:at,status:'Blocked',replayed:false});
+  assert.equal(progress.remote,null);
+  f.now=at+1000;await client.call('StartTransaction',payload,'original-blocked');
+  progress=f.local.status().startProgress;
+  assert.deepEqual(progress.transaction,{receivedAt:at+1000,sourceAt:at,status:'Blocked',replayed:true});
+  f.startPermitted=true;f.now=at+2000;
+  await client.call('Authorize',{idTag:virtualTag});
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  progress=f.local.status().startProgress;
+  assert.equal(progress.remote.status,'accepted');assert.equal(progress.remote.requestedAt,at+2000);
+  assert.equal(progress.remote.respondedAt,at+2000);
+  assert.equal(progress.transaction.sourceAt,at,'A Start acknowledgement is not a new transaction');
+  assert.equal(progress.authorization.status,'Accepted');
+  const frozen=structuredClone(progress);f.now=at+3000;
+  assert.deepEqual(f.local.status().startProgress,frozen,'A status read creates no fresh evidence');
+  progress.remote.status='changed-by-reader';
+  assert.deepEqual(f.local.status().startProgress,frozen,'Public diagnostic objects are detached');
+  assert.equal(JSON.stringify(f.local.status()).includes(virtualTag),false);
+  assert.equal(Object.hasOwn(f.local.status().startProgress.transaction,'transactionId'),false);
+  await f.connect();
+  assert.deepEqual(f.local.status().startProgress,{remote:null,authorization:null,transaction:null,stop:null});
+});

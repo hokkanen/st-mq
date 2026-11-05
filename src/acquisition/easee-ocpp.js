@@ -123,6 +123,15 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let meterRequestedAt = null;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
+  // Process-local, current-connection evidence only. No tags, transaction IDs
+  // or message bodies; observation never refreshes these original clocks.
+  let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+  const authorizationProgress = (info, receivedAt, replayed = false) => {
+    startProgress.authorization = { receivedAt, decidedAt: clock(), status: info.status, replayed };
+  };
+  const transactionProgress = (payload, info, receivedAt, replayed = false) => {
+    startProgress.transaction = { receivedAt, sourceAt: instant(payload.timestamp), status: info.status, replayed };
+  };
   let device = null;
   let observedTransaction = null, connectionId = null, authenticatedConnectionId = null, transactionEvidence = null;
   let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
@@ -362,6 +371,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
     currentSupplyBoundaryAt = null; phaseWeightBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
+    startProgress = { remote: null, authorization: null, transaction: null, stop: null };
     onDisconnect();
   }
   function send(value, beforeSend = () => true, onDispatch = () => {}) {
@@ -472,7 +482,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       call.sentAt = clock();
       if (action === 'TriggerMessage' && payload.requestedMessage === 'MeterValues') meterRequestedAt = monotonicClock();
       return true;
-    }, () => call.attempt?.dispatched());
+    }, () => {
+      if (action === 'RemoteStartTransaction') startProgress.remote = { requestedAt: call.sentAt, respondedAt: null, status: 'pending' };
+      call.attempt?.dispatched();
+    });
   }
   function requestRemoteStart() {
     reconcileTransactionStatus();
@@ -681,6 +694,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       finishRequest(pending, expired ? 'ocpp-request-timeout' : revoked ? 'ocpp-request-revoked'
         : frame[0] === 4 ? 'ocpp-request-failed' : null, frame[2]);
     }
+    if (pending.action === 'RemoteStartTransaction' && startProgress.remote?.requestedAt === pending.sentAt)
+      startProgress.remote = { ...startProgress.remote, respondedAt: clock(),
+        status: frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected' };
     if (pending.action === 'ChangeConfiguration') {
       const status = frame[0] === 3 ? frame[2]?.status : null;
       if (status === 'Accepted') configurationFailures.delete(pending.key);
@@ -740,8 +756,13 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       // An Authorize retry asks about present permission. Transaction replies
       // are durable historical acknowledgements and must remain unchanged.
-      if (action === 'Authorize') send([3, id, { idTagInfo: authorizationInfo(payload.idTag) }]);
-      else send(prior.reply);
+      if (action === 'Authorize') {
+        const info = authorizationInfo(payload.idTag); authorizationProgress(info,arrival,true);
+        send([3,id,{idTagInfo:info}]);
+      } else {
+        if (action === 'StartTransaction') transactionProgress(payload,prior.reply[2].idTagInfo,arrival,true);
+        send(prior.reply);
+      }
       return;
     }
     const sourceAt = ['StartTransaction', 'StopTransaction'].includes(action) ? instant(payload.timestamp) : NaN;
@@ -800,6 +821,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       try { persist(ledger); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       response = { idTagInfo: authorizationInfo(payload.idTag) };
+      authorizationProgress(response.idTagInfo,receivedAt);
     }
     else if (action === 'StartTransaction') {
       const startedAt = instant(payload.timestamp);
@@ -811,6 +833,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (!stateReady) { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       const fingerprint = digest({ scope, connectorId: 1, startedAt, meterStart: payload.meterStart, idTag: payload.idTag });
       let transaction = ledger.transactions.find(row => row.fingerprint === fingerprint);
+      const replayed = Boolean(transaction);
       if (!transaction) {
         const active = activeTransaction(), authorization = authorizationInfo(payload.idTag), accepted = authorization.status === 'Accepted';
         const supersedes = active && accepted && (isRecovered(active) || afterModeDisable(active))
@@ -842,6 +865,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (transaction.status === 'Blocked') preparingAttempted = false;
       response = { transactionId: transaction.id, idTagInfo: { status: transaction.status,
         ...(automaticTag(payload.idTag) ? { expiryDate: new Date(transaction.startedAt).toISOString() } : {}) } };
+      transactionProgress(payload,response.idTagInfo,receivedAt,replayed);
     } else if (action === 'StopTransaction') {
       if (!stateReady) { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       const stoppedAt = instant(payload.timestamp), transaction = ledger.transactions.find(row => row.id === payload.transactionId)
@@ -863,6 +887,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const next = updateTransaction({ ...transaction, stoppedAt, meterStop: payload.meterStop, stopFingerprint: fingerprint,
         ...(stopReason ? { stopReason, stopReceivedAt: transaction.stopReceivedAt ?? receivedAt } : {}) }, true);
       try { persist(next); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
+      startProgress.stop = { receivedAt, sourceAt: stoppedAt, reason: stopReason ?? null };
       if (observedTransaction?.id === transaction.id) observedTransaction = null;
       if (transactionEvidence?.id === transaction.id) transactionEvidence = null;
       if (recoveryCandidate?.id === transaction.id) { recoveryCandidate = null; recoveryConflict = false; }
@@ -1152,7 +1177,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         transportConnected: Boolean(canControl() && socket?.readyState === 1), connectionGeneration: connectionSequence,
         connected: Boolean(canControl() && socket?.readyState === 1 && lastMessageAt !== null), hasBootReported: booted, available,
         error: error ?? (authorizationReady ? null : 'authorization-unavailable'), lastMessageAt, configurationFailures: [...configurationFailures],
-        authorizationMode: config.authorization_mode, remoteStartStatus,
+        authorizationMode: config.authorization_mode, remoteStartStatus, startProgress: structuredClone(startProgress),
         pendingConfiguration: [...pendingCalls.values(), ...callQueue.map(call => ({ action: call.action, key: call.payload.key }))]
           .filter(call => call.action === 'ChangeConfiguration').map(call => call.key),
         controlTransport: configured ? 'ocpp' : null };

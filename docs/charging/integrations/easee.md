@@ -1068,3 +1068,11 @@ may wait once for that time before checking the original connection, transaction
 and instruction guards again. The wait cannot renew a request deadline, resend
 a command or borrow evidence from a replacement connection. A further future
 status, timeout, abort or genuine instruction change still fails closed.
+
+Local OCPP status retains the latest Start request/acknowledgement, authorization
+decision, transaction request and stop receipt for the current connection. Their
+receipt clocks remain separate from charger transaction timestamps. A replay is
+marked explicitly, and an accepted remote command does not establish that a new
+transaction or power draw followed. These bounded diagnostics contain no
+authorization tags, transaction identifiers or message payloads and clear on
+connection replacement; ordinary status reads do not renew them.
