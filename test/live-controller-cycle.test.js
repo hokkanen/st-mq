@@ -493,6 +493,29 @@ test('restart reconciles a drifted derived end from committed recovery without r
   assert.equal(restarted.status().decision.phase, 'recovery');
 });
 
+test('refreshing the continuation basis preserves a recovery-boundary adjustment made in the same update', async t => {
+  const r = setup(t); r.engine.control.maxReductionHours = .25;
+  r.plan(); r.engine.tick(); await r.settle();
+  r.advance(15 * 60_000 + 250); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active()), driftedEnd = r.now + 5 * 60_000;
+  const drifted = structuredClone(original); drifted.executionSchedule.reductionEnd = driftedEnd;
+  r.engine.cycles.save(drifted);
+  r.advance(1000);
+  r.engine.continueHeating({ now: r.now, observations: { indoor: { value: 21.2, observedAt: r.now } },
+    outlook: { prices: r.intervals.map(row => ({ ...row, allInCentsPerKWh: row.price })),
+      forecast: [{ start: r.intervals[0].start, end: r.intervals.at(-1).end, outdoorC: 10,
+        solarRadiationWm2: 0, issuedAt: r.intervals[0].start }] },
+    checkpoint: r.engine.checkpoint, settings: r.engine.settings, planningConfig: r.engine.control,
+    planningState: null, equipment: { ...original.plan.equipment, ...original.continuation?.equipment },
+    normal: reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null }) });
+  const repaired = r.engine.cycles.active();
+  assert.equal(repaired.continuation.at, r.now, 'the same update saved a complete fresh comparison basis');
+  assert.equal(repaired.executionSchedule.reductionEnd, original.recoveryStartedAt);
+  assert.equal(repaired.adjustments?.at(-1)?.reason, 'recovery-start-established');
+  assert.equal(repaired.adjustments?.at(-1)?.previous.reductionEnd, driftedEnd);
+  assert.deepEqual(repaired.plan, original.plan);
+});
+
 for (const minutes of [10, 20]) test(`a duration-limit edit at minute ${minutes} still shortens remaining reduction without inventing an earlier stop`, async t => {
   const r = setup(t); r.engine.control.maxReductionHours = .5;
   const plan = r.plan(); plan.schedule.reductionEnd = r.now + 30 * 60_000;

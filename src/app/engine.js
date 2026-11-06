@@ -2056,7 +2056,7 @@ export class Engine {
     return this.latestStatus;
   }
   continueHeating({ now, observations, outlook, checkpoint, settings, planningConfig, planningState, equipment, normal }) {
-    const cycle = this.cycles.active();
+    let cycle = this.cycles.active();
     let schedule = cycle.executionSchedule ?? cycle.plan.schedule;
     // The committed recovery start owns an executed reduction's end. Reconcile
     // derived timing without changing forecasts, observations or recovery duties.
@@ -2065,7 +2065,7 @@ export class Engine {
       && schedule.reductionEnd !== cycle.recoveryStartedAt) {
       schedule = { ...schedule, reductionEnd: cycle.recoveryStartedAt };
       this.cycles.revise(schedule, now, 'recovery-start-established');
-      cycle.executionSchedule = schedule;
+      cycle = this.cycles.active();
     }
     let phase = phaseAt(schedule, now), reasons = ['complete-cycle-in-progress'];
     const maximum = settings.occupancy.mode === 'away' ? planningConfig.maxAwayReductionHours : planningConfig.maxReductionHours;
@@ -2075,7 +2075,7 @@ export class Engine {
     if (now < schedule.reductionEnd && schedule.reductionEnd > end) {
       schedule = { ...schedule, reductionEnd: Math.max(now, end) };
       this.cycles.revise(schedule, now, 'configured-reduction-limit-changed');
-      cycle.executionSchedule = schedule;
+      cycle = this.cycles.active();
       phase = phaseAt(schedule, now);
     }
     const args = continuationInput({ now, observations, ...outlook, checkpoint,
