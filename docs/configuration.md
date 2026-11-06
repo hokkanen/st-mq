@@ -16,6 +16,19 @@ relay readback and power feedback remain distinct from that configured duration.
 The retired `mqtt.dhwr_topic` field and generic MQTT circulation route are rejected.
 See [circulation setup](dhwr-mqtt.md) for device configuration and restoration.
 
+`controller.circulation_kw` (default 0.08 kW) is the nominal circulation-pump
+electrical power used with `controller.heat_pump_compressor_kw` in historical
+Heat pump charts. Each interval uses its recorded configuration and observed
+compressor operation. Home planning and committed learning instead use the
+manufacturer source map, whose electrical boundary already includes circulation
+pumps; they add zero extra circulation power. These are separately labeled
+estimates, not metered quantities to add together.
+`controller.dhwr_kw` (default 0.025 kW) is the separate hot-water recirculation
+pump assumption, included in recorded electrical estimates during recorded DHWR
+operation. It contributes no modeled room heat or space-heating savings credit.
+**Home heat model** discloses the pump assumptions retained in the selected model;
+these values do not replace historical configuration revisions.
+
 Home indoor weights belong to `controller.indoor_sensor_weights`. The default
 empty map selects configured indoor membership with relative weights Upstairs 1,
 Downstairs 1 and Bedroom 2, giving 25% / 25% / 50% when all three are configured.

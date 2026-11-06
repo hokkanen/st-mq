@@ -7,7 +7,7 @@ import { renderLearningRows } from './learning-rows.js';
 import { coefficientCalculation, floorCalculation, sourceCalculation, heatBalanceCalculation, outcomeCalculation,
   inputCalculation, dutyCalculation, economicCalculation, validationCalculation, calibrationCalculation, fittingCalculation,
   preheatCalculation, recoveryHoldCalculation, hotWaterCalculation, initialModelCalculation,
-  trialBudgetCalculation, dhwrCalculation } from './home-learning-math.js';
+  trialBudgetCalculation, dhwrCalculation, circulationCalculation } from './home-learning-math.js';
 
 const finite = Number.isFinite;
 const number = (value, digits = 2) => {
@@ -220,7 +220,10 @@ export function learningDisplay(learning = {}, context = {}) {
   if (health.evidence === 'includes-requested-modes') record('Heating observation basis', 'Includes requested modes', 'Some heating observations describe requested operation. Device readback is used where available.');
   if (finite(p.lossPerHour)) basis('Heat loss in context', `${number(p.lossPerHour * 10)} °C/h at 10 °C difference`, `Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
 
-  if (finite(energy.compressorKw)) basis('Electricity assumptions', finite(p.hydronicCPerKwh) ? 'Performance map + AUX rating' : `${number(energy.compressorKw)} kW compressor`, `Electricity basis: ${finite(p.hydronicCPerKwh) ? `compressor input follows the fixed source map; the saved ${number(energy.compressorKw)} kW nominal/calibration statistic does not replace that map` : `compressor ${number(energy.compressorKw)} kW`}, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}.`);
+  if (finite(energy.compressorKw)) basis('Electricity assumptions', finite(p.hydronicCPerKwh) ? 'Performance map + AUX rating' : `${number(energy.compressorKw)} kW compressor`, `Electricity basis: ${finite(p.hydronicCPerKwh) ? `compressor input follows the fixed source map; the saved ${number(energy.compressorKw)} kW nominal/calibration statistic does not replace that map` : `compressor ${number(energy.compressorKw)} kW`}, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}. Historical Heat pump charts use their dated configuration's nominal compressor and circulation powers rather than this model's calibrated compressor statistic.`);
+  basis('Nominal circulation pump power', finite(energy.circulationKw) ? `${number(energy.circulationKw, 3)} kW` : 'Unavailable',
+    'The selected model retains this configured circulation power assumption. Historical Heat pump charts add the dated nominal circulation power during observed compressor operation, using each interval’s configuration. The Home planner and committed learning use a source map that already includes circulation pumps, so they add zero extra circulation power. This is not measured power or a fitted coefficient.',
+    { unit: 'kW', available: finite(energy.circulationKw), provenance: finite(energy.circulationKw) ? 'Fixed configured assumption' : 'Unavailable' });
   basis('Hot-water recirculation electrical power', finite(energy.dhwrKw) ? `${number(energy.dhwrKw, 3)} kW` : 'Unavailable',
     'The selected model retains this configured DHWR pump power assumption. Recorded electrical estimates include it during recorded recirculation operation, using each interval’s configuration. It is separate from the circulation pumps already included in the compressor source map. It is not measured power, a fitted coefficient or room heat, and it supplies no space-heating savings credit.',
     { unit: 'kW', available: finite(energy.dhwrKw), provenance: finite(energy.dhwrKw) ? 'Fixed configured assumption' : 'Unavailable' });
@@ -345,8 +348,8 @@ export function learningDisplay(learning = {}, context = {}) {
     group: evidenceGroup(row.key), calculation: validationCalculation(row.key) }));
   const visibleCoefficientRows = coefficientEvidenceRows.filter(row => !policyGroups[row.key] && row.key !== 'Heat loss in context')
     .map(row => ({ ...row, group: row.key.endsWith(' duty response') ? 'Equipment response'
-      : ['Electricity assumptions', 'Hot-water recirculation electrical power', 'Recovery diagnostic calibration', 'Auxiliary exposure calibration', 'Electricity uncertainty allowance'].includes(row.key)
-        ? 'Energy estimates' : 'Model structure', calculation: row.key.endsWith(' duty response') ? dutyCalculation(model) : row.key === 'Initial model' ? initialModelCalculation(model) : row.key === 'Hot-water recirculation electrical power' ? dhwrCalculation(model) : calibrationCalculation(row.key) }));
+      : ['Electricity assumptions', 'Nominal circulation pump power', 'Hot-water recirculation electrical power', 'Recovery diagnostic calibration', 'Auxiliary exposure calibration', 'Electricity uncertainty allowance'].includes(row.key)
+        ? 'Energy estimates' : 'Model structure', calculation: row.key.endsWith(' duty response') ? dutyCalculation(model) : row.key === 'Initial model' ? initialModelCalculation(model) : row.key === 'Hot-water recirculation electrical power' ? dhwrCalculation(model) : row.key === 'Nominal circulation pump power' ? circulationCalculation(model) : calibrationCalculation(row.key) }));
   if (finite(p.hydronicCPerKwh)) visibleCoefficientRows.unshift({ key: 'heat-balance', title: 'How the heat balance works',
     value: model.floor?.enabled ? 'Room + reserve + selected slab' : 'Room + slow reserve', group: 'Model structure',
     detail: 'Heat loss cools the room; solar, fireplace and configured background heat warm it directly. Hydronic heat first enters storage, then reaches the room through temperature-driven exchange.',

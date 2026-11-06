@@ -51,6 +51,27 @@ test('DHWR electrical assumptions show the retained model power, including zero 
   }
 });
 
+test('nominal circulation power distinguishes dated chart assumptions from the source-map boundary', () => {
+  for (const value of [.08, 0, undefined, null]) {
+    const model = initialAdaptiveModel({ circulationKw: .08 });
+    if (value === undefined) delete model.energy.circulationKw;
+    else model.energy.circulationKw = value;
+    const display = learningDisplay({ adaptive: { model }, parameters: { circulationKw: .9 } });
+    const row = display.coefficientEvidenceRows.find(row => row.key === 'Nominal circulation pump power');
+    const available = Number.isFinite(value);
+    assert.equal(row.group, 'Energy estimates'); assert.equal(row.unit, 'kW');
+    assert.equal(row.available, available);
+    assert.equal(row.value, available ? `${value.toFixed(3)} kW` : 'Unavailable');
+    assert.equal(row.provenance, available ? 'Fixed configured assumption' : 'Unavailable');
+    assert.match(row.detail, /add zero extra circulation power/);
+    assert.match(row.calculation.equations[0].expression, /P_circulation × h_compressor/);
+    assert.match(row.calculation.equations[0].legend, /own dated configuration/);
+    assert.doesNotMatch(row.calculation.equations[0].legend, /0\.900 kW/);
+    assert.match(display.coefficientEvidenceRows.find(row => row.key === 'Electricity assumptions').detail,
+      /dated configuration's nominal compressor and circulation powers/);
+  }
+});
+
 test('fixed initial assumptions preserve valid zero and distinguish missing values from configured zero', () => {
   const model = initialAdaptiveModel({ homeModel: { internalCPerHour: 0, dutyPerDegree: 0, reductionRatio: 0 } });
   const rows = () => new Map(modelCoefficientDescriptions({ adaptive: { model } }).map(row => [row.key, row]));

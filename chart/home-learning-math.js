@@ -284,6 +284,14 @@ export function validationCalculation(key) {
   return undefined;
 }
 
+export function circulationCalculation(model) {
+  const power = model.energy?.circulationKw;
+  return calculation([
+    equation('Nominal chart circulation electricity', 'E_circulation = P_circulation × h_compressor',
+      `E_circulation is electrical kWh; P_circulation is ${Number.isFinite(power) ? power.toFixed(3) : 'Unavailable'} kW in the selected model. h_compressor is covered observed compressor runtime in hours. Historical charts use their own dated configuration, not this model's current value.`),
+  ], ['Historical Heat pump charts combine nominal compressor and circulation electricity with estimated AUX electricity. Home planning and committed learning use the manufacturer source map, which already includes circulation pumps; they add zero extra circulation power. These are separate labeled estimates, not metered electricity or quantities to add together.']);
+}
+
 export function dhwrCalculation(model) {
   const power = model.energy?.dhwrKw;
   return calculation([
