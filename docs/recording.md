@@ -1418,7 +1418,7 @@ rescan the previous nontraining suffix. A new import, changed selection or lost
 model cache invalidates that optimization; original CSV rows, sample ordering,
 the resampling cursor and committed learning journal remain authoritative.
 
-The current algorithm is `committed-house-v20-observed-response-and-free-experiments`. Saved configuration retains
+The current algorithm is `committed-house-v21-bounded-native-demand-projection`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect

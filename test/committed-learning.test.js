@@ -489,7 +489,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v20-observed-response-and-free-experiments');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v21-bounded-native-demand-projection');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);
@@ -597,11 +597,11 @@ test('old frozen forecasts retain real observations without validating or calibr
     predictedEnergyKwh:1,actualEnergyKwh:20,
     forecastValidation:{eligible:true,adjusted:false,basis:'frozen-advance-forecast',temperatureMaeC:.1,
       minimumTemperatureErrorC:.1,energyRelativeError:.1,costRelativeError:.1,reductionHours:1},
-    provenance:{forecastAlgorithm:'invented-earlier-predictor'}};
+    provenance:{forecastAlgorithm:'committed-house-v20-observed-response-and-free-experiments'}};
   appendLearningRecord(store,'providers','episode',value,{config});
   const entry=store.learningJournal({input:'providers'})[0];
   assert.deepEqual(entry.payload.value,value);
-  assert.equal(entry.payload.forecastAlgorithm,'invented-earlier-predictor');
+  assert.equal(entry.payload.forecastAlgorithm,'committed-house-v20-observed-response-and-free-experiments');
   const cp=replayLearningJournal(store,'providers');
   assert.equal(cp.model.forecastValidation,undefined);
   assert.equal(cp.model.energy.recoveryMultiplier,prior.recoveryMultiplier);

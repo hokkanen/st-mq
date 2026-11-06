@@ -311,7 +311,13 @@ that response. A stored pending schedule is re-evaluated before it starts.
 Native demand trends use advancing native report clocks within the same treatment
 and unchanged water target. A commanded target step, changed native operating
 state or repeated controller poll supplies no new derivative; current point
-readings and all comfort checks remain available.
+readings and all comfort checks remain available. Each derivative can project
+only through its original endpoint plus the measured report span; polling does
+not renew that endpoint. Beyond it, native demand is unknown and the model uses
+its demand prior. Native integral, water shortfall and their AUX risk apply only
+to the observed phase, including in the separate Normal counterfactual. Short
+water-temperature transitions after DHW cannot become an hour of asserted AUX
+demand. Conservative preheat stress checks and observed AUX remain independent.
 
 Preheating requests one configured **ROOM increase above the saved normal setting**,
 default **+5 °C** (`controller.preheat_room_boost_c`), and one pooled override across

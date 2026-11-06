@@ -84,12 +84,13 @@ test('startup economic operation remains available with learning trials disabled
 
 test('native integral and supply trends stay bounded to near-term evidence', () => {
   const result = evaluateCycle(common({ initialState: { indoorC: 21, reserveC: 21, integral: -100 },
-    equipment: { integralTrendPerHour: -200, supplyShortfallC: 2, supplyShortfallTrendPerHour: 4 },
+    equipment: { observedPhase: 'normal', integralTrendPerHour: -200, supplyShortfallC: 2, supplyShortfallTrendPerHour: 4,
+      nativeProjection: { integral: { observedAt: start, spanMs: HOUR / 4 }, shortfall: { observedAt: start, spanMs: HOUR / 4 } } },
     config: { compressorIntegralA1: -150, compressorHysteresisC: 5 } }));
   assert.equal(result.trajectory[0].integral, -150);
   assert.equal(result.trajectory[0].supplyShortfallC, 3);
   assert.equal(result.trajectory[0].nativeCompressorDemand, true);
-  assert.ok(result.trajectory.filter(x => x.at > start + HOUR).every(x => x.integral === null && x.supplyShortfallC === null));
+  assert.ok(result.trajectory.filter(x => x.at > start + HOUR / 4).every(x => x.integral === null && x.supplyShortfallC === null));
 });
 
 test('missing solar over a 48-hour horizon still permits a bounded startup trial', () => {
@@ -325,4 +326,59 @@ test('a plan initialized from an estimate cannot validate after all sensors retu
   assert.equal(cycle.actual.temperatureMissingHours, 0);
   assert.equal(cycle.completionBasis, 'control-recovery-only');
   assert.equal(store.learningJournal({ input: 'synthetic' }).length, 0);
+});
+
+
+test('native derivative expires at its original observed span including endpoint age', () => {
+  const args = common({ initialState: { indoorC: 21, reserveC: 21, integral: -100 },
+    equipment: { observedPhase: 'normal', integralTrendPerHour: -120, supplyShortfallC: 0, supplyShortfallTrendPerHour: 60,
+      nativeProjection: { integral: { observedAt: start - 30_000, spanMs: 60_000 },
+        shortfall: { observedAt: start - 30_000, spanMs: 60_000 } } } });
+  const result = evaluateCycle(args);
+  assert.equal(result.trajectory[0].at, start + 30_000, 'The forecast splits at the actual evidence expiry');
+  assert.equal(result.trajectory[0].integral, -102, 'Projection starts from the native report clock');
+  assert.equal(result.trajectory[0].supplyShortfallC, 1);
+  assert(result.trajectory.slice(1).every(p => p.integral === null && p.supplyShortfallC === null),
+    'Expired native demand becomes unknown, not a held extreme');
+  const stale = evaluateCycle({ ...args, equipment: { ...args.equipment, nativeProjection: {
+    integral: { observedAt: start - 61_000, spanMs: 60_000 }, shortfall: { observedAt: start - 61_000, spanMs: 60_000 } } } });
+  assert(stale.trajectory.every(p => p.integral === null && p.supplyShortfallC === null));
+});
+
+test('preheat native demand cannot become AUX evidence for the Normal counterfactual', () => {
+  const equipment = { observedPhase: 'preheat', normalSupplyC: 35, supplyC: 35, nativeAuxAllowed: true,
+    integralTrendPerHour: -600, supplyShortfallC: 10, supplyShortfallTrendPerHour: 2000,
+    nativeProjection: { integral: { observedAt: start, spanMs: 47_000 }, shortfall: { observedAt: start, spanMs: 18_000 } } };
+  const args = common({ initialState: { indoorC: 21, reserveC: 21, integral: -1000 }, equipment });
+  const result = evaluateCycle(args);
+  const unknown = evaluateCycle({ ...args, initialState: { indoorC: 21, reserveC: 21 },
+    equipment: { ...equipment, integralTrendPerHour: null, supplyShortfallC: null, supplyShortfallTrendPerHour: null } });
+  assert.equal(result.auxiliaryKwh, unknown.auxiliaryKwh, 'A different native phase adds no Normal AUX demand');
+  assert.equal(result.electricityKwh, unknown.electricityKwh);
+  assert(result.trajectory.every(p => p.integral === null && p.supplyShortfallC === null && p.nativeCompressorDemand === null));
+  const active = evaluateCycle({ ...args, schedule: { preheatStart: start, preheatEnd: start + 60_000,
+    reductionStart: start + 60_000, reductionEnd: start + HOUR, roomBoostC: 1 } });
+  assert(active.trajectory[0].auxiliaryKw > 0, 'Current-phase native AUX risk remains represented');
+  assert(active.trajectory.filter(p => p.phase !== 'preheat').every(p => p.integral === null && p.supplyShortfallC === null));
+});
+
+
+test('a brief post-DHW water transient cannot create an hour of AUX demand and a false comfort failure', () => {
+  const config = { floorThermalPriors: { capacityKwhPerC: 3.2 } };
+  const args = common({ model: initialAdaptiveModel(config), config,
+    initialState: { indoorC: 21.2, reserveC: 23.6, slabC: 21.2, integral: -119 },
+    targetC: 20.9, maxRiseC: 1.5, maxDropC: 1.5, intervals: intervals(24, { outdoorC: 10, price: () => 10 }),
+    equipment: { observedPhase: 'preheat', normalSupplyC: 29, supplyC: 45, maximumSupplyC: 45, brineC: 3,
+      integralTrendPerHour: -685, supplyShortfallC: -1, supplyShortfallTrendPerHour: 2000,
+      nativeAuxAllowed: true, h66Available: true,
+      nativeProjection: { integral: { observedAt: start, spanMs: 47_000 }, shortfall: { observedAt: start, spanMs: 18_000 } } },
+    schedule: { preheatStart: start, preheatEnd: start + 2 * 60_000, reductionStart: start + 2 * 60_000,
+      reductionEnd: start + 62 * 60_000, roomBoostC: 5, floorOverride: true, treatmentKey: 'room-boost-floor-v1' } });
+  const result = evaluateCycle(args);
+  assert.equal(result.severe, false, JSON.stringify(result.violations));
+  assert.deepEqual(result.violations, []);
+  assert(result.auxiliaryKwh < .1, 'The short native transient cannot become sustained auxiliary energy');
+  const hot = evaluateCycle({ ...args, initialState: { ...args.initialState, indoorC: 24 } });
+  assert.equal(hot.severe, true, 'Real excessive indoor warmth remains unsafe');
+  assert(hot.violations.some(v => v.code === 'indoor-rise-limit'));
 });

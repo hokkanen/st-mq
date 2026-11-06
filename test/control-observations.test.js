@@ -119,6 +119,8 @@ test('native trend points retain their report clocks and zero values through con
   applyNativeControlTrends(next.sample, next.equipment, poll.sample, 1);
   assert.equal(next.equipment.integralTrendPerHour, 600, 'A valid reported zero remains a measurement');
   assert.equal(next.equipment.supplyShortfallTrendPerHour, 60, 'The native minute, not the final 100 ms poll, owns the slope');
+  assert.deepEqual(next.equipment.nativeProjection, { integral: { observedAt: now + MINUTE, spanMs: MINUTE },
+    shortfall: { observedAt: now + MINUTE, spanMs: MINUTE } });
   assert.equal(next.sample.nativeControl.integral.at, now + MINUTE);
   assert.equal(next.sample.nativeControl.compressorOn, 0);
   const held = capture(now + MINUTE + 100, now + MINUTE, { heating_integral: 0, supply_temperature: 29 });
@@ -126,6 +128,8 @@ test('native trend points retain their report clocks and zero values through con
   assert.equal(held.equipment.integralTrendPerHour, 600, 'Polling identical evidence retains the dated slope');
   assert.equal(held.equipment.supplyShortfallTrendPerHour, 60);
   assert.equal(held.sample.nativeControl.integral.at, next.sample.nativeControl.integral.at);
+  assert.deepEqual(held.equipment.nativeProjection, next.equipment.nativeProjection,
+    'Identical controller polls cannot extend the original projection horizon');
   const stale = capture(now + 7 * MINUTE, now + MINUTE, { heating_integral: 0, supply_temperature: 29 });
   applyNativeControlTrends(stale.sample, stale.equipment, held.sample, 1);
   assert.equal(stale.equipment.integralTrendPerHour, null, 'The original points still expire');

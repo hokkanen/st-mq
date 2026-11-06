@@ -10,7 +10,7 @@ function fixture(kind='normal', count=80) {
  let cursor=START;
  const intervals=Array.from({length:count},(_,i)=>{const start=cursor;cursor+=(i%3===0?11:17)*60000;return {start,end:cursor,outdoorC:-9+(i%7),solarRadiationWm2:i%9===0?null:(i%5)*75,price:i%8===0?-17:i%8===1?0:8+(i%6)*11};});
  const config={compressorIntegralA1:-60,compressorHysteresisC:4,auxIntegralA2:-300,recoveryHoldMinutes:37};
- const equipment={observedPhase:'normal',supplyC:35,normalSupplyC:34,maximumSupplyC:48,brineC:0,h66Available:true,nativeAuxAllowed:true,integralTrendPerHour:-90,supplyShortfallC:2,supplyShortfallTrendPerHour:3,heatingDemand:{normalAuxiliaryKw:.45,observedThrough:START-60000},indoorUncertaintyC:0};
+ const equipment={nativeProjection:{integral:{observedAt:START,spanMs:47000},shortfall:{observedAt:START,spanMs:18000}},observedPhase:'normal',supplyC:35,normalSupplyC:34,maximumSupplyC:48,brineC:0,h66Available:true,nativeAuxAllowed:true,integralTrendPerHour:-90,supplyShortfallC:2,supplyShortfallTrendPerHour:3,heatingDemand:{normalAuxiliaryKw:.45,observedThrough:START-60000},indoorUncertaintyC:0};
  let schedule=null,occupancy={mode:'occupied'};
  if(kind!=='normal')schedule={preheatStart:START+7*60000,preheatEnd:kind==='preheat'?START+43*60000:START+7*60000,reductionStart:kind==='preheat'?START+43*60000:START+7*60000,reductionEnd:START+191*60000,roomBoostC:kind==='preheat'?2:0,floorOverride:kind==='preheat',treatmentKey:kind==='preheat'?'room-boost-floor-v1':'reduction-only-v1'};
  if(kind==='preheat'){equipment.fireplaceEvents=[{at:START-30*60000,kg:1.75}];occupancy={mode:'away',returnAt:new Date(START+125*60000).toISOString()};}
@@ -18,17 +18,18 @@ function fixture(kind='normal', count=80) {
  return {model,initialState:{indoorC:21.25,reserveC:24.1,slabC:22.2,integral:-80},targetC:21,intervals,schedule,occupancy,maxDropC:1.25,maxRiseC:1.75,config,equipment};
 }
 
-// Captured from the original evaluator before this refactor, using only the
-// invented fixtures above. These cover every result field and trajectory point.
+// Fixed current-algorithm results for the invented fixtures above. The v21
+// boundary deliberately changes native projections; all scalar and trajectory
+// fields remain exactly equal between whole and streamed evaluation.
 const originalDigests = {
- normal: 'bc3bb3da7976347d2ab6c26a2c7ad93c4984ac4b242186fa4e460e768e091ec9',
- reduction: 'cb7d4f12cf4bbf6b327e608037c0c16fd189d27aef41bf9a599469792724651b',
- preheat: '1cd4a9edf77e0a2a49a8a70a9e0ff6db88623b40b179ebdc6d4336581e015dfa',
- estimated: '60b5cb96180fa5e728c4a1b45bbbd93ae17cb85241fa6ac981075067bab7c475',
+ normal: 'ca8f0c673294cf1fac83000001141e29c609cb4b47ad598797465f40c30a50e0',
+ reduction: '6bb7747dd5e6bda2f7a169571771ba2ac4dc7814acb75514244c805abdbe8bab',
+ preheat: 'e8d83293c0c61a2f52f915caeb765ad933726b4aa4c1f4f93a8e78927c46ea35',
+ estimated: '2be3728dd91246c3f439c96a67c8ffe3560b55aade7c5a05b30d422004c46343',
 };
 const roundtrip = value => JSON.parse(JSON.stringify(value));
 for (const kind of Object.keys(originalDigests)) {
- test('streaming preserves the original '+kind+' evaluation exactly across restart', () => {
+ test('streaming preserves the current '+kind+' evaluation exactly across restart', () => {
   const args=fixture(kind), expected=evaluateCycle(args);
   assert.equal(createHash('sha256').update(JSON.stringify(expected)).digest('hex'),originalDigests[kind]);
   for (const size of [1,7,23,args.intervals.length]) {

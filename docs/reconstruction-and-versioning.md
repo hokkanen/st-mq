@@ -501,7 +501,10 @@ remain required.
   correction, then authorized further algorithm revisions needed to complete this
   same audit and rollout without repeated approval. Algorithm 20 includes
   unclipped observed response, free trials within a zero spending budget and
-  treatment-scoped forecast checks. The same backup, preservation, replay,
+  treatment-scoped forecast checks. Algorithm 21 bounds native demand projection
+  to its original observation span and phase, including AUX demand in the Normal
+  counterfactual. Original algorithm-20 forecasts retain their label and cannot
+  validate or calibrate the new predictor. The same backup, preservation, replay,
   rollback and coordinated-activation requirements apply. This remains a closed
   installation-only exception; ordinary startup rejects earlier algorithms.
 
@@ -530,7 +533,7 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v20-observed-response-and-free-experiments`, with
+The Home learning algorithm is `committed-house-v21-bounded-native-demand-projection`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 

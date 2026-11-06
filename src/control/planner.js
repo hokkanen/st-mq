@@ -213,15 +213,25 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
     ?Math.max(0,normalHistory.normalAuxiliaryKw):0;
   const trajectory = [];
 
-  // Native integral/reset behaviour is not identified by room temperature. Use
-  // measured trends only for the first hour; afterwards leave the projection
-  // unknown and use the explicitly uncertain heat-demand prior.
+  // A local native derivative supports at most its own observed span beyond
+  // the original endpoint. Afterwards the demand prior owns the forecast.
+  // The endpoint clock and phase remain fixed across polls and streamed pages.
+  const projectionEnd = key => {
+    const point = equipment.nativeProjection?.[key];
+    return number(point?.observedAt) && number(point.spanMs) && point.spanMs > 0 && point.spanMs <= HOUR / 2
+      && point.observedAt <= origin ? point.observedAt + point.spanMs : null;
+  };
+  const project = (key, value, trend, hours) => {
+    const point = equipment.nativeProjection?.[key], end = projectionEnd(key), at = origin + hours * HOUR;
+    return number(value) && number(trend) && end !== null && at <= end
+      ? value + trend * (at - point.observedAt) / HOUR : null;
+  };
   const projection = (hours, reference = false) => {
     const startingIntegral = reference ? referenceInitialState?.integral ?? null : initialIntegral;
-    const integral = number(startingIntegral) && hours <= 1
-      ? clamp(startingIntegral + (number(equipment.integralTrendPerHour) ? equipment.integralTrendPerHour : 0) * hours, -5000, 500) : null;
-    const supplyShortfallC = (!reference || equipment.observedPhase === 'normal') && number(equipment.supplyShortfallC) && hours <= 1
-      ? equipment.supplyShortfallC + (number(equipment.supplyShortfallTrendPerHour) ? equipment.supplyShortfallTrendPerHour : 0) * hours : null;
+    const rawIntegral = project('integral', startingIntegral, equipment.integralTrendPerHour, hours);
+    const integral = rawIntegral === null ? null : clamp(rawIntegral, -5000, 500);
+    const supplyShortfallC = !reference || equipment.observedPhase === 'normal'
+      ? project('shortfall', equipment.supplyShortfallC, equipment.supplyShortfallTrendPerHour, hours) : null;
     const compressorIntegralDemand = integral !== null && number(c.compressorIntegralA1)
       ? integral <= c.compressorIntegralA1 : null;
     const compressorHysteresisDemand = supplyShortfallC !== null && number(c.compressorHysteresisC)
@@ -243,17 +253,19 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
       responseRatio: phase === 'reduction' && number(c.scenarioReductionScale) ? c.scenarioReductionScale : null };
     // Current native integral/target readings describe the currently applied
     // phase only. They are not evidence about an unexecuted tariff threshold.
-    const nativeCompressorDemand = equipment.observedPhase === phase ? projected.nativeCompressorDemand : null;
+    const nativeProjection = equipment.observedPhase === phase ? projected
+      : { integral: null, supplyShortfallC: null, nativeCompressorDemand: null };
+    const nativeCompressorDemand = nativeProjection.nativeCompressorDemand;
     const duty = predictEquipmentDuty(model, before, { ...inputs, nativeCompressorDemand }, dt);
     inputs.compressorDuty = clamp(duty.compressorDuty + (c.scenarioDutyShift ?? 0), 0, 1);
     const preliminary = predictThermalStep(model, before, inputs, dt);
     const shortage = Math.max(0, targetC - preliminary.indoorC);
     const reserveShortage = Math.max(0, targetC - preliminary.reserveC);
-    const thresholdRisk = threshold !== null && projected.integral !== null
-      ? clamp((threshold - projected.integral + 180) / 360, 0, 1) : 0;
-    const hysteresisRisk = projected.supplyShortfallC !== null
-      ? clamp((projected.supplyShortfallC - c.auxHysteresisC + 5) / 10, 0, 1) : 0;
-    const capacityRisk = projected.nativeCompressorDemand === true
+    const thresholdRisk = threshold !== null && nativeProjection.integral !== null
+      ? clamp((threshold - nativeProjection.integral + 180) / 360, 0, 1) : 0;
+    const hysteresisRisk = nativeProjection.supplyShortfallC !== null
+      ? clamp((nativeProjection.supplyShortfallC - c.auxHysteresisC + 5) / 10, 0, 1) : 0;
+    const capacityRisk = nativeProjection.nativeCompressorDemand === true
       ? Math.max(0, preliminary.compressorDuty - 0.85) * shortage : 0;
     // Do not hold cumulative historical deficit forever after it has recovered.
     const priorRisk = preliminary.compressorDuty < 0.01 ? 0 : phase === 'recovery' ? clamp(shortage * 0.3 + reserveShortage * 0.15, 0.03, 0.8)
@@ -272,7 +284,7 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
     const auxKw = Math.min(c.auxRatedKw, Math.max(observedNormalAuxKw,
       c.auxRatedKw*risk*(model.energy?.auxiliaryRiskScale??1))*(c.scenarioAuxScale??1));
     return { ...predictThermalStep(model, before, { ...inputs, auxKw }, dt), auxKw,
-      auxiliaryRisk:Math.max(risk,observedNormalAuxKw/c.auxRatedKw),
+      nativeProjection, auxiliaryRisk:Math.max(risk,observedNormalAuxKw/c.auxRatedKw),
       source: estimateHeatPumpPerformance({ ...model.performance, supplyC: inputs.supplyC, brineC: inputs.brineC }),
       equipmentBasis: duty.basis, uncertaintyDuty: duty.uncertaintyDuty, recoveryCompressorOnly: compressorRecovery,
       recoveryHoldActive:policy?.recoveryHoldActive ?? false, recoveryHoldUntil:policy?.recoveryHoldUntil ?? null };
@@ -284,8 +296,9 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
     previousEnd = interval.end;
     let time = interval.start;
     while (time < interval.end) {
-      const boundaries = schedule ? [schedule.preheatStart, schedule.preheatEnd, schedule.reductionStart, schedule.reductionEnd,
-        schedule.recoveryHoldUntil ?? schedule.reductionEnd + c.recoveryHoldMinutes * 60_000] : [];
+      const boundaries = [...(schedule ? [schedule.preheatStart, schedule.preheatEnd, schedule.reductionStart, schedule.reductionEnd,
+        schedule.recoveryHoldUntil ?? schedule.reductionEnd + c.recoveryHoldMinutes * 60_000] : []),
+        ...['integral', 'shortfall'].map(projectionEnd).filter(number)];
       const returnAt = at(occupancy.returnAt);
       if (number(returnAt)) boundaries.push(returnAt);
       const end = Math.min(interval.end, time + STEP, ...boundaries.filter(v => v > time));
@@ -347,8 +360,8 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
       if (phase === 'preheat' && (!source.withinPlanningRange || !number(equipment.supplyC))) {
         severe = true; violation('preheat-source-range', end, source.supplyC, null);
       }
-      if (captureTrajectory) trajectory.push({ at: end, phase, requestedPhase, ...state, integral: projected.integral,
-        supplyShortfallC: projected.supplyShortfallC, nativeCompressorDemand: projected.nativeCompressorDemand,
+      if (captureTrajectory) trajectory.push({ at: end, phase, requestedPhase, ...state, integral: prediction.nativeProjection.integral,
+        supplyShortfallC: prediction.nativeProjection.supplyShortfallC, nativeCompressorDemand: prediction.nativeProjection.nativeCompressorDemand,
         sourceEstimate: prediction.source, auxiliaryRisk: prediction.auxiliaryRisk, powerKw: kw, spaceHeatingPowerKw, auxiliaryKw: auxKw,
         equipmentBasis: prediction.equipmentBasis, uncertaintyDuty: prediction.uncertaintyDuty,
         recoveryCompressorOnly: prediction.recoveryCompressorOnly,
@@ -393,7 +406,7 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
     penalty, discomfort, score: costCents + penalty * 17.5, severe, endState: state, terminalKwh, terminalCostCents,spaceHeatingCostCents,spaceHeatingKwh,
     uncertaintyCents, trajectory, recoveredAt, nativeEndState: nativeState,
     violations: [...violations.values()].map(({ excess, ...entry }) => entry),
-    integralBasis: 'At most one hour of measured-trend projection; later native integral unknown',
+    integralBasis: 'Native trend projection is limited to its observed span and phase; later native demand is estimated',
     auxiliaryBasis: 'Estimated space-heating auxiliary risk; DHW costs need separate observed attribution',
     basis: 'estimated-space-heating-only; matched DHW service is not established', completeRecoveryPredicted: schedule === null || recoveredAt !== null };
   return { result, continuation: next };

@@ -14,6 +14,8 @@ export function applyNativeControlTrends(sample, equipment, previous, contextRev
   const current = sample.nativeControl;
   current.contextRevision = contextRevision;
   current.slopes = { integralPerHour: null, shortfallCPerHour: null };
+  current.spans = { integralMs: null, shortfallMs: null };
+  equipment.nativeProjection = { integral: null, shortfall: null };
   equipment.integralTrendPerHour = equipment.supplyShortfallTrendPerHour = null;
   const before = previous?.nativeControl;
   if (!before || before.contextRevision !== contextRevision
@@ -22,17 +24,26 @@ export function applyNativeControlTrends(sample, equipment, previous, contextRev
   // A target step changes the integral and water shortfall by instruction;
   // neither change establishes continuing cooling or a sustained demand slope.
   if (!sameSource(current.target, before.target) || current.target.value !== before.target.value) return;
-  const slope = (point, prior, retained, direction = 1) => {
+  const slope = (point, prior, retained, retainedSpan, direction = 1) => {
     if (!sameSource(point, prior)) return null;
-    // A routine poll preserves the same dated derivative, without extending
-    // either point's freshness. A same-clock changed value is contradictory.
-    if (point.at === prior.at && point.value === prior.value) return finite(retained) ? retained : null;
-    if (!(point.at > prior.at && point.at - prior.at <= HOUR / 2)) return null;
-    return point.value === prior.value ? 0 : direction * (point.value - prior.value) * HOUR / (point.at - prior.at);
+    // The original point pair owns both rate and extrapolation span. Polling
+    // the same report cannot extend either observation or forecast validity.
+    if (point.at === prior.at && point.value === prior.value)
+      return finite(retained) && finite(retainedSpan) ? { rate: retained, spanMs: retainedSpan } : null;
+    const spanMs = point.at - prior.at;
+    if (!(spanMs > 0 && spanMs <= HOUR / 2)) return null;
+    return { rate: direction * (point.value - prior.value) * HOUR / spanMs, spanMs };
   };
-  current.slopes.integralPerHour = equipment.integralTrendPerHour = slope(current.integral, before.integral, before.slopes?.integralPerHour);
-  current.slopes.shortfallCPerHour = equipment.supplyShortfallTrendPerHour = slope(current.supply, before.supply,
-    before.slopes?.shortfallCPerHour, -1);
+  const integral = slope(current.integral, before.integral, before.slopes?.integralPerHour, before.spans?.integralMs);
+  const shortfall = slope(current.supply, before.supply, before.slopes?.shortfallCPerHour, before.spans?.shortfallMs, -1);
+  for (const [key, value, point, slopeKey, spanKey] of [
+    ['integral', integral, current.integral, 'integralPerHour', 'integralMs'],
+    ['shortfall', shortfall, current.supply, 'shortfallCPerHour', 'shortfallMs'],
+  ]) if (value) {
+    current.slopes[slopeKey] = value.rate; current.spans[spanKey] = value.spanMs;
+    equipment[key === 'integral' ? 'integralTrendPerHour' : 'supplyShortfallTrendPerHour'] = value.rate;
+    equipment.nativeProjection[key] = { observedAt: point.at, spanMs: value.spanMs };
+  }
 }
 
 export function controlObservations({ latest, now, observations, outlook, checkpoint, phase, roomBoostC = 0, config, h66 }) {
