@@ -83,6 +83,7 @@ async function rebuildingFixture(t) {
 test('missing model reconstruction keeps committed status and Automatic/Pause available without exposing a prior model', { timeout: 10_000 }, async t => {
   const f = await rebuildingFixture(t), { engine, store } = f;
   try {
+    assert.equal(engine.lastLoopCompletedAt, START, 'the conservative control turn completes while replay remains blocked');
     const view = engine.status();
     assert.equal(view.learning.status, 'rebuilding');
     assert.equal(view.learning.adaptive, null);
@@ -113,6 +114,7 @@ test('manual reduction and its Pause expiry restore native duty while canonical 
     assert.equal(engine.executor.status().manualRequested?.phase, 'reduction', 'A valid manual Pause choice remains in force');
     f.advance(61_000);
     await engine.update(); await engine.dispatchPending;
+    assert.equal(engine.lastLoopCompletedAt, START + 61_000, 'restoration during rebuilding commits a real control update');
     assert.equal(engine.executor.status().legacyOutstanding, false);
     assert.equal(engine.executor.status().manualRequested, null);
     assert.equal(engine.automationStatus().home.enabled, true, 'Pause expiry restores saved Automatic intent');
@@ -132,6 +134,20 @@ test('Automatic and Pause return a complete view after a live control edit', asy
     assert.equal(view.learning.adaptive.journalCursor, engine.checkpoint.journalCursor);
     assert.equal(store.getState('automation:mqtt').features.home.enabled, enabled);
   }
+});
+
+test('learning-only and cancelled worker updates do not renew controller completion', async t => {
+  const { engine, advance } = await fixture(t);
+  await engine.update(); await engine.startupLearningFlight;
+  const completedAt = engine.lastLoopCompletedAt;
+  assert.equal(completedAt, START);
+  advance(60_000);
+  await engine.refreshLearning();
+  assert.equal(engine.lastLoopCompletedAt, completedAt);
+  await engine.update({ isCurrent: () => false });
+  assert.equal(engine.lastLoopCompletedAt, completedAt);
+  await engine.update();
+  assert.equal(engine.lastLoopCompletedAt, START + 60_000);
 });
 
 test('status retains the last complete model and current saved intent during a live update', async t => {
@@ -350,6 +366,7 @@ test('a failed input transaction cannot publish its computed model or dispatch a
   const { store, engine, advance } = await fixture(t);
   await engine.update(); advance();
   const prior = engine.checkpoint, saved = store.getState('adaptive:mqtt'), head = store.learningJournalHead('mqtt');
+  const completedAt = engine.lastLoopCompletedAt;
   const calculate = engine.liveLearning.calculate.bind(engine.liveLearning), request = store.writer.request.bind(store.writer);
   let rejectSeal = false, rejected = false, commands = 0;
   engine.executor.execute = () => { commands++; return { status: 'paused', sent: false }; };
@@ -372,6 +389,7 @@ test('a failed input transaction cannot publish its computed model or dispatch a
   assert.deepEqual(store.getState('adaptive:mqtt'), saved);
   assert.equal(store.learningJournalHead('mqtt'), head);
   assert.equal(commands, 0);
+  assert.equal(engine.lastLoopCompletedAt, completedAt, 'failed worker admission cannot publish loop completion');
   await engine.update();
   assert(engine.checkpoint.journalCursor > head);
   assert.deepEqual(engine.checkpoint, replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }));

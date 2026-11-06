@@ -21,7 +21,7 @@ function fixture(options = {}) {
     getState: key => state.get(key) ?? null, setState: (key, value) => state.set(key, structuredClone(value)),
     writeQueue: { closed: false },
     writeHealth: createWriteHealth(() => now, () => ({ pending: 0, queued: 0, activeJobs: 0, waitingSince: null })) };
-  const engine = { config: { input: 'mqtt' }, latestStatus: { now } };
+  const engine = { config: { input: 'mqtt' }, latestStatus: { now }, lastLoopCompletedAt: now };
   const parameter = { observedThisRun: true, signal: 'indoor_temperature', lastPollAt: now,
     freshness: { status: 'held', sourceObservedAt: now, maxAgeMs: null } };
   const current = { input: 'mqtt', recording: { parameters: [], exactParameters: [parameter] } };
@@ -131,10 +131,63 @@ test('held readings do not need new observation rows and a stale tick is not ref
   assert.equal((await f.status()).recording.state, 'ok');
   f.advance(4 * MINUTE); f.current.now = f.now();
   assert.equal((await f.status()).recording.state, 'stalled');
-  f.engine.latestStatus.now = f.now();
+  f.engine.lastLoopCompletedAt = f.now();
   assert.equal((await f.status()).recording.state, 'ok');
   f.parameter.freshness = { status: 'fresh', sourceObservedAt: start, maxAgeMs: MINUTE };
   assert.equal((await f.status()).recording.state, 'source-unavailable');
+});
+
+test('invalidating the dashboard cache preserves committed loop evidence without hiding a later stall', async () => {
+  const f = fixture();
+  await f.status();
+  f.advance(10 * MINUTE);
+  f.engine.lastLoopCompletedAt = f.now();
+  f.engine.latestStatus = { now: f.now() };
+  f.engine.committedStatus = { now: f.now() };
+  assert.equal((await f.status()).recording.state, 'ok');
+  f.engine.latestStatus = null;
+  const invalidated = await f.status();
+  assert.equal(invalidated.recording.state, 'ok');
+  assert.equal(invalidated.recording.lastLoopCompletedAt, f.now());
+  f.advance(3 * MINUTE + 1);
+  f.current.now = f.now();
+  f.engine.committedStatus.now = f.now();
+  const stalled = await f.status();
+  assert.equal(stalled.recording.state, 'stalled', 'fresh display clocks cannot stand in for a controller update');
+  assert.equal(stalled.recording.lastLoopCompletedAt, invalidated.recording.lastLoopCompletedAt);
+});
+
+test('a future completion receipt cannot mask a stalled loop and a zero receipt remains valid', async () => {
+  const f = fixture();
+  f.engine.lastLoopCompletedAt = f.now() + 60 * MINUTE;
+  f.engine.latestStatus.now = f.engine.lastLoopCompletedAt;
+  await f.status();
+  f.advance(4 * MINUTE);
+  const future = await f.status();
+  assert.equal(future.recording.lastLoopCompletedAt, null);
+  assert.equal(future.recording.state, 'stalled');
+  f.engine.lastLoopCompletedAt = 0;
+  const zero = await f.status();
+  assert.equal(zero.recording.lastLoopCompletedAt, 0);
+  assert.equal(zero.recording.state, 'stalled');
+});
+
+test('startup loop age belongs to the engine rather than the first health observation', async () => {
+  const fresh = fixture();
+  fresh.advance(10 * MINUTE);
+  fresh.engine.loopStartedAt = fresh.now();
+  fresh.engine.lastLoopCompletedAt = null;
+  fresh.engine.latestStatus = null;
+  fresh.parameter.freshness = { status: 'unavailable' };
+  assert.equal((await fresh.status()).recording.state, 'starting', 'an older health service cannot age a new engine');
+  fresh.advance(3 * MINUTE + 1);
+  assert.equal((await fresh.status()).recording.state, 'stalled');
+
+  const late = fixture();
+  late.engine.loopStartedAt = late.now() - 4 * MINUTE;
+  late.engine.lastLoopCompletedAt = null;
+  late.engine.latestStatus = null;
+  assert.equal((await late.status()).recording.state, 'stalled', 'a newly observed engine cannot hide a real startup stall');
 });
 
 test('Garage intent is not an acquisition stream and expired pump readback still warns', async t => {
@@ -145,7 +198,7 @@ test('Garage intent is not an acquisition stream and expired pump readback still
   recorder.record({source:'mqtt-temperature',device:'invented-indoor',signal:'indoor_temperature',value:20,
     unit:'degC',sourceTime:start,receivedAt:start,quality:['good']});
   f.engine.recordingSourceStatus = now => recorder.sourceStatus(now);
-  f.advance(2 * 60 * MINUTE); f.engine.latestStatus.now = f.now();
+  f.advance(2 * 60 * MINUTE); f.engine.lastLoopCompletedAt = f.now();
   const healthy = await f.status();
   assert.equal(healthy.recording.state, 'ok');
   assert.equal(healthy.recording.sources.attentionStreams, 0);
@@ -161,11 +214,11 @@ test('Garage intent is not an acquisition stream and expired pump readback still
 
 test('a live loop that never completed warns, while an intentional replica never expects local recording', async () => {
   const f = fixture({ filesystem: async () => capacity(GIB / 2) });
-  f.engine.latestStatus = null; f.current.recording = { parameters: [] };
+  f.engine.lastLoopCompletedAt = null; f.engine.latestStatus = null; f.current.recording = { parameters: [] };
   assert.equal((await f.status()).recording.state, 'starting');
   f.advance(4 * MINUTE);
   assert.equal((await f.status()).recording.state, 'stalled');
-  f.engine.latestStatus = { now: f.now() };
+  f.engine.lastLoopCompletedAt = f.now(); f.engine.latestStatus = { now: f.now() };
   assert.equal((await f.status()).recording.state, 'source-unavailable', 'an active loop without any confirmed source still needs attention');
   const replica = await f.status({ readOnly: true });
   assert.equal(replica.scope, 'snapshot'); assert.equal(replica.recording.state, 'read-only');
@@ -178,7 +231,7 @@ test('initial unavailable reports wait for sources, but losing usable evidence w
   let result = await f.status();
   assert.equal(result.recording.state, 'starting');
   assert.deepEqual(result.attention, []);
-  f.advance(3 * MINUTE); f.engine.latestStatus.now = f.now();
+  f.advance(3 * MINUTE); f.engine.lastLoopCompletedAt = f.now();
   result = await f.status();
   assert.equal(result.recording.state, 'source-unavailable');
   assert.equal(result.recording.detail, 'No usable source readings. Check source connections.');
@@ -243,7 +296,7 @@ test('source exceptions describe observed streams without exposing private ident
   f.current.recording.parameters[0].signal = 'private_household_label';
   f.current.recording.parameters[0].unit = 'private-unit';
   f.current.recording.parameters[0].freshness = { status: 'recorded-interval', sourceObservedAt: start };
-  f.advance(6 * MINUTE); f.engine.latestStatus.now = f.now();
+  f.advance(6 * MINUTE); f.engine.lastLoopCompletedAt = f.now();
   const expired = (await f.status()).recording.sources.issues[0];
   assert.equal(expired.status, 'stale');
   assert.equal(expired.label, 'Recorded measurement');
@@ -336,12 +389,12 @@ test('replacement engines and resumed local recording receive their own initial 
   assert.equal((await f.status()).recording.state, 'ok');
   f.advance(10 * MINUTE);
   f.parameter.freshness = { status: 'unavailable' };
-  const replacement = { config: { input: 'mqtt' }, latestStatus: { now: f.now() } };
+  const replacement = { config: { input: 'mqtt' }, latestStatus: { now: f.now() }, lastLoopCompletedAt: f.now() };
   assert.equal((await f.status({ engine: replacement })).recording.state, 'starting');
-  f.advance(3 * MINUTE); replacement.latestStatus.now = f.now();
+  f.advance(3 * MINUTE); replacement.lastLoopCompletedAt = f.now();
   assert.equal((await f.status({ engine: replacement })).recording.state, 'source-unavailable');
   assert.equal((await f.status({ engine: replacement, readOnly: true })).recording.state, 'read-only');
-  f.advance(10 * MINUTE); replacement.latestStatus.now = f.now();
+  f.advance(10 * MINUTE); replacement.lastLoopCompletedAt = f.now();
   assert.equal((await f.status({ engine: replacement })).recording.state, 'starting');
 });
 
@@ -396,7 +449,7 @@ test('malformed source metadata cannot hide a known write failure or stalled loo
   assert.equal((await f.status()).recording.state, 'write-failed');
   f.store.writeHealth.success(); f.advance(3 * MINUTE + 1);
   assert.equal((await f.status()).recording.state, 'stalled');
-  f.engine.latestStatus.now = f.now();
+  f.engine.lastLoopCompletedAt = f.now();
   assert.equal((await f.status()).recording.state, 'unknown');
 });
 
@@ -406,7 +459,7 @@ test('nullable source clocks, unavailable diagnostics and supported freshness po
     f.parameter.lastPollAt = null;
     f.parameter.freshness = { status, sourceObservedAt: null, maxAgeMs: null };
     assert.equal((await f.status()).recording.state, 'starting');
-    f.advance(3 * MINUTE); f.engine.latestStatus.now = f.now();
+    f.advance(3 * MINUTE); f.engine.lastLoopCompletedAt = f.now();
     assert.equal((await f.status()).recording.state, 'source-unavailable');
   }
   for (const status of ['fresh', 'held', 'held-attention', 'last-reported', 'recorded-interval']) {
@@ -436,7 +489,7 @@ test('a hung filesystem refresh cannot relabel old free-space evidence as a curr
   let hung = false;
   const f = fixture({ filesystem: () => hung ? new Promise(() => {}) : Promise.resolve(capacity(GIB / 2)) });
   assert.equal((await f.status()).disk.state, 'critical');
-  hung = true; f.advance(3 * MINUTE); f.engine.latestStatus.now = f.now();
+  hung = true; f.advance(3 * MINUTE); f.engine.lastLoopCompletedAt = f.now();
   const result = await f.status();
   assert.equal(result.disk.state, 'unknown'); assert.equal(result.disk.freeBytes, null);
   assert(result.attention.some(row => row.id === 'disk-check' && row.severity === 'critical'));

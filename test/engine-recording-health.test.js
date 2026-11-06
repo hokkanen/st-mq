@@ -27,6 +27,36 @@ function fixture(t) {
     status:()=>health.status({store,engine,current:engine.latestStatus})};
 }
 
+test('committed loop completion survives cache invalidation and public status reads', async t => {
+  const f = fixture(t);
+  assert.equal(f.engine.loopStartedAt, START);
+  assert.equal(f.engine.lastLoopCompletedAt, null);
+  f.put(0);
+  await f.store.runWrite(() => f.engine.tick());
+  const completedAt = f.engine.lastLoopCompletedAt;
+  assert.equal(completedAt, f.now());
+  f.advance(2 * MINUTE); f.put(0);
+  assert.equal(f.engine.status().now, f.now());
+  assert.equal(f.engine.lastLoopCompletedAt, completedAt);
+  f.engine.latestStatus = null;
+  // A cached view can be absent while its replacement is still being prepared.
+  f.engine.statusRefreshPending = true;
+  const healthy = await f.status();
+  assert.equal(healthy.recording.state, 'ok');
+  assert.equal(healthy.recording.lastLoopCompletedAt, completedAt);
+  f.advance(MINUTE + 1); f.put(0);
+  assert.equal(f.engine.status().now, f.now());
+  assert.equal((await f.status()).recording.state, 'stalled');
+  f.engine.statusRefreshPending = false;
+  await f.store.runWrite(() => {
+    f.engine.tick();
+    assert.equal(f.engine.lastLoopCompletedAt, completedAt, 'provisional work cannot publish completion');
+    f.advance(1000);
+  });
+  assert.equal(f.engine.lastLoopCompletedAt, f.now(), 'completion is observed after COMMIT, not at capture time');
+  assert.equal((await f.status()).recording.state, 'ok');
+});
+
 test('an expired Open-Meteo stream becomes standby only while committed FMI evidence is usable', async t => {
   const f = fixture(t);
   const put = source => f.engine.ingest({ source, device: `synthetic-${source}`, signal: 'outdoor_temperature',

@@ -240,5 +240,6 @@ test('asynchronous status refresh at an occupancy deadline retains the full publ
   const view = result.app.engine.status();
   assert.equal(view.settings.occupancy.mode, 'occupied');
   assert.equal(view.now, INITIAL + 67_000, 'Public projection observes the clock after the deadline-triggered tick');
+  assert.equal(result.app.engine.lastLoopCompletedAt, INITIAL + 67_000, 'loop completion follows the actual COMMIT');
   assert.equal(view.observations.upstairs.observedAt, INITIAL, 'Projection cannot renew the recovered source clock');
 });

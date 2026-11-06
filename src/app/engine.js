@@ -539,6 +539,8 @@ export class Engine {
     this.writes = createWriteScope({ runWrite: (operation, options) => store.runWrite(operation, options) });
     this.config = config;
     this.clock = clock;
+    this.loopStartedAt = clock();
+    this.lastLoopCompletedAt = null;
     this.canControl = canControl;
     this.cacheIdentity = cacheIdentity;
     const { backupDirectory, fullVerificationIntervalMs, ...recorderConfig } = config.recording ?? {};
@@ -1358,6 +1360,7 @@ export class Engine {
               this.collectingLearningCheckpoint = false;
               this.persistLearningCheckpoint(cache ?? pendingCache);
             }
+            if (step.done && !learningOnly) this.recordLoopCompletion();
           } finally { this.collectingLearningCheckpoint = false; this.pendingLearningCheckpoint = null; }
         }, { isCurrent: current });
         await advance();
@@ -1395,7 +1398,9 @@ export class Engine {
     if (this.rebuildingUpdate) return this.rebuildingUpdate;
     const operation = this.runWrite(() => {
       this.preserveTickState();
-      return this.tickUpdate({ rebuilding: true });
+      const view = this.tickUpdate({ rebuilding: true });
+      this.recordLoopCompletion();
+      return view;
     }, { isCurrent: current }).then(view => {
       // The first public view and each manual intent have their own COMMIT.
       // Reconstructing learning is independent of that availability boundary.
@@ -1435,11 +1440,17 @@ export class Engine {
       const result = this.tickUpdate();
       this.collectingLearningCheckpoint = false;
       if (this.pendingLearningCheckpoint) this.persistLearningCheckpoint(this.pendingLearningCheckpoint);
+      this.recordLoopCompletion();
       return result;
     } finally {
       this.collectingLearningCheckpoint = false;
       this.pendingLearningCheckpoint = null;
     }
+  }
+  recordLoopCompletion() {
+    // Dashboard invalidation and reads are independent of a completed control
+    // turn. Publish this process-local clock only after its writes commit.
+    this.store.afterCommit(() => { this.lastLoopCompletedAt = this.clock(); });
   }
   preserveTickState() {
     if (this.store.transactionDepth) {

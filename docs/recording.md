@@ -1711,6 +1711,12 @@ transaction, state and event writes report sanitized failure categories; success
 no-op updates do not prove that writes resumed. A recovered failure remains visible
 for 24 hours within the same application run because a recording gap may remain.
 The update loop is considered stalled after three minutes without a completed tick.
+Its process-local completion clock advances only after a complete controller update
+commits, including the conservative updates used during model reconstruction.
+Dashboard-cache invalidation, status reads, learning-only work and rolled-back
+updates do not renew or erase that clock. A new engine starts without a completion
+receipt; an invalid or future-dated receipt cannot suppress the startup stall check.
+The startup deadline follows engine creation, even if health is first checked later.
 Unchanged readings, held/event-only values and durable open energy intervals are
 not evidence of a stalled recorder. Before any usable source evidence has arrived,
 the first three minutes of a recording run show **Starting recording**, including

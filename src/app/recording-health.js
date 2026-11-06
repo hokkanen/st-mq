@@ -309,16 +309,18 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     }
     base.writer = storage?.writer ?? writerStatus(store, writes);
     base.runtimeTiming = runtimeTimingStatus(engine);
+    const engineStartedAt = receiptTime(engine?.loopStartedAt) && engine.loopStartedAt <= now ? engine.loopStartedAt : null;
     if (!recordingRun || recordingRun.engine !== engine || recordingRun.store !== store) {
-      recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : startedAt, usableSourceSeen: false };
+      recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : engineStartedAt ?? startedAt, usableSourceSeen: false };
       recordingScopeSeen = true;
     }
-    const tickAt = engine?.latestStatus?.now;
+    const completedAt = engine?.lastLoopCompletedAt;
+    const tickAt = receiptTime(completedAt) && completedAt <= now ? completedAt : null;
     let recording = current?.recording;
     try { if (engine?.recordingSourceStatus) recording = engine.recordingSourceStatus(now) ?? null; }
     catch { recording = null; }
     const parameters = recordingParameters(recording, now);
-    base.lastLoopCompletedAt = receiptTime(tickAt) && tickAt <= now ? tickAt : null;
+    base.lastLoopCompletedAt = tickAt;
     let providers;
     try { providers = sourceFeedHealth({ store, parameters, outdoorCandidates: engine?.outdoorCandidates, now }); }
     catch { providers = { feeds: {}, issues: [], backupChecks: {} }; }
@@ -336,7 +338,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
     if (writes?.queue?.waitingSince != null) return { ...base, state: 'write-waiting',
       detail: 'Storage is busy. Received readings are waiting to be saved; control requests wait for durable intent before dispatch.' };
-    if (engine && now - (Number.isFinite(tickAt) ? tickAt : recordingRun.startedAt) > 3 * MINUTE)
+    if (engine && now - (tickAt ?? engineStartedAt ?? recordingRun.startedAt) > 3 * MINUTE)
       return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
     if (parameters === null) return { ...base, state: 'unknown', detail: 'Recording source status could not be read. Refresh to check again.' };
     // Initial unavailable diagnostic rows are still startup, not proof that a
