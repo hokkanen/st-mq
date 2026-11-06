@@ -36,6 +36,7 @@ const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heatin
   'delivered-cooling-lower-limit': 'The current thermal state required ending reduction to protect the lower comfort limit.',
   'configured-preheat-limit-reached': 'The configured cumulative preheat duration was reached; reduction was retained.',
   'configured-reduction-limit-changed': 'The permitted remaining reduction was shortened to the changed configured limit.',
+  'recovery-start-established': 'The recorded recovery start established the executed reduction end.',
   'remaining-preheat-rescheduled': 'The remaining preheat window was adjusted while preserving the reduction window.',
   'ending-cycle-costs-less': 'A complete comparison found ending treatment cheaper, including restoration and recovery.',
   'awaiting-normal-temperature-reference': 'The normal occupied temperature reference was not established.',

@@ -67,7 +67,7 @@ export const withoutFurtherPreheat = (schedule, now) => ({ ...schedule,
   preheatStart: Math.min(schedule.preheatStart, now), preheatEnd: Math.min(schedule.preheatEnd, now) });
 
 export const endTreatmentNow = (schedule, now) => ({ ...withoutFurtherPreheat(schedule, now),
-  reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: now });
+  reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: Math.min(schedule.reductionEnd, now) });
 
 /** Temperature of delivered/stored heat after removing the current action now.
  * No hypothetical remaining preheat, latency padding or error-envelope veto. */

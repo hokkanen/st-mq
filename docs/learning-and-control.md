@@ -444,6 +444,10 @@ identity is neither a saved Pause nor a confirmed equipment change.
 The original forecast and cycle definition remain immutable. The execution
 schedule and up to sixteen recent adjustments describe the current remaining
 intent; committed execution intervals retain the complete actual phase history.
+Once recovery starts, a real reduction's executed end follows that committed
+recovery boundary. Later duration-limit checks cannot lengthen ended treatment.
+Reconciliation preserves the original plan and recovery deadlines and records an
+adjustment; cancelled preheat retains its zero-length reduction.
 Missing temperature, energy or routing evidence can leave an outcome unassessed
 without ending control. A long observation gap is recorded as missing coverage,
 not extrapolated measured consumption. Recovery assessment and its timeout never

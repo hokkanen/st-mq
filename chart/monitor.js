@@ -144,6 +144,7 @@ const reasons = {
   'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit',
   'configured-preheat-limit-reached': 'Preheat ended at its duration limit; reduction retained',
   'configured-reduction-limit-changed': 'The reduction was shortened to match the changed duration limit',
+  'recovery-start-established': 'The executed reduction end follows the recorded start of recovery',
   'remaining-preheat-rescheduled': 'The remaining preheat was adjusted while preserving the reduction schedule',
   'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery',
   'unvalidated-thermal-model': 'Learning how the house holds and recovers heat',

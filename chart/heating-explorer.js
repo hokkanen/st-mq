@@ -31,6 +31,7 @@ const reasonLabels = {
   'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit. Recovery is requested.',
   'configured-preheat-limit-reached': 'Preheat ended at its configured duration limit. The reduction remains scheduled.',
   'configured-reduction-limit-changed': 'The remaining reduction was shortened to match the changed duration limit.',
+  'recovery-start-established': 'The executed reduction end follows the recorded start of recovery. Its original plan remains unchanged.',
   'remaining-preheat-rescheduled': 'The remaining preheat window was adjusted while preserving the reduction schedule.',
   'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery.',
   'normal-operation-preferred': 'Normal heating is preferred among the evaluated alternatives.',

@@ -445,6 +445,89 @@ test('a previous cycle AUX release does not grant native AUX recovery to a new o
   assert.equal(r.engine.executor.status().recoveryAuxReleasedAt, null);
 });
 
+for (const changedDuringRecovery of [false, true]) test(`recovery cannot extend an ended reduction${changedDuringRecovery ? ' after a duration-limit edit' : ' whose acknowledgement was late'}`, async t => {
+  const r = setup(t);
+  if (!changedDuringRecovery) r.engine.control.maxReductionHours = .25;
+  r.plan(); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active().plan.schedule);
+  r.advance(15 * 60_000 + 250); r.engine.tick(); await r.settle();
+  const first = r.engine.cycles.active(), endedAt = first.recoveryStartedAt, holdUntil = first.recoveryHoldUntil;
+  assert.equal(endedAt, r.now);
+  assert.equal(first.executionSchedule.reductionEnd, endedAt);
+  assert.equal(r.engine.status().decision.phase, 'recovery');
+  if (changedDuringRecovery) r.engine.control.maxReductionHours = .25;
+  for (let i = 0; i < 3; i++) {
+    r.advance(60_000); r.engine.tick(); await r.settle();
+    const cycle = r.engine.cycles.active();
+    assert.equal(cycle.executionSchedule.reductionEnd, endedAt, 'a completed interval cannot advance with the polling clock');
+    assert.equal(cycle.recoveryStartedAt, endedAt);
+    assert.equal(cycle.recoveryHoldUntil, holdUntil);
+    assert.deepEqual(cycle.plan.schedule, original);
+    assert.equal(r.engine.status().decision.phase, 'recovery');
+  }
+  assert.equal(r.store.events().some(row => row.type === 'heating-plan-adjusted'
+    && row.payload.reason === 'configured-reduction-limit-changed'), false);
+});
+
+test('restart reconciles a drifted derived end from committed recovery without rewriting its forecast or hold', async t => {
+  const r = setup(t); r.engine.control.maxReductionHours = .25;
+  r.plan(); r.engine.tick(); await r.settle();
+  r.advance(15 * 60_000 + 250); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active()), driftedEnd = r.now + 5 * 60_000;
+  const drifted = structuredClone(original);
+  drifted.executionSchedule.reductionEnd = driftedEnd;
+  r.engine.cycles.save(drifted);
+  clearTimeout(r.engine.executor.timer);
+  const restarted = new Engine({ store: r.store, config: r.config, clock: () => r.now, commandTransport: r.transport });
+  t.after(async () => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; await restarted.closeFireplace(); });
+  r.advance(1000); restarted.tick(); await restarted.dispatchPending;
+  const repaired = restarted.cycles.active();
+  assert.equal(repaired.id, original.id);
+  assert.equal(repaired.executionSchedule.reductionEnd, original.recoveryStartedAt);
+  assert.equal(repaired.recoveryStartedAt, original.recoveryStartedAt);
+  assert.equal(repaired.recoveryHoldUntil, original.recoveryHoldUntil);
+  assert.deepEqual(repaired.plan, original.plan, 'original prediction and forecast clocks remain immutable');
+  const adjustment = repaired.adjustments.at(-1);
+  assert.equal(adjustment.reason, 'recovery-start-established');
+  assert.equal(adjustment.previous.reductionEnd, driftedEnd, 'the superseded derived boundary remains auditable');
+  assert.equal(restarted.status().decision.phase, 'recovery');
+});
+
+for (const minutes of [10, 20]) test(`a duration-limit edit at minute ${minutes} still shortens remaining reduction without inventing an earlier stop`, async t => {
+  const r = setup(t); r.engine.control.maxReductionHours = .5;
+  const plan = r.plan(); plan.schedule.reductionEnd = r.now + 30 * 60_000;
+  r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active());
+  r.advance(minutes * 60_000); r.engine.control.maxReductionHours = .25;
+  r.engine.tick(); await r.settle();
+  const cycle = r.engine.cycles.active();
+  assert.equal(cycle.executionSchedule.reductionEnd, original.plan.schedule.reductionStart + Math.max(15, minutes) * 60_000);
+  assert.deepEqual(cycle.plan.schedule, original.plan.schedule);
+  assert.equal(r.engine.status().decision.phase, minutes < 15 ? 'reduction' : 'recovery');
+});
+
+test('recorded recovery never fabricates reduction after cancelled preheat', t => {
+  const r = setup(t), plan = r.plan();
+  Object.assign(plan.schedule, { preheatEnd: r.now + 15 * 60_000,
+    reductionStart: r.now + 15 * 60_000, reductionEnd: r.now + 30 * 60_000 });
+  r.engine.pendingPlan = null;
+  r.engine.cycles.start(plan, { timestamp: r.now, indoorC: 21.2, phase: 'preheat' }, r.now, { executed: true });
+  r.advance(1000); r.engine.cycles.shorten(r.now, 'admin-cancelled-scenario');
+  const cycle = r.engine.cycles.active();
+  cycle.recoveryStartedAt = r.now + 1000;
+  cycle.recoveryHoldUntil = cycle.recoveryStartedAt + HOUR;
+  r.engine.cycles.save(cycle);
+  r.advance(60_000);
+  const decision = r.engine.continueHeating({ now: r.now, observations: { indoor: { value: 21.2, observedAt: r.now } },
+    outlook: { prices: [], forecast: [] }, checkpoint: r.engine.checkpoint, settings: r.engine.settings,
+    planningConfig: r.engine.control, planningState: null, equipment: {},
+    normal: reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null }) });
+  const saved = r.engine.cycles.active();
+  assert.equal(saved.executionSchedule.reductionEnd, saved.executionSchedule.reductionStart);
+  assert.equal(decision.phase, 'recovery');
+  assert.equal(saved.adjustments.some(row => row.reason === 'recovery-start-established'), false);
+});
+
 test('a restarted cycle retains its identity and reduction despite missing startup feeds', async t => {
   const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
   const before = r.engine.cycles.active(); assert.ok(before);

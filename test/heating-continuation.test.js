@@ -73,6 +73,14 @@ test('ending preheat preserves the complete reduction and original schedule', ()
   assert.deepEqual(schedule, original);
 });
 
+test('ending already completed treatment cannot create a later reduction boundary', () => {
+  const { schedule } = fixture();
+  assert.deepEqual(endTreatmentNow(schedule, schedule.reductionEnd + HOUR), schedule);
+  const cancelled = endTreatmentNow(schedule, schedule.preheatStart - HOUR);
+  assert.equal(cancelled.reductionStart, cancelled.reductionEnd);
+  assert.deepEqual(endTreatmentNow(cancelled, cancelled.reductionEnd + HOUR), cancelled);
+});
+
 test('missing indoor reports retain the runtime estimate of delivered heat without replaying planned actions over it', () => {
   const { input, plan } = fixture();
   const args = continuationInput({ ...input, now: input.now + HOUR / 2,
