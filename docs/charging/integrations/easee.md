@@ -433,8 +433,9 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   for charging. A scheduled wait, saved stop, missing fresh local readiness or
   incomplete takeover cannot authorize startup. This gate covers outgoing remote
   starts and incoming authorization/start requests for the private virtual tag.
-  Virtual-tag authorization replies expire immediately from the charger cache;
-  accepted transaction retries keep their original durable reply. Configured RFID
+  Virtual-tag authorization replies expire immediately; expiry cannot guarantee
+  removal of the tag from a charger's authorization cache. Accepted transaction
+  retries keep their original durable reply. Configured RFID
   tags retain their independent authorization rules.
 
   If the controller refused its own automatic transaction and the charger
@@ -963,7 +964,7 @@ References checked for this implementation: Easee's
 and [firmware 344 configuration keys](https://developer.easee.com/docs/supported-config-keys).
 
 Transaction acknowledgements are committed to the current SQLite state before
-authorization is returned. The compact current ledger uses strict version 4,
+authorization is returned. The compact current ledger uses strict version 5,
 binds to the configured charger and charge-point identity, stores hashes instead
 of plaintext tags, and keeps up to 128 transaction records plus a start-time
 watermark. Retries after a socket
@@ -971,7 +972,7 @@ reconnect, message-cache eviction or process restart receive the original
 transaction ID. Conflicting starts/stops, unknown stops and starts older than the
 retained watermark are rejected. A changed charger association or malformed
 ledger blocks the endpoint before mutation. Earlier development ledgers are not
-migrated or decoded as version 4; inspect the installation and use a deliberate
+migrated or decoded as version 5; inspect the installation and use a deliberate
 fresh setup rather than allowing another charger to inherit it.
 Storage failure blocks new Authorize and StartTransaction replies. This compact
 ledger is protocol identity state, not a duplicate session-energy series. A reset
@@ -1105,8 +1106,9 @@ These bounded in-memory diagnostics contain only reasons, booleans and clocks;
 they grant no permission and do not disclose connection or recovery identifiers.
 
 In plug-and-charge mode, connection setup also reads the five native authorization
-and cache flags with `GetConfiguration`. Diagnostics retain only the requested
-boolean values and their receipt time for the current connection. Missing,
+and cache flags in separate single-key `GetConfiguration` requests, respecting
+the native charger's one-key limit. Diagnostics retain only the requested
+boolean values and each read's original receipt time for the current connection. Missing,
 conflicting or unsupported values stay unknown. The read does not change native
 RFID/offline policy or authorize a start; it helps distinguish a cached native
 authorization decision from a new server reply or actual transaction.

@@ -1578,7 +1578,13 @@ test('small future status timestamps wait for source time, preserve receipt time
   assert.equal(f.local.controlSnapshot(), null);
   assert.equal(remoteStarts(client).length, 0);
   f.now = at + 73; assert.equal(f.local.controlSnapshot(), null);
-  const sent = once(client.ws, 'message'); f.now = at + 74;
+  // Background single-key diagnostics may also make progress here. Wait for
+  // the actual Start dispatch, without supplying another connector report.
+  const sent = new Promise(resolve => {
+    const started = raw => { if (JSON.parse(raw)[2] === 'RemoteStartTransaction') {
+      client.ws.off('message', started); resolve(); } };
+    client.ws.on('message', started);t.after(() => client.ws.off('message', started));
+  }); f.now = at + 74;
   const current = f.local.controlSnapshot();
   assert.equal(current.timestamp, at + 74); assert.equal(current.receivedAt, at);
   await sent; await flushCalls(client);
@@ -2167,11 +2173,14 @@ test('automatic start diagnostics read only bounded native authorization flags a
   const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag');
   const client=await f.connect({autoReply:frame=>frame[2]==='GetConfiguration'?null:'Accepted'});
   await client.call('Heartbeat',{});await flushCalls(client);
-  const reads=client.calls.filter(frame=>frame[2]==='GetConfiguration');assert.equal(reads.length,1);
-  assert.deepEqual(reads[0][3].key,['AuthorizationCacheEnabled','AuthorizeRemoteTxRequests','LocalPreAuthorize','LocalAuthorizeOffline','ExternalAuthorizationRequired']);
+  const keys=['AuthorizationCacheEnabled','AuthorizeRemoteTxRequests','LocalPreAuthorize','LocalAuthorizeOffline','ExternalAuthorizationRequired'];
+  assert.deepEqual(client.calls.find(frame=>frame[2]==='GetConfiguration')[3].key,[keys[0]],'Native chargers may accept only one configuration key per request');
   assert.equal(f.local.status().authorizationConfiguration.status,'pending');
-  f.now=at+1000;
-  client.ws.send(JSON.stringify([3,reads[0][1],{configurationKey:[
+  for (const [index,key] of keys.entries()) {
+  const read=client.calls.filter(frame=>frame[2]==='GetConfiguration')[index];assert.ok(read);
+  assert.deepEqual(read[3].key,[key]);
+  f.now=at+(index+1)*1000;
+  client.ws.send(JSON.stringify([3,read[1],{configurationKey:[
     {key:'AuthorizationCacheEnabled',value:'True',readonly:false},
     {key:'AuthorizeRemoteTxRequests',value:'false',readonly:true},
     {key:'LocalPreAuthorize',value:'true',readonly:false},
@@ -2181,8 +2190,12 @@ test('automatic start diagnostics read only bounded native authorization flags a
     {key:'unrequested-private-key',value:'private-response-value',readonly:false},
   ],unknownKey:['ExternalAuthorizationRequired','unrequested-private-key']} ]));
   await flushCalls(client);
+  }
+  assert.equal(client.calls.filter(frame=>frame[2]==='GetConfiguration').length,5);
   const result=f.local.status().authorizationConfiguration;
-  assert.equal(result.status,'partial');assert.equal(result.requestedAt,at);assert.equal(result.respondedAt,at+1000);
+  assert.equal(result.status,'partial');assert.equal(result.requestedAt,at);assert.equal(result.respondedAt,at+5000);
+  assert.equal(result.reads.AuthorizationCacheEnabled.respondedAt,at+1000,'Later keys cannot refresh the original cache readback');
+  assert.equal(result.reads.LocalAuthorizeOffline.requestedAt,at+3000);
   assert.deepEqual(result.values.AuthorizationCacheEnabled,{value:true,readOnly:false});
   assert.deepEqual(result.values.AuthorizeRemoteTxRequests,{value:false,readOnly:true});
   assert.equal(result.values.LocalPreAuthorize.value,null,'Conflicting duplicates remain unknown');
@@ -2190,8 +2203,13 @@ test('automatic start diagnostics read only bounded native authorization flags a
   assert.equal(result.values.ExternalAuthorizationRequired.value,null);
   assert.equal(JSON.stringify(result).includes('private'),false);assert.equal(JSON.stringify(result).includes('secret'),false);
   assert.equal(client.calls.filter(frame=>frame[2]==='ChangeConfiguration').length,4,'Only the existing telemetry settings are written');
-  f.now=at+2000;assert.deepEqual(f.local.status().authorizationConfiguration,result,'Status reads do not refresh the diagnostic');
+  f.now=at+6000;assert.deepEqual(f.local.status().authorizationConfiguration,result,'Status reads do not refresh the diagnostic');
   result.values.AuthorizationCacheEnabled.value=false;assert.equal(f.local.status().authorizationConfiguration.values.AuthorizationCacheEnabled.value,true);
+  await client.call('BootNotification',{chargePointVendor:'Easee',chargePointModel:'fixture'});await flushCalls(client);
+  const boot=f.local.status().authorizationConfiguration;
+  assert.equal(boot.values.AuthorizationCacheEnabled.value,null,'A new boot cannot reuse an old native flag');
+  assert.equal(boot.values.AuthorizeRemoteTxRequests.value,null);
+  assert.equal(boot.respondedAt,null,'A new query is not a new native readback');
   await f.connect();assert.equal(f.local.status().authorizationConfiguration,null,'A new connection cannot inherit old native flags');
 });
 
@@ -2202,7 +2220,7 @@ test('an unanswered native authorization read cannot delay a permitted start', a
   await client.call('Heartbeat',{});await flushCalls(client);
   assert.equal(f.local.status().authorizationConfiguration.status,'pending');
   f.startPermitted=true;await client.call('StatusNotification',preparing);await flushCalls(client);
-  assert.equal(remoteStarts(client).length,1);assert.equal(f.local.status().authorizationConfiguration.status,'cancelled');
+  assert.equal(remoteStarts(client).length,1);assert.equal(f.local.status().authorizationConfiguration.reads.AuthorizationCacheEnabled.status,'cancelled');
   assert.equal(f.local.status().authorizationConfiguration.respondedAt,null,'Cancellation is not a native readback');
 });
 

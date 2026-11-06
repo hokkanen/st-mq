@@ -133,6 +133,25 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
   let startReadiness = null;
   let authorizationConfiguration = null;
+  function authorizationReadback(key, patch) {
+    const reads = { ...authorizationConfiguration?.reads, [key]: {
+      ...authorizationConfiguration?.reads?.[key], ...patch } };
+    const rows = Object.values(reads);
+    const values = Object.fromEntries(AUTHORIZATION_KEYS.map(name => [name, {
+      value: reads[name]?.value ?? null, readOnly: reads[name]?.readOnly ?? null }]));
+    const available = Object.values(values).filter(row => row.value !== null).length;
+    const pending = AUTHORIZATION_KEYS.some(name => !reads[name] || reads[name].status === 'pending');
+    const requested = rows.map(row => row.requestedAt).filter(Number.isSafeInteger);
+    const responded = rows.map(row => row.respondedAt).filter(Number.isSafeInteger);
+    const failed = rows.map(row => row.failedAt).filter(Number.isSafeInteger);
+    authorizationConfiguration = {
+      requestedAt: requested.length ? Math.min(...requested) : null,
+      respondedAt: responded.length ? Math.max(...responded) : null,
+      status: pending ? 'pending' : available === AUTHORIZATION_KEYS.length ? 'reported'
+        : available ? 'partial' : rows.some(row => row.status === 'timed-out') ? 'timed-out'
+          : rows.some(row => row.status === 'cancelled') ? 'cancelled' : 'unavailable',
+      ...(failed.length ? { failedAt: Math.max(...failed) } : {}), values, reads };
+  }
   const authorizationProgress = (info, receivedAt, replayed = false) => {
     startProgress.authorization = { receivedAt, decidedAt: clock(), status: info.status, replayed };
   };
@@ -351,8 +370,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (callQueue.some(call => !background(call))) for (const [id, call] of pendingCalls) {
       if (background(call)) {
         pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked');
-        if (call.authorizationRead && authorizationConfiguration?.requestedAt === call.sentAt)
-          authorizationConfiguration = { ...authorizationConfiguration, status: 'cancelled', failedAt: clock() };
+        if (call.authorizationRead && authorizationConfiguration?.reads[call.authorizationRead]?.requestedAt === call.sentAt)
+          authorizationReadback(call.authorizationRead, { status: 'cancelled', failedAt: clock() });
       }
     }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
@@ -406,7 +425,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       return true;
     }, () => {
       if (action === 'RemoteStartTransaction') startProgress.remote = { requestedAt: call.sentAt, respondedAt: null, status: 'pending' };
-      if (call.authorizationRead) authorizationConfiguration = { requestedAt: call.sentAt, respondedAt: null, status: 'pending', values: {} };
+      if (call.authorizationRead) authorizationReadback(call.authorizationRead,
+        { requestedAt: call.sentAt, respondedAt: null, status: 'pending', value: null, readOnly: null });
       call.attempt?.dispatched();
     });
   }
@@ -438,6 +458,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function configureTelemetry() {
     telemetryConfigured = true;
+    authorizationConfiguration = null;
     meterTriggerUnsupported = false;
     configurationFailures.clear(); rejectRequests('ocpp-reconfigured');
     for (const [key, value] of [['MeterValuesSampledData', 'Power.Active.Import,Current.Import,Voltage'],
@@ -447,8 +468,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
     // Read only the native flags needed to distinguish cached authorization
     // from a refused or unexecuted start. Never change RFID/offline policy.
-    if (plugAndCharge) callQueue.push({ action: 'GetConfiguration', payload: { key: [...AUTHORIZATION_KEYS] },
-      authorizationRead: true, attempt: createControlAttempt({ kind: 'query' }) });
+    // Native Easee advertises GetConfigurationMaxKeys=1. Keep each requested
+    // flag and its source receipt independent, including partial failures.
+    if (plugAndCharge) for (const key of AUTHORIZATION_KEYS) callQueue.push({
+      action: 'GetConfiguration', payload: { key: [key] },
+      authorizationRead: key, attempt: createControlAttempt({ kind: 'query' }) });
     sendNextCall();
   }
   function needsMeterReadback() {
@@ -617,7 +641,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     && plugAndCharge && authorizationReady && equal(virtualTag, tag);
   const authorizationInfo = tag => automaticTag(tag)
     // This tag represents a live controller permission, never a reusable RFID
-    // enrollment. OCPP expiryDate removes it from the authorization cache.
+    // enrollment. Expiry cannot guarantee removal of a cached entry.
     ? { status: transportFresh() && permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
   function completeResponse(id, pending, frame, waited = false, receivedAt = clock()) {
@@ -636,19 +660,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (pending.action === 'RemoteStartTransaction' && startProgress.remote?.requestedAt === pending.sentAt)
       startProgress.remote = { ...startProgress.remote, respondedAt: receivedAt,
         status: frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected' };
-    if (pending.authorizationRead && authorizationConfiguration?.requestedAt === pending.sentAt) {
+    if (pending.authorizationRead && authorizationConfiguration?.reads[pending.authorizationRead]?.requestedAt === pending.sentAt) {
       const rows = frame[0] === 3 && Array.isArray(frame[2]?.configurationKey) ? frame[2].configurationKey : [];
-      const values = Object.fromEntries(AUTHORIZATION_KEYS.map(key => {
-        const unsupported = Array.isArray(frame[2]?.unknownKey) && frame[2].unknownKey.includes(key);
-        const matching = unsupported ? [] : rows.filter(row => row?.key === key);
-        const row = matching.length === 1 ? matching[0] : null;
-        const value = typeof row?.value === 'string' && /^(true|false)$/i.test(row.value)
-          ? row.value.toLowerCase() === 'true' : null;
-        return [key, { value, readOnly: typeof row?.readonly === 'boolean' ? row.readonly : null }];
-      }));
-      const available = Object.values(values).filter(row => row.value !== null).length;
-      authorizationConfiguration = { requestedAt: pending.sentAt, respondedAt: receivedAt,
-        status: available === AUTHORIZATION_KEYS.length ? 'reported' : available ? 'partial' : 'unavailable', values };
+      const key = pending.authorizationRead;
+      const unsupported = Array.isArray(frame[2]?.unknownKey) && frame[2].unknownKey.includes(key);
+      const matching = unsupported ? [] : rows.filter(row => row?.key === key);
+      const row = matching.length === 1 ? matching[0] : null;
+      const value = typeof row?.value === 'string' && /^(true|false)$/i.test(row.value)
+        ? row.value.toLowerCase() === 'true' : null;
+      authorizationReadback(key, { respondedAt: receivedAt, status: value === null ? 'unavailable' : 'reported',
+        value, readOnly: typeof row?.readonly === 'boolean' ? row.readonly : null });
     }
     if (pending.action === 'ChangeConfiguration') {
       const status = frame[0] === 3 ? frame[2]?.status : null;
@@ -971,8 +992,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             for (const [id, pending] of pendingCalls) if (now - pending.sentAt >= CALL_TIMEOUT_MS) {
               pendingCalls.delete(id);
               finishRequest(pending, 'ocpp-request-timeout');
-              if (pending.authorizationRead && authorizationConfiguration?.requestedAt === pending.sentAt)
-                authorizationConfiguration = { ...authorizationConfiguration, status: 'timed-out', failedAt: now };
+              if (pending.authorizationRead && authorizationConfiguration?.reads[pending.authorizationRead]?.requestedAt === pending.sentAt)
+                authorizationReadback(pending.authorizationRead, { status: 'timed-out', failedAt: now });
               if (pending.action === 'ChangeConfiguration') configurationFailures.add(pending.key);
               else if (pending.action === 'RemoteStartTransaction' && pending.transition === statusTransition) remoteStartStatus = 'timed-out';
             }
