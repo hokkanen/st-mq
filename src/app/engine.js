@@ -1908,7 +1908,10 @@ export class Engine {
             active.recoveryStartedAt = execution.recoveryStartedAt ?? at;
             active.recoveryHoldUntil = execution.recoveryHoldUntil ?? decision.recoveryHoldUntil;
             active.executionSchedule ??= { ...active.plan.schedule };
-            active.executionSchedule.reductionEnd = active.recoveryStartedAt;
+            // A cancelled preheat has no reduction. Native release latency
+            // belongs to the separate recovery clock, not a fabricated reduction.
+            if (active.executionSchedule.reductionEnd > active.executionSchedule.reductionStart)
+              active.executionSchedule.reductionEnd = active.recoveryStartedAt;
             active.executionSchedule.recoveryHoldUntil = active.recoveryHoldUntil;
             this.cycles.save(active);
           }

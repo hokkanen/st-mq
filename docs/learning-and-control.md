@@ -370,7 +370,10 @@ the original model, plan and forecast are saved once. Recovery comparison advanc
 incrementally, and final assessments stream the complete evidence in bounded
 pages through the live learning worker. A longer cycle retains all evidence
 without repeatedly rewriting or replaying its earlier intervals. The configured
-recovery timeout starts when the executed reduction ends.
+recovery timeout starts when the executed reduction ends. If preheat is cancelled before
+reduction starts, no reduction is recorded or displayed. The later native
+recovery execution keeps its own clock; dispatch latency cannot become a short
+reduction period.
 
 The planner uses the same weighted indoor
 average for prediction, limits and discomfort in every path, including bounded

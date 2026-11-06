@@ -162,7 +162,8 @@ function summary(decision, args, baseline, { origin = 'recalculated', plan = dec
   const prediction = args ? schedule ? evaluateCycle({ ...args, schedule }) : baseline : null;
   const phases = schedule ? [
     ...(schedule.preheatEnd > schedule.preheatStart ? [{ phase: 'preheat', start: schedule.preheatStart, end: schedule.preheatEnd, estimated: false }] : []),
-    { phase: 'reduction', start: schedule.reductionStart, end: schedule.reductionEnd, estimated: false },
+    ...(schedule.reductionEnd > schedule.reductionStart
+      ? [{ phase: 'reduction', start: schedule.reductionStart, end: schedule.reductionEnd, estimated: false }] : []),
     { phase: 'recovery', start: schedule.reductionEnd, end: prediction?.recoveredAt ?? null, estimated: true },
   ] : [{ phase: 'normal', start: args?.intervals[0]?.start ?? null, end: args?.intervals.at(-1)?.end ?? null, estimated: false }];
   const economics = origin === 'selected' && schedule && args && baseline

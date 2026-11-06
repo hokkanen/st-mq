@@ -158,10 +158,22 @@ test('a confirmed preheat trial survives its native target step and still ends a
   assert.equal(r.engine.cycles.active().id, cycle.id);
   assert.equal(r.engine.cycles.active().adjustments?.length ?? 0, 0);
   assert.deepEqual(r.engine.cycles.active().plan, original, 'The recorded original forecast remains immutable');
-  r.advance(1000); r.ingest('indoor_temperature', 24); r.engine.tick(); await r.settle();
+  r.advance(1000); r.ingest('indoor_temperature', 24);
+  const cancelledAt = r.now;
+  const execute = r.engine.executor.execute.bind(r.engine.executor);
+  r.engine.executor.execute = (decision, options) => { r.advance(1806); return execute(decision, options); };
+  r.engine.tick(); await r.settle();
   assert.equal(r.engine.status().decision.phase, 'recovery');
   assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'indoor-comfort-limit');
   assert.equal(native.values['0203'], 19, 'A real comfort limit still restores normal ROOM');
+  const cancelled = r.engine.cycles.active();
+  assert(cancelled.recoveryStartedAt > cancelledAt, 'Recovery execution has its own later clock');
+  assert.equal(cancelled.executionSchedule.reductionStart, cancelledAt);
+  assert.equal(cancelled.executionSchedule.reductionEnd, cancelledAt,
+    'Cancelling preheat cannot turn dispatch latency into an executed reduction');
+  assert.equal(cancelled.phases.includes('reduction'), false);
+  assert.equal(r.commands.some(batch => batch.includes('reduction')), false);
+  assert.deepEqual(cancelled.plan, original, 'The original proposed reduction remains immutable');
 });
 
 function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {

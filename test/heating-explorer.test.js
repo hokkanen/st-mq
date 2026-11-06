@@ -429,3 +429,20 @@ test('provisional reference preserves configured comfort and does not block an a
   assert.equal(result.constraints.find(row => row.key === 'normalReference').value, input.settings.comfort.targetC);
   assert.equal(revalidatePlan({ ...input, plan: approved }).valid, true);
 });
+
+
+test('preheat cancelled before reduction shows recovery without a zero-length reduction phase', () => {
+  const input = heatingExplorerFixture();
+  const selected = chooseCycle(input).plan;
+  assert(selected);
+  input.currentPlan = { ...selected, schedule: { ...selected.schedule,
+    preheatStart: input.now - HOUR / 4, preheatEnd: input.now,
+    reductionStart: input.now, reductionEnd: input.now } };
+  input.currentDecision = { phase: 'recovery', action: 'normal', reasons: ['predicted-comfort-limit'] };
+  const original = structuredClone(input.currentPlan);
+  const result = exploreHeatingPlan(input, {}, options);
+  assert.equal(result.current.phase, 'recovery');
+  assert.deepEqual(result.current.phases.map(row => row.phase), ['preheat', 'recovery']);
+  assert.equal(result.current.phases.at(-1).start, input.now);
+  assert.deepEqual(input.currentPlan, original);
+});
