@@ -121,7 +121,7 @@ test('trial input readiness, allowance and accepted learning remain separate wit
   assert.match(row.detail, /without a fixed learning cooldown.*does not establish accepted model learning/);
   const budget = unknown.policyRows.find(item => item.key === 'Learning trial budget');
   assert.equal(budget.value, '150.00 ct per-cycle cap');
-  assert.match(JSON.stringify(budget.calculation), /R_new = R_old.*X_new.*Finnish start day.*unchanged budget/);
+  assert.match(JSON.stringify(budget.calculation), /D_s = C_actual,s,prefix.*R_new = max\(R_old, X_total\).*Finnish start day.*unchanged budget/);
 });
 
 test('economic disclosures keep fractional independent hurdles, negative benefits and unknown current policy honest', () => {

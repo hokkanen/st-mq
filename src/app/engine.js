@@ -7,7 +7,7 @@ import { FLOOR_COMMAND_ERRORS } from '../domain/floor-command-errors.js';
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
-import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest } from '../control/planner.js';
+import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, trialCostExposure, preheatRoomRequest } from '../control/planner.js';
 import { HeatingPlanning } from './heating-planning.js';
 import { LearningCheckpointCache } from './learning-checkpoint-cache.js';
 import { persistCoefficientBatch } from '../storage/coefficient-history.js';
@@ -1788,15 +1788,22 @@ export class Engine {
           const continued = evaluateCycle({ ...args, schedule });
           const restored = evaluateCycle({ ...args, schedule: { ...schedule,preheatEnd:Math.min(schedule.preheatEnd,now),
             reductionStart: Math.min(schedule.reductionStart,now), reductionEnd: now } });
-          const stress=cycle.plan.trial?trialEnvelope({...args,schedule:{...schedule,
-            preheatStart:Math.max(now,schedule.preheatStart),reductionStart:Math.max(now,schedule.reductionStart)}}):null;
+          const remainingSchedule = { ...schedule, preheatStart: Math.max(now, schedule.preheatStart),
+            reductionStart: Math.max(now, schedule.reductionStart) };
+          const stress=cycle.plan.trial?trialEnvelope({...args,schedule:remainingSchedule,assessCost:false}):null;
+          // Observed and Normal prefix states belong to the frozen cycle model.
+          // Current-model comfort checks above remain independent of its budget.
+          const cost = stress?.comfortSafe ? trialCostExposure({ ...args, model: cycle.plan.model,
+            config: cycle.modelConfig, schedule: remainingSchedule,
+            costContext: this.cycles.trialExposureContext(now) }) : null;
           const unsafe=continued.severe || Boolean(stress && !stress.comfortSafe);
           const economics = stress ? null : economicAdmission({ prediction: continued, referencePrediction: restored, args, schedule,
             reference: { ...schedule, preheatEnd: Math.min(schedule.preheatEnd, now), reductionStart: Math.min(schedule.reductionStart, now), reductionEnd: now },
             settings, continuing: true });
-          const uneconomic=stress?unsafe||!this.cycles.reserveTrialExposure(stress.costExposureCents):!economics.admitted;
+          const uneconomic=stress?unsafe||!this.cycles.reserveTrialExposure(cost?.costExposureCents):!economics.admitted;
           if (unsafe || uneconomic) {
-            const reason=unsafe?'predicted-comfort-limit':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
+            const reason=unsafe?'predicted-comfort-limit':stress&&!Number.isFinite(cost?.costExposureCents)
+              ?'trial-cost-estimate-unavailable':stress?'trial-exposure-now-exceeds-allowance':'recovery-cost-now-favours-ending';
             this.cycles.shorten(now,reason);
             phase = 'recovery'; reasons = [reason];
           }

@@ -19,6 +19,7 @@ const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heatin
   'missing-or-stale-observations': 'Fresh temperature observations were unavailable.', 'missing-or-stale-indoor': 'A fresh indoor temperature was unavailable.',
   'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacked continuous evidence for planning.',
   'trial-needs-measured-indoor-temperature': 'A learning trial required measured indoor temperatures.',
+  'trial-cost-estimate-unavailable': 'The complete learning-trial cost estimate became unavailable.',
   'no-useful-space-heating-window': 'No useful space-heating trial window fit the current heating demand.',
   'trial-comfort-or-forecast-limited': 'No trial fit the current comfort and forecast limits.',
   'trial-incremental-cost-exceeds-allowance': 'The incremental trial cost exposure exceeded its allowance.',

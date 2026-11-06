@@ -11,17 +11,19 @@ import { LiveLearning } from '../src/app/live-learning.js';
 import { assessCycle, rebuildCycleWorking } from '../src/app/cycle-evaluation.js';
 
 const START = Date.parse('2026-01-01T00:00:00Z'), HOUR = 3600000;
-function fixture(t,{file=false,reductionHours=72,equipment={nativeAuxAllowed:false}}={}) {
+function fixture(t,{file=false,reductionHours=72,equipment={nativeAuxAllowed:false},floor=false,preheatMinutes=0}={}) {
   const directory = file ? mkdtempSync(join(tmpdir(),'stmq-cycle-evidence-')) : null;
   const store = new Store(file ? join(directory,'synthetic.sqlite') : ':memory:');
   t.after(async()=>{await store.close();if(directory)rmSync(directory,{recursive:true,force:true});});
   const tracker = new CycleTracker({store,input:'synthetic',config:{recoveryTimeoutHours:8}});
-  const model = initialAdaptiveModel();
-  const plan = {model,initialState:{indoorC:21,reserveC:21},targetC:21,reference:null,
+  const model = initialAdaptiveModel(floor?{floorThermalPriors:{capacityKwhPerC:2}}:{});
+  const plan = {model,initialState:{indoorC:21,reserveC:21,...(floor?{slabC:21}:{})},targetC:21,reference:null,
     referenceLabel:'continuous normal operation',occupancy:{mode:'occupied'},maxDropC:1,
     intervals:[{start:START,end:START+HOUR,outdoorC:21,solarRadiationWm2:0,price:0}],
-    equipment,schedule:{preheatStart:START,preheatEnd:START,reductionStart:START,
-      reductionEnd:START+reductionHours*HOUR,roomBoostC:0}};
+    equipment,
+    schedule:{preheatStart:START,preheatEnd:START+preheatMinutes*60000,reductionStart:START+preheatMinutes*60000,
+      reductionEnd:START+reductionHours*HOUR,roomBoostC:floor?1:0,
+      ...(floor?{floorOverride:true,treatmentKey:'room-boost-floor-v1'}:{})}};
   tracker.start(plan,sample(START),START);
   return {store,tracker,plan};
 }
@@ -31,6 +33,31 @@ function sample(timestamp,changes={}) {
     thermalCompressorDuty:0,thermalAuxKw:0,auxKw:0,auxRoute:'space',compressorActivityObserved:true,
     auxiliaryObserved:true,auxiliaryRouteKnown:true,energyBasis:'measured',...changes};
 }
+
+test('assessment accepts confirmed floor release at the lease deadline during the native phase handoff',t=>{
+  const {store,tracker}=fixture(t,{floor:true,preheatMinutes:1,reductionHours:.25});
+  const id=tracker.active().id,treatmentKey='room-boost-floor-v1';
+  for(const [offset,phase,floorOverrideMode] of [[60000,'preheat','on'],[60027,'preheat','on'],
+    [120000,'preheat','off'],[900000,'reduction','off']])
+    tracker.record(sample(START+offset,{phase,floorOverrideMode,treatmentKey}),START+offset);
+  const cycle=tracker.active(),before=[...store.cycleEvidence(id)];
+  const result=assessCycle(store,{id,count:cycle.observationCount,now:START+900000});
+  assert.equal(result.assessment.basis,'estimated-space-heating-execution-and-reference');
+  assert.equal(result.assessment.profitCents,0,'Known zero remains an assessed result');
+  assert.deepEqual([...store.cycleEvidence(id)],before,'Assessment preserves the original applied-phase and floor evidence');
+});
+
+test('floor handoff acceptance still refuses early release, unknown states, wrong treatments and reduction activation',t=>{
+  for(const changes of [{floorOverrideMode:'off'}, {floorOverrideMode:'unknown'}, {floorOverrideMode:'partial'},
+    {floorOverrideMode:'on',treatmentKey:'native'}, {floorOverrideMode:'on',phase:'reduction'}]){
+    const {store,tracker}=fixture(t,{floor:true,preheatMinutes:1,reductionHours:.25});
+    tracker.record(sample(START+30000,{phase:'preheat',floorOverrideMode:'on',treatmentKey:'room-boost-floor-v1',...changes}),START+30000);
+    const cycle=tracker.active();
+    const result=assessCycle(store,{id:cycle.id,count:cycle.observationCount,now:START+30000});
+    assert.equal(result.assessment.basis,'unassessed-floor-treatment-not-confirmed',JSON.stringify(changes));
+    assert.equal(result.assessment.profitCents,null);
+  }
+});
 
 test('cycle append is atomic, immutable and keeps valid zero evidence with original provenance',t=>{
   const {store,tracker}=fixture(t),id=tracker.active().id;

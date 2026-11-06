@@ -467,6 +467,10 @@ water flow or delivered heat. Local expiry can release only the valve overrides:
 H66 ROOM has no device-side lease and relies on durable application restoration
 and retries after communication returns. All four ground-floor circuits form one
 treatment and one selected-slab state for learning.
+Cycle assessment accepts a confirmed OFF release at or after the effective
+preheat deadline while the heat pump is still acknowledging its next phase.
+An early release, unknown or partial floor state, or different treatment remains
+unassessed; the original phase and readback evidence is retained.
 
 Initial or learned estimates support ordinary economic action before new trials
 exist. Additional learning experiments require usable temperature/equipment
@@ -502,11 +506,25 @@ guarantees that fallback costs cannot exceed the allowance.
 
 During an active trial, the initial exposure estimate is a reservation, not the
 per-cycle spending cap. The cycle retains that original forecast and keeps its
-current reservation and last remaining-exposure estimate separately. An increase
-in that estimate reserves the increase within the configured per-cycle cap and
-available daily allowance. Decreases do not refund exposure that may already
-have been incurred; a later increase needs additional allowance. Repeating the
-same estimate does not charge it twice. The reservation and daily ledger commit
+current reservation and last complete-cycle exposure estimate separately. The
+estimate combines the recorded attributable space-heating cost difference so far
+with the remaining action and Normal forecasts. Three physical scenarios carry
+their own observed and counterfactual stored-heat states; remaining heat debt does
+not disappear when a new forecast starts. Estimated compressor input shares the
+Normal source uncertainty, while recorded AUX output stays fixed. Negative-price
+income forgone is accumulated separately across the recorded and remaining parts.
+Only the final full-cycle cost difference is clipped at zero; earlier gains and
+costs keep their signs, and DHW/DHWR service is excluded.
+
+The reservation is the highest complete-cycle estimate seen, including the
+original displaced-saving reservation. Only an increase above that reservation
+needs additional per-cycle and daily allowance. Decreases give no refund, and
+returning to an earlier estimate cannot repeatedly spend the same allowance.
+Three bounded RAM cursors update from new recorded intervals; missing cursors
+rebuild through the existing paged cycle worker, without a second evidence archive
+or a whole-cycle traversal on each control tick. Unknown or stale cost, routing,
+price or stored-heat evidence cannot grant continuation.
+The reservation and daily ledger commit
 together, including at initial cycle recording. An automatic trial spanning
 midnight remains funded by its Finnish start day. An explicitly edited reviewed
 one-cycle budget remains separate from the automatic daily ledger; unchanged

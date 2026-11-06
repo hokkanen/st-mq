@@ -33,6 +33,7 @@ const reasonLabels = {
   'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating is the fallback request; device feedback confirms the actual state.',
   'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast.',
   'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures.',
+  'trial-cost-estimate-unavailable': 'The complete trial cost estimate lacks required cost or stored-heat evidence. Recovery and restoration continue.',
   'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
   'missing-or-stale-observations': 'Fresh temperature observations are needed.',
   'currently-selected-cycle': 'This is the cycle currently selected by the controller.',

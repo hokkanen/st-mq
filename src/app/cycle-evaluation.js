@@ -1,4 +1,4 @@
-import { advanceCycleEvaluation } from '../control/planner.js';
+import { advanceCycleEvaluation, trialCostScenarios } from '../control/planner.js';
 import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
 import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
 
@@ -20,13 +20,66 @@ export function observedState(cycle, state, row, fireplaceEvents) {
   if (row.indoorEndpoint !== false && number(row.indoorC)) next.indoorC = row.indoorC;
   return { indoorC: next.indoorC, reserveC: next.reserveC, ...(next.slabC === undefined ? {} : { slabC: next.slabC }) };
 }
-export function advanceReference(cycle, rows, fireplaceEvents, saved = null) {
+export function advanceReference(cycle, rows, fireplaceEvents, saved = null, captureTrajectory = false) {
   if (!rows.length && saved === null) return null;
   if (saved?.unavailable || rows.some(row => !number(row.outdoorC) || !number(row.price)))
     return { unavailable: true };
   const value = advanceCycleEvaluation({ ...evaluationInputs(cycle, fireplaceEvents), schedule: cycle.plan.reference,
-    intervals: rows, captureTrajectory: false }, saved?.continuation ?? null);
-  return { continuation: value.continuation };
+    intervals: rows, captureTrajectory }, saved?.continuation ?? null);
+  return { continuation: value.continuation, ...(captureTrajectory ? { trajectory: value.result.trajectory } : {}) };
+}
+
+/** Replaceable RAM only. Three bounded counterfactual cursors retain the
+ * original physical scenarios without adding a second evidence archive. */
+export function initialTrialCostPrefix(cycle) {
+  return { id: cycle.id, count: 0, through: cycle.startedAt, available: true,
+    scenarios: trialCostScenarios(evaluationInputs(cycle, [])).map(scenario => ({ direction: scenario.direction,
+      actualState: { ...scenario.initialState }, reference: null, actualCostCents: 0, foregoneIncomeCents: 0 })) };
+}
+
+export function advanceTrialCostPrefix(cycle, rows, fireplaceEvents, previous) {
+  if (!previous?.available || previous.id !== cycle.id || rows.length && rows[0].start !== previous.through)
+    return { id: cycle.id, count: cycle.observationCount, through: cycle.lastSample.timestamp, available: false };
+  if (!rows.length) return { ...previous, count: cycle.observationCount, through: cycle.lastSample.timestamp };
+  const scenarios = trialCostScenarios(evaluationInputs(cycle, fireplaceEvents));
+  const next = { ...previous, count: cycle.observationCount, through: cycle.lastSample.timestamp, scenarios: [] };
+  for (const scenario of scenarios) {
+    const prior = previous.scenarios[scenario.direction + 1];
+    const altered = { ...cycle, plan: { ...cycle.plan, model: scenario.model, initialState: scenario.initialState },
+      modelConfig: scenario.config };
+    const value = advanceReference(altered, rows, fireplaceEvents, prior.reference, true);
+    if (!value?.continuation) return { ...next, available: false };
+    const { trajectory, ...reference } = value;
+    let actualState = prior.actualState, actualCostCents = prior.actualCostCents,
+      foregoneIncomeCents = prior.foregoneIncomeCents;
+    let referenceIndex = 0;
+    for (const row of rows) {
+      if (row.eligible === false || ![row.price, row.thermalCompressorDuty, row.thermalAuxKw].every(number)
+        || row.energyBasis === 'measured' && row.thermalCompressorDuty !== 0) return { ...next, available: false };
+      const compressorKw = row.compressorPowerKw ?? cycle.modelConfig.heatPumpCompressorKw;
+      const circulationKw = row.circulationKw ?? cycle.modelConfig.circulationKw;
+      if (row.thermalCompressorDuty !== 0 && ![compressorKw, circulationKw].every(number)) return { ...next, available: false };
+      // Recorded compressor input is an estimate, varied by the same source
+      // assumption as its Normal reference. Observed AUX output stays fixed.
+      const spaceKw = (row.thermalCompressorDuty === 0 ? 0
+        : row.thermalCompressorDuty * (compressorKw * scenario.config.scenarioElectricalScale + circulationKw)) + row.thermalAuxKw;
+      actualCostCents += spaceKw * (row.end - row.start) / HOUR * row.price;
+      actualState = observedState(altered, actualState, row, fireplaceEvents);
+      if (!actualState) return { ...next, available: false };
+      if (row.phase === 'reduction' && row.price < 0) {
+        while (referenceIndex < trajectory.length && trajectory[referenceIndex].at <= row.start) referenceIndex++;
+        for (let index = referenceIndex; index < trajectory.length; index++) {
+          const step = trajectory[index], start = step.at - step.durationHours * HOUR;
+          if (start >= row.end) break;
+          const hours = Math.max(0, Math.min(row.end, step.at) - Math.max(row.start, start)) / HOUR;
+          foregoneIncomeCents += Math.max(0, step.powerKw - spaceKw) * hours * -row.price;
+          if (step.at <= row.end) referenceIndex = index + 1;
+        }
+      }
+    }
+    next.scenarios.push({ direction: scenario.direction, actualState, reference, actualCostCents, foregoneIncomeCents });
+  }
+  return next;
 }
 /** Rebuild a replaceable cache from committed immutable source pages. The live
  * owner runs this in its admitted read-only worker, with no writer transaction. */
@@ -34,16 +87,20 @@ export function rebuildCycleWorking(store, { id, count, fireplaceEvents = [] }) 
   const cycle = store.cycleById({ id });
   if (!cycle || cycle.observationCount !== count) throw new Error('Cycle evidence changed during reconstruction');
   let observer = { ...cycle.plan.initialState }, reference = null;
+  let trialCostPrefix = cycle.plan.trial ? initialTrialCostPrefix(cycle) : null;
   let after = -1;
   for (;;) {
     const page = store.cycleEvidencePage({ id, after, through: count });
     if (!page) throw new Error('The selected cycle is unavailable');
     for (const row of page.rows) observer = observedState(cycle, observer, row, fireplaceEvents);
     reference = advanceReference(cycle, page.rows, fireplaceEvents, reference);
+    if (trialCostPrefix) trialCostPrefix = advanceTrialCostPrefix({ ...cycle,
+      observationCount: trialCostPrefix.count + page.rows.length,
+      lastSample: { timestamp: page.rows.at(-1)?.end ?? trialCostPrefix.through } }, page.rows, fireplaceEvents, trialCostPrefix);
     if (page.complete) break;
     after = page.next;
   }
-  return { id, count, observer, reference };
+  return { id, count, observer, reference, ...(trialCostPrefix ? { trialCostPrefix } : {}) };
 }
 
 const recoveryTotals = (target, trajectory, observations) => {
@@ -91,8 +148,14 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
     for (const row of rows) {
       phaseSet.add(row.phase);
       firePresent ||= fireplaceAffectsLearning({ fireplaceKgPerHour: fireplaceRate(fireplaceEvents,row.start,row.end) });
+      // The floor lease expires at its deadline while the heat pump may still
+      // be restoring ROOM before acknowledging its next phase. A confirmed
+      // release in that handoff is valid even with the old applied phase.
+      const floorConfirmed = row.phase === 'preheat'
+        ? row.floorOverrideMode === 'on' || row.start >= schedule.preheatEnd && row.floorOverrideMode === 'off'
+        : row.floorOverrideMode === 'off';
       if (cycle.plan.schedule.floorOverride && (row.treatmentKey !== cycle.treatmentKey
-        || row.floorOverrideMode !== (row.phase === 'preheat' ? 'on' : 'off'))) floorTreatmentComparable = false;
+        || !floorConfirmed)) floorTreatmentComparable = false;
       if (number(row.indoorC)) observedMinimum = Math.min(observedMinimum,row.indoorC);
       const original = cycle.plan.intervals.find(value => value.start <= row.start && value.end >= row.end);
       if (!original) originalCoverage = false;

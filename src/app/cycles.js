@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { appendLearningRecord } from './committed-learning.js';
-import { evaluateCycle, phaseAt } from '../control/planner.js';
-import { advanceReference, observedState, rebuildCycleWorking, assessCycle } from './cycle-evaluation.js';
+import { evaluateCycle, phaseAt, trialCostScenarios } from '../control/planner.js';
+import { advanceReference, observedState, rebuildCycleWorking, assessCycle,
+  initialTrialCostPrefix, advanceTrialCostPrefix } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { CONTROL_DEFAULTS } from './config.js';
 import { sealCycleWorking, validateCycleWorking, cycleWorkingIntact } from '../domain/cycle-working-state.js';
@@ -32,14 +33,44 @@ export class CycleTracker {
     return cycleWorkingIntact(value) ? value : null;
   }
   saveWorking(cycle,value) {
-    this.store.setState(this.workingKey(cycle),sealCycleWorking({ ...value, id: cycle.id,
-      revision: this.fireplaceContext?.fireplaceRevision ?? 0 }));
+    const saved = sealCycleWorking({ ...value, id: cycle.id, revision: this.fireplaceContext?.fireplaceRevision ?? 0 });
+    this.store.setState(this.workingKey(cycle), saved);
+    return saved;
+  }
+  rememberTrialPrefix(prefix, digest) {
+    this.trialCostPrefix = prefix && { ...prefix, digest, revision: this.fireplaceContext?.fireplaceRevision ?? 0 };
+    this.store.afterRollback?.(() => { this.trialCostPrefix = null; });
+  }
+  trialPrefixMatches(cycle, saved) {
+    const prefix = this.trialCostPrefix;
+    return prefix?.id === cycle.id && prefix.count === cycle.observationCount
+      && prefix.through === cycle.lastSample.timestamp && prefix.digest === saved?.digest
+      && prefix.revision === (this.fireplaceContext?.fireplaceRevision ?? 0);
+  }
+  trialExposureContext(now) {
+    const cycle = this.active();
+    if (!cycle?.plan.trial || cycle.lastSample.timestamp !== now || cycle.actual.missingHours > 0
+      || cycle.actual.routeMissingHours > 0 || cycle.actual.temperatureMissingHours > 0) return null;
+    const saved = this.readWorking(cycle);
+    if (!this.trialPrefixMatches(cycle, saved) || !this.trialCostPrefix.available
+      || !Array.isArray(this.trialCostPrefix.scenarios) || this.trialCostPrefix.scenarios.length !== 3
+      || cycle.observationCount > 0 && this.trialCostPrefix.scenarios.some(item => !item.reference?.continuation)) return null;
+    const definitions = trialCostScenarios({ model: cycle.plan.model, initialState: cycle.plan.initialState,
+      config: cycle.modelConfig, equipment: cycle.plan.equipment });
+    return { through: now, scenarios: this.trialCostPrefix.scenarios.map((item, index) => ({
+      direction: item.direction, actualState: item.actualState,
+      referenceState: item.reference?.continuation.state ?? definitions[index].initialState,
+      actualCostCents: item.actualCostCents, referenceCostCents: item.reference?.continuation.totals.costCents ?? 0,
+      foregoneIncomeCents: item.foregoneIncomeCents,
+      electricalScale: definitions[index].config.scenarioElectricalScale,
+      auxiliaryScale: definitions[index].config.scenarioAuxScale })) };
   }
   events(cycle) { return this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? []; }
   workingJob() {
     const cycle = this.active(); if (!cycle) return null;
     const saved = this.readWorking(cycle);
-    if (saved?.count === cycle.observationCount && saved.revision === (this.fireplaceContext?.fireplaceRevision ?? 0)
+    if (saved?.count === cycle.observationCount && (!cycle.plan.trial || this.trialPrefixMatches(cycle, saved))
+      && saved.revision === (this.fireplaceContext?.fireplaceRevision ?? 0)
       && isDeepStrictEqual(saved.observer,cycle.observerState)
       && isDeepStrictEqual(saved.reference?.continuation?.state ?? null,cycle.referenceState ?? null)
       && (!saved.reference?.continuation || (cycle.observationCount === 0
@@ -63,7 +94,8 @@ export class CycleTracker {
       if (!isDeepStrictEqual(cycle.observerState,result.observer)
         || !isDeepStrictEqual(cycle.referenceState ?? null,reference)) cycle.stableSince = null;
       cycle.observerState = result.observer; cycle.referenceState = reference;
-      this.saveWorking(cycle,result); this.save(cycle);
+      const saved = this.saveWorking(cycle,result); this.save(cycle);
+      this.rememberTrialPrefix(result.trialCostPrefix ?? null, saved.digest);
     });
   }
   correctFireplace(context, now) {
@@ -106,15 +138,14 @@ export class CycleTracker {
     if (state && (!number(state.reservedCents) || state.reservedCents < 0)) return null;
     return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
   }
-  /** Keep the original forecast immutable. Decreases may represent exposure
-   * already incurred, so only increases in the remaining estimate reserve more.
-   * This also prevents repeatedly spending the same cap as a trial progresses. */
+  /** Keep the original forecast immutable and reserve the highest comparable
+   * full-cycle estimate. Forecast oscillations never spend the same cap twice. */
   reserveTrialExposure(exposureCents) {
     const cycle = this.active(), budget = cycle?.trialBudget;
     const cap = cycle?.plan.config?.maxTrialCostCents ?? this.config.maxTrialCostCents;
     if (!cycle?.plan.trial || !budget || ![exposureCents, cap, budget.reservedCents, budget.lastExposureCents]
       .every(value => number(value) && value >= 0)) return false;
-    const additional = Math.max(0, exposureCents - budget.lastExposureCents);
+    const additional = Math.max(0, exposureCents - budget.reservedCents);
     const reservedCents = budget.reservedCents + additional;
     if (reservedCents > cap) return false;
     const automatic = cycle.plan.userTrial?.limits?.maxTrialCostCents === undefined;
@@ -172,7 +203,8 @@ export class CycleTracker {
         this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
       }
       this.save(cycle);
-      this.saveWorking(cycle,{ count: 0, observer: cycle.observerState, reference: null });
+      const saved = this.saveWorking(cycle,{ count: 0, observer: cycle.observerState, reference: null });
+      this.rememberTrialPrefix(plan.trial ? initialTrialCostPrefix(cycle) : null, saved.digest);
       this.store.event('cycle-started', { id: cycle.id, input: this.input, trial: plan.trial, reference: plan.referenceLabel }, now);
     });
     return cycle;
@@ -294,6 +326,7 @@ export class CycleTracker {
       cycle.observerState = observedState(cycle,cycle.observerState,rows.at(-1),this.events(cycle));
       cursor = end;
     }
+    const previousPrefix = this.trialPrefixMatches(cycle,working) ? this.trialCostPrefix : null;
     cycle.lastSample = sampleEndpoint(sample);
     cycle.lastForecastVersion = sample.provenance?.forecastVersion ?? null;
     cycle.observationCount += rows.length;
@@ -304,7 +337,8 @@ export class CycleTracker {
     this.store.transaction(() => {
       this.store.appendCycleEvidence(this.input,cycle,rows,{ sampleAt: now, provenance: sample.provenance ?? null,
         context: { controlIndoor, integral: equipment.integral ?? null, fireplaceRevision: this.fireplaceContext?.fireplaceRevision ?? 0 } });
-      this.saveWorking(cycle,{ count: cycle.observationCount, observer: cycle.observerState, reference: referenceState });
+      const saved = this.saveWorking(cycle,{ count: cycle.observationCount, observer: cycle.observerState, reference: referenceState });
+      if (cycle.plan.trial) this.rememberTrialPrefix(advanceTrialCostPrefix(cycle, rows, this.events(cycle), previousPrefix), saved.digest);
     });
     if (now - schedule.reductionEnd > this.config.recoveryTimeoutHours * HOUR) {
       this.cancel(now,'recovery-not-established-before-timeout'); return null;

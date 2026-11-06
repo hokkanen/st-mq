@@ -219,8 +219,12 @@ export function trialBudgetCalculation() {
   return calculation([
     equation('Initial trial reservation', 'R_start = max(0, extra_cost, stress_exposure, displaced_saving)',
       'All amounts are in cents. This is estimated complete-cycle exposure, including recovery and remaining heat debt; it is not the entire electricity bill or a measured saving.'),
-    equation('Active trial reservation', 'R_new = R_old + max(0, X_new − X_previous)',
-      'X is estimated remaining exposure. Increases reserve additional allowance; decreases retain the reservation because that exposure may already have been incurred. Repeating the same estimate adds nothing. Original plans and forecasts stay unchanged.'),
+    equation('Complete-cycle cost difference', 'D_s = C_actual,s,prefix − C_Normal,s,prefix + C_action,s,remaining − C_Normal,s,remaining',
+      'Costs are estimated space-heating cents. Each physical scenario carries its own observed and Normal stored-heat states through the recorded prefix. The remaining forecasts start from those different states, include recovery and price remaining heat debt once. Signed earlier gains and costs are retained; DHW and recirculation service are excluded.'),
+    equation('Complete-cycle exposure', 'X_total = max(0, max_s D_s, max_s [G_s,prefix + G_s,remaining])',
+      'G is estimated income forgone by reducing electricity use at negative prices. Its positive interval differences are retained separately so other gains cannot erase this guard. Recorded compressor-power estimates share the reference source uncertainty; already observed AUX output is not multiplied by a future duty-risk allowance.'),
+    equation('Active trial reservation', 'R_new = max(R_old, X_total)',
+      'Only max(0, X_total − R_old) needs additional allowance. A falling estimate gives no refund, and a forecast returning to an earlier value does not spend the same allowance twice. Original plans and forecasts stay unchanged.'),
   ], ['The reservation must remain within the per-cycle cap. Automatic trials also need sufficient unreserved daily allowance; the cycle and daily ledger update atomically. A trial spanning midnight remains funded by its Finnish start day. Unknown exposure does not grant continuation.',
     'An explicitly edited, reviewed one-cycle budget is separate from the automatic daily ledger. An unchanged budget, permission-only edit or priority-only edit retains automatic restrictions. The daily learning target prioritizes useful opportunities and does not guarantee a trial or cap all further learning.',
     'Price threshold, daily target, cost allowance and evidence readiness are separate checks. A learning trial can have lower estimated savings than an economic alternative under the existing opportunity-cost rules. These budgets do not guarantee that profitable periods are unaffected.']);

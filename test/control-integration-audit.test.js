@@ -12,6 +12,83 @@ import { createH66Decoder } from '../src/domain/telemetry.js';
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 
+test('active trial forecast bounces do not repeatedly reserve money without elapsed execution', async t => {
+  const f = setup(t);
+  f.native(); f.plan();
+  f.engine.control.learningTrials = true;
+  const plan = { ...f.engine.pendingPlan, trial: true, trialAllowanceCents: .01,
+    trialSafety: { costExposureCents: .01 }, config: { ...f.engine.control } };
+  f.engine.pendingPlan = null;
+  f.engine.cycles.start(plan, { timestamp: f.now, indoorC: 21.2, phase: 'reduction' }, f.now);
+  const quote = price => {
+    const market = f.store.getState('provider:market');
+    market.intervals.forEach(row => { row.spotCtPerKwh = price; row.price = price; });
+    f.store.setState('provider:market', market);
+  };
+  quote(-1); f.engine.tick(); await f.settle();
+  const first = f.engine.cycles.active();
+  assert(first && !first.adjustments?.length);
+  assert(first.trialBudget.reservedCents > .01, 'A genuine negative-price exposure needs additional allowance');
+  quote(0); f.engine.tick(); await f.settle();
+  quote(-1); f.engine.tick(); await f.settle();
+  const last = f.engine.cycles.active();
+  assert(last && !last.adjustments?.length);
+  assert.equal(last.observationCount, 0, 'No physical interval elapsed between changed forecasts');
+  assert.equal(last.trialBudget.reservedCents, first.trialBudget.reservedCents);
+  assert.equal(last.plan.schedule.reductionEnd, plan.schedule.reductionEnd);
+});
+
+test('active trial retains recorded preheat exposure even when all remaining electricity becomes free', async t => {
+  const f = setup(t);
+  f.native(); f.plan();
+  Object.assign(f.engine.control, { learningTrials: true, maxTrialCostCents: .05 });
+  const plan = { ...f.engine.pendingPlan, trial: true, trialAllowanceCents: .01,
+    trialSafety: { costExposureCents: .01 }, config: { ...f.engine.control },
+    schedule: { ...f.engine.pendingPlan.schedule, preheatEnd: f.now + MINUTE,
+      reductionStart: f.now + MINUTE, roomBoostC: 1 } };
+  f.engine.pendingPlan = null;
+  const started = f.now;
+  f.engine.cycles.start(plan, { timestamp: started, indoorC: 21.2, phase: 'preheat' }, started);
+  f.advance(MINUTE);
+  f.engine.cycles.record({ timestamp: f.now, indoorC: 21.2, outdoorC: 10, solarRadiationWm2: 0,
+    phase: 'preheat', roomBoostC: 1, floorOverrideMode: 'off', priceCents: 100,
+    priceStart: started, priceEnd: f.now, powerKw: 2.2, compressorPowerKw: 2.2, circulationKw: 0,
+    compressorDuty: 1, thermalCompressorDuty: 1, thermalAuxKw: 0, auxKw: 0, auxRoute: 'space',
+    compressorActivityObserved: true, auxiliaryObserved: true, auxiliaryRouteKnown: true,
+    energyBasis: 'estimated' }, f.now);
+  const market = f.store.getState('provider:market');
+  market.intervals.forEach(row => { row.spotCtPerKwh = 0; row.price = 0; });
+  f.store.setState('provider:market', market);
+  f.engine.tick(); await f.settle();
+  const cycle = f.engine.cycles.active();
+  assert(cycle.actual.spaceHeatingCostCents > .05);
+  assert.equal(cycle.adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
+  assert.equal(cycle.executionSchedule.reductionEnd, f.now);
+});
+
+test('unassessable recorded trial costs end the action without claiming the allowance was spent', async t => {
+  const f = setup(t);
+  f.native(); f.plan(); f.engine.control.learningTrials = true;
+  const plan = { ...f.engine.pendingPlan, trial: true, trialAllowanceCents: 1,
+    trialSafety: { costExposureCents: 1 }, config: { ...f.engine.control } };
+  f.engine.pendingPlan = null;
+  f.engine.cycles.start(plan, { timestamp: f.now, indoorC: 21.2, phase: 'reduction' }, f.now);
+  const started = f.now; f.advance(MINUTE);
+  f.engine.cycles.record({ timestamp: f.now, indoorC: 21.2, outdoorC: 10, solarRadiationWm2: 0,
+    phase: 'reduction', floorOverrideMode: 'off', priceCents: 0, priceStart: started, priceEnd: f.now,
+    powerKw: 2.2, compressorPowerKw: 2.2, circulationKw: 0, compressorDuty: 1,
+    thermalCompressorDuty: 1, thermalAuxKw: 0, auxKw: 0, auxRoute: 'space',
+    compressorActivityObserved: true, auxiliaryObserved: true, auxiliaryRouteKnown: true,
+    energyBasis: 'measured' }, f.now);
+  // A total-meter label alone does not establish that the routed compressor
+  // component is measured, so its correlated source uncertainty stays unknown.
+  f.engine.tick(); await f.settle();
+  const cycle = f.engine.cycles.active();
+  assert.equal(cycle.adjustments.at(-1).reason, 'trial-cost-estimate-unavailable');
+  assert.equal(cycle.executionSchedule.reductionEnd, f.now);
+  assert.equal(cycle.trialBudget.reservedCents, 1);
+});
+
 function setup(t, { delayed = false, automationEnabled = true, occupancyMode = 'occupied', startAt = Date.parse('2026-09-07T21:00:00Z') } = {}) {
   const store = new Store(':memory:'), commands = [], pending = [], circulation = [];
   let now = startAt, indoorC = 21.2;

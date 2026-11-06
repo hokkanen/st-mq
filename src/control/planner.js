@@ -169,20 +169,24 @@ export function advanceCycleEvaluation(args, continuation = null) {
   return evaluateCyclePartition(args, continuation, true);
 }
 
-function evaluateCyclePartition({ schedule = null, intervals, model, initialState, targetC,
+function evaluateCyclePartition({ schedule = null, intervals, model, initialState, referenceInitialState, targetC,
   occupancy = { mode: 'occupied' }, maxDropC = 1.5, maxRiseC = 1.5, config = {}, equipment = {}, includeTail = true,
   captureTrajectory = true }, continuation, resumable) {
   const c = { ...CONTROL_DEFAULTS, ...config };
   model ??= initialAdaptiveModel(c);
   if (!Array.isArray(intervals) || !number(initialState?.indoorC) || !number(targetC))
     throw new TypeError('A cycle requires intervals, indoor temperature and a target');
+  if (referenceInitialState !== undefined && (!number(referenceInitialState?.indoorC)
+    || !number(referenceInitialState?.reserveC) || model.floor?.enabled && !number(referenceInitialState?.slabC)))
+    throw new TypeError('A carried reference requires known indoor and stored heat');
   const binding = resumable ? evaluationBinding({ algorithm: LEARNING_ALGORITHM, schedule, model, initialState, targetC,
+    ...(referenceInitialState === undefined ? {} : { referenceInitialState }),
     occupancy, maxDropC, maxRiseC, config: c, equipment }) : null;
   if (continuation !== null) validateCycleEvaluationState(continuation, binding);
   const origin = continuation?.origin ?? intervals[0]?.start ?? null;
   let state = continuation ? { ...continuation.state }
     : { indoorC: initialState.indoorC, reserveC: initialState.reserveC ?? initialState.indoorC, slabC: initialState.slabC ?? initialState.reserveC ?? initialState.indoorC };
-  let nativeState = { ...(continuation?.nativeState ?? state) };
+  let nativeState = { ...(continuation?.nativeState ?? referenceInitialState ?? state) };
   const normalSupplyC = planningSupplyC(equipment);
   const initialIntegral = number(initialState.integral) ? initialState.integral : null;
   const threshold = auxiliaryThreshold(c);
@@ -212,10 +216,11 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
   // Native integral/reset behaviour is not identified by room temperature. Use
   // measured trends only for the first hour; afterwards leave the projection
   // unknown and use the explicitly uncertain heat-demand prior.
-  const projection = hours => {
-    const integral = initialIntegral !== null && hours <= 1
-      ? clamp(initialIntegral + (number(equipment.integralTrendPerHour) ? equipment.integralTrendPerHour : 0) * hours, -5000, 500) : null;
-    const supplyShortfallC = number(equipment.supplyShortfallC) && hours <= 1
+  const projection = (hours, reference = false) => {
+    const startingIntegral = reference ? referenceInitialState?.integral ?? null : initialIntegral;
+    const integral = number(startingIntegral) && hours <= 1
+      ? clamp(startingIntegral + (number(equipment.integralTrendPerHour) ? equipment.integralTrendPerHour : 0) * hours, -5000, 500) : null;
+    const supplyShortfallC = (!reference || equipment.observedPhase === 'normal') && number(equipment.supplyShortfallC) && hours <= 1
       ? equipment.supplyShortfallC + (number(equipment.supplyShortfallTrendPerHour) ? equipment.supplyShortfallTrendPerHour : 0) * hours : null;
     const compressorIntegralDemand = integral !== null && number(c.compressorIntegralA1)
       ? integral <= c.compressorIntegralA1 : null;
@@ -290,7 +295,8 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
       const phase = requestedPhase === 'recovery' && recoveredAt !== null && holdEnded ? 'normal' : requestedPhase;
       const roomBoostC = phase === 'preheat' ? schedule.roomBoostC : 0;
       const projected = projection(elapsed + dt);
-      const native = predict(nativeState, 'normal', 0, interval, dt, projected, true);
+      const native = predict(nativeState, 'normal', 0, interval, dt,
+        referenceInitialState === undefined ? projected : projection(elapsed + dt, true), true);
       nativeState = { indoorC: native.indoorC, reserveC: native.reserveC, slabC: native.slabC ?? null };
       const prediction = schedule ? predict(state, phase, roomBoostC, interval, dt, projected) : native;
       indoorTrendCPerHour=(prediction.indoorC-state.indoorC)/dt;
@@ -473,7 +479,7 @@ function selectedReadiness(readiness, model, schedule) {
 }
 
 export function trialEnvelope({ schedule, initialState, targetC, intervals, model, config = {}, occupancy = {}, maxDropC = 1.5,
-  maxRiseC = 1.5, equipment = {}, assessCost = true }) {
+  maxRiseC = 1.5, equipment = {}, assessCost = true, costContext }) {
   config = { ...CONTROL_DEFAULTS, ...config };
   if (!cycleForecastCovered(intervals, schedule)) return { available: false, reason: 'forecast-coverage-lost',
     comfortSafe: false, coldSafe: false, hotSafe: false, costExposureCents: null };
@@ -565,7 +571,7 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
     }
   }
   const cost = assessCost && coldSafe && hotSafe ? trialCostExposure({ schedule, initialState, targetC, intervals, model, config,
-    occupancy, maxDropC, maxRiseC, equipment }) : { costExposureCents: null, foregoneIncomeCents: null };
+    occupancy, maxDropC, maxRiseC, equipment, costContext }) : { costExposureCents: null, foregoneIncomeCents: null };
   return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, ...cost,
     hotPeakC, hotPeakAt, hotStressHours, hotStressReason,
     basis: 'No-heat cold stress plus full compressor/rated permitted AUX during preheat and native demand afterward; weighted indoor limits include source uncertainty, and delayed peaks and fixed slab routing remain estimated.' };
@@ -575,28 +581,48 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
  * both alternatives; ordinary heating is not charged again as trial spending.
  * Unknown reduction response spans unchanged demand through complete suppression.
  * These are engineering scenarios, never calibrated confidence bounds. */
+export function trialCostScenarios(args) {
+  const source = estimateHeatPumpPerformance({ ...args.model.performance,
+    supplyC: args.equipment?.supplyC, brineC: args.equipment?.brineC });
+  return [-1, 0, 1].map(direction => ({ ...args, direction,
+    model: { ...args.model, parameters: { ...args.model.parameters,
+      hydronicCPerKwh: clamp(hydronicGain(args.model) * (1 - direction * .15), ...THERMAL_PARAMETER_BOUNDS.hydronicCPerKwh),
+      lossPerHour: clamp(args.model.parameters.lossPerHour * (1 + direction * .15), ...THERMAL_PARAMETER_BOUNDS.lossPerHour) } },
+    initialState: { ...args.initialState, reserveC: (args.initialState.reserveC ?? args.initialState.indoorC) + direction * .5,
+      slabC: number(args.initialState.slabC) ? args.initialState.slabC + direction * .5 : null },
+    config: { ...args.config, scenarioElectricalScale: 1 + direction * source.relativeUncertainty,
+      scenarioAuxScale: 1 + direction * .5 } }));
+}
+
 export function trialCostExposure(args) {
   const floor = args.model.floor;
   if (floor?.enabled && (floor.capacityBudgetExceeded
     || !['capacityKwhPerC', 'nativeCapacityKwhPerC', 'exchangeKwPerC'].every(key => number(floor[key]) && floor[key] > 0)
     || !number(floor.groundLossKwPerC) || floor.groundLossKwPerC < 0))
     return { costExposureCents: null, foregoneIncomeCents: null, costBasis: 'Unavailable: invalid physical floor model.' };
+  const context = args.costContext;
+  const knownState = state => number(state?.indoorC) && number(state?.reserveC)
+    && (!floor?.enabled || number(state?.slabC));
+  if (context !== undefined && (!context || context.through !== args.intervals[0]?.start
+    || !Array.isArray(context.scenarios) || context.scenarios.length !== 3
+    || context.scenarios.some((item, index) => item.direction !== index - 1 || !knownState(item.actualState)
+      || !knownState(item.referenceState) || !number(item.actualCostCents) || !number(item.referenceCostCents)
+      || !number(item.foregoneIncomeCents) || item.foregoneIncomeCents < 0
+      || !number(item.electricalScale) || item.electricalScale <= 0
+      || !number(item.auxiliaryScale) || item.auxiliaryScale <= 0)))
+    return { costExposureCents: null, foregoneIncomeCents: null, costBasis: 'Unavailable: incomplete or stale full-cycle cost prefix.' };
   let costExposureCents = 0, foregoneIncomeCents = 0;
-  for (const direction of [-1, 0, 1]) {
-    const source = estimateHeatPumpPerformance({ ...args.model.performance,
-      supplyC: args.equipment?.supplyC, brineC: args.equipment?.brineC });
-    const scenario = { ...args,
-      model: { ...args.model, parameters: { ...args.model.parameters,
-        hydronicCPerKwh: clamp(hydronicGain(args.model) * (1 - direction * .15), ...THERMAL_PARAMETER_BOUNDS.hydronicCPerKwh),
-        lossPerHour: clamp(args.model.parameters.lossPerHour * (1 + direction * .15), ...THERMAL_PARAMETER_BOUNDS.lossPerHour) } },
-      initialState: { ...args.initialState, reserveC: (args.initialState.reserveC ?? args.initialState.indoorC) + direction * .5,
-        slabC: number(args.initialState.slabC) ? args.initialState.slabC + direction * .5 : null },
-      config: { ...args.config, scenarioElectricalScale: 1 + direction * source.relativeUncertainty,
-        scenarioAuxScale: 1 + direction * .5 } };
-    const reference = evaluateCycle({ ...scenario, schedule: null });
+  for (const original of trialCostScenarios(args)) {
+    const prefix = context?.scenarios[original.direction + 1];
+    const scenario = prefix ? { ...original, initialState: { ...prefix.actualState, integral: args.initialState.integral },
+      referenceInitialState: prefix.referenceState, config: { ...original.config,
+        scenarioElectricalScale: prefix.electricalScale, scenarioAuxScale: prefix.auxiliaryScale } } : original;
+    const reference = evaluateCycle({ ...scenario, schedule: null,
+      ...(prefix ? { initialState: prefix.referenceState } : {}) });
     for (const scale of [0, 1]) {
       const action = evaluateCycle({ ...scenario, config: { ...scenario.config, scenarioReductionScale: scale } });
-      costExposureCents = Math.max(costExposureCents, action.costCents - reference.costCents);
+      costExposureCents = Math.max(costExposureCents,
+        (prefix ? prefix.actualCostCents - prefix.referenceCostCents : 0) + action.costCents - reference.costCents);
       const lost = reference.trajectory.reduce((sum, row) => {
         // Evaluate on each trajectory's real boundaries: schedule and recovery
         // transitions need not align with a market interval or the reference.
@@ -609,7 +635,7 @@ export function trialCostExposure(args) {
           * Math.max(0, Math.min(step.at, end) - Math.max(step.at - step.durationHours * HOUR, start)) / HOUR, 0);
         return sum + Math.max(0, row.powerKw * (end - start) / HOUR - actionKwh) * -quote.price;
       }, 0);
-      foregoneIncomeCents = Math.max(foregoneIncomeCents, lost);
+      foregoneIncomeCents = Math.max(foregoneIncomeCents, (prefix?.foregoneIncomeCents ?? 0) + lost);
     }
   }
   return { costExposureCents: Math.max(costExposureCents, foregoneIncomeCents), foregoneIncomeCents,
