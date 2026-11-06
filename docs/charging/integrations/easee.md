@@ -1115,6 +1115,12 @@ withholding, rejection or revocation with its original decision time. These
 diagnostics live outside persisted charging views and create no journal writes.
 An in-progress reconciliation stage is not an admission decision and reports an
 unknown allowance until the actual gate is evaluated.
+An immediate provisional Normal-release plan may be published after its Start
+was reviewed. Moving forecast identifiers and timestamps keep the original bounded
+Start permission while its explicit instruction inputs still match. A scheduled
+future period, owner edit, native restriction, connection change or original
+expiry retains its ordinary authority. The last failed permission evaluation also
+captures the preceding lease change with its original decision clock.
 These bounded in-memory diagnostics contain only reasons, booleans and clocks;
 they grant no permission and do not disclose connection or recovery identifiers.
 

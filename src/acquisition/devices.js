@@ -293,6 +293,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
               : instructionRevision !== permission.instructionRevision ? 'native-instruction-changed' : 'authority-or-connector-unavailable' };
         nativeStartPermission = null;
         nativeStartPermissionStatus = { checkedAt: clock(), allowed: false,
+          permissionChange: nativeStartPermissionChange ? { ...nativeStartPermissionChange } : null,
           reason: !permission ? 'no-start-permission' : permission.until <= clock() ? 'permission-expired'
             : current?.connectionId !== permission.connectionId ? 'connection-changed'
               : instructionRevision !== permission.instructionRevision ? 'native-instruction-changed' : 'authority-or-connector-unavailable' };

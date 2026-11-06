@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, holdRemoteStart = false } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getPlan, holdRemoteStart = false } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -60,7 +60,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
   controller = adapter.createController({ clock: () => now, initialState: controllerState, canControl: () => authority && admitted,
-    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification, getStartRecoveryContext });
+    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification, getStartRecoveryContext, getPlan });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
@@ -576,4 +576,18 @@ test('native admission diagnostics follow real pending, grant and economic refus
   assert.equal(await authorize(), 'Blocked');
   assert.deepEqual(f.provider.localOcppStatus().startPermissionChange, expired,
     'A later missing-lease check preserves the original expiry revocation evidence');
+});
+
+test('publishing a moving immediate fallback cannot withdraw the reviewed Start while native transaction admission is pending', async t => {
+  let f,selectedPlan=null;const fallback=()=>({id:'fallback-'+f.now,provisional:true,feasible:false,startAt:f.now,periods:[{startAt:f.now,endAt:null}]});
+  f=await fixture(t,{holdRemoteStart:true,getPlan:async()=>selectedPlan??fallback()});
+  await f.controller.update({enabled:true,plan:null});await f.status('Preparing');for(let n=0;n<4;n++)await f.call('Heartbeat',{});
+  assert.equal(starts(f).length,1,JSON.stringify({admission:f.provider.localOcppStatus().startAdmission,readiness:f.provider.localOcppStatus().startReadiness,phase:f.controller.status().phase,error:f.controller.status().errorCode}));
+  const code=starts(f)[0].payload.idTag,entered=Promise.withResolvers(),release=Promise.withResolvers(),read=f.adapter.read;
+  f.adapter.read=async options=>{entered.resolve();await release.promise;return read(options);};
+  f.advance(400);const refresh=f.controller.update({enabled:true,plan:fallback()});await entered.promise;
+  try{f.answerStart();await f.call('Heartbeat',{});const reply=await f.call('StartTransaction',{connectorId:1,idTag:code,meterStart:0,timestamp:new Date(f.now).toISOString()});assert.equal(reply[2].idTagInfo.status,'Accepted','Routine publication of the same immediate Normal release is not contrary instruction');}
+  finally{release.resolve();await refresh;f.adapter.read=read;}
+  const future=f.now+30*MINUTE;selectedPlan={id:'future',feasible:true,startAt:future,periods:[{startAt:future,endAt:null}]};await f.controller.update({enabled:true,plan:selectedPlan});
+  assert.equal((await f.call('Authorize',{idTag:code}))[2].idTagInfo.status,'Blocked','A real future-period instruction still withdraws startup permission');
 });

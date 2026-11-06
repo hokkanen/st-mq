@@ -384,6 +384,12 @@ function controlIntent(input, independentStart = false) {
         hasDemand: Number.isFinite(plan.requiredGridKwh) && plan.requiredGridKwh > 0 } : null } : null,
   };
 }
+function immediateFallback(plan, now) {
+  const execution = executionFor(plan);
+  return plan?.provisional === true && plan.feasible === false && !plan.priceRevision
+    && time(plan.startAt) && plan.startAt <= now && execution?.periods.length === 1
+    && execution.periods[0].startAt <= now && execution.periods[0].endAt === null;
+}
 function validState(state, scope) {
   const keys = Object.keys(initialOcppControllerState(scope));
   return fields(state, keys) && keys.filter(key => !['takeoverPending', 'automaticTakeover', 'nativeTakeoverAt', 'externalResumeAt'].includes(key)).every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
@@ -600,12 +606,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (planningWait === waiting) planningWait = null;
     }
   }
+  let admittedFallbackIntent = null;
   function permitStart(plan, current) {
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
     // decision that calls for a pause must withdraw it before any awaited work.
     const record = (allowed, reason) => adapter.recordStartAdmission?.({ checkedAt: clock(), allowed, reason });
-    const revoke = reason => { record(false, reason); adapter.setStartPermission?.(null, { reason }); return false; };
+    const revoke = reason => { admittedFallbackIntent = null; record(false, reason); adapter.setStartPermission?.(null, { reason }); return false; };
     const now = clock(), app = snapshot?.appControl;
     if (closed || current !== generation) return revoke('controller-superseded');
     if (!hasAuthority()) return revoke('controller-authority-unavailable');
@@ -641,6 +648,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
       recovery: { connectedAt: state.session.connectedAt,
         key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) } });
+    admittedFallbackIntent = immediateFallback(plan, now) && !snapshot.transactionConfirmed
+      && !state.owned && !state.pending ? controlIntent(desired, true) : null;
+    return true;
   }
   function observePause() {
     ownsInstruction = ownsInstruction && snapshot.online && fresh(snapshot.readAt, clock()) && snapshot.transactionConfirmed
@@ -1233,7 +1243,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   return { status, supportsIdentification: true,
     interruptPlanning() {
       if (!planningWait) return false;
-      adapter.setStartPermission?.(null, { reason: 'planning-cancelled' }); generation++; planningWait.cancel(); return true;
+      admittedFallbackIntent = null; adapter.setStartPermission?.(null, { reason: 'planning-cancelled' }); generation++; planningWait.cancel(); return true;
     },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
@@ -1246,7 +1256,15 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const independentStart = desired.enabled !== true || chargeNowActive()
         || identification?.mode === 'probe' && ['waiting', 'charging'].includes(identification.phase)
           && identification.connectedAt === state.session?.connectedAt && clock() < identification.probeUntil;
-      if (!isDeepStrictEqual(controlIntent(next, independentStart), controlIntent(desired, independentStart))) {
+      // The planner can publish the just-reviewed fallback while Start is on
+      // the wire. Its moving timestamp/id is still the same immediate Normal
+      // release. Keep the original bounded lease; explicit instructions and a
+      // real scheduled period retain their ordinary invalidation path.
+      const sameFallback = admittedFallbackIntent && !snapshot?.transactionConfirmed && !state.owned && !state.pending
+        && immediateFallback(next.plan, clock())
+        && isDeepStrictEqual(controlIntent(next, true), admittedFallbackIntent);
+      if (!sameFallback && !isDeepStrictEqual(controlIntent(next, independentStart), controlIntent(desired, independentStart))) {
+        admittedFallbackIntent = null;
         adapter.setStartPermission?.(null, { reason: 'instruction-changed' });
         generation++; abort?.abort();
       }
@@ -1256,7 +1274,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       queue = queue.catch(() => {}).then(() => reconcile(current));
       return queue.then(() => status());
     },
-    invalidate() { adapter.setStartPermission?.(null, { reason: 'controller-invalidated' }); generation++; abort?.abort(); },
-    close() { adapter.setStartPermission?.(null, { reason: 'controller-closed' }); closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
+    invalidate() { admittedFallbackIntent = null; adapter.setStartPermission?.(null, { reason: 'controller-invalidated' }); generation++; abort?.abort(); },
+    close() { admittedFallbackIntent = null; adapter.setStartPermission?.(null, { reason: 'controller-closed' }); closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
   };
 }
