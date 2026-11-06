@@ -673,6 +673,25 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const result = await commit(() => current.charging.chargingTestAction(chargingTestAction[1], input));
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
+        const nativeEnvelope = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/native-envelope$/);
+        if (req.method === 'POST' && nativeEnvelope) {
+          if (webAccess.role !== 'admin') return json(403, { error: 'Admin access is required for this action.' });
+          return await mutate(async (current, input) => {
+            const cancellation = new AbortController(), disconnected = () => cancellation.abort();
+            const authorized = () => {
+              const latest = access();
+              return !res.destroyed && !unavailable() && !writesBlocked() && current === getEngine()
+                && latest.enabled && (ingress || latest === acceptedAccess) && identity(latest)?.role === 'admin';
+            };
+            res.once('close', disconnected);
+            try {
+              const value = await current.charging.readNativeEnvelope(nativeEnvelope[1], input,
+                { signal: cancellation.signal, isAuthorized: authorized });
+              if (!res.destroyed) return json(200, value);
+            }
+            finally { res.removeListener('close', disconnected); }
+          });
+        }
         const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|pause|resume|use-automatic|charge-now|identify|flexibility|flexibility-preview)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {

@@ -27,6 +27,7 @@ const METER_CONTEXTS = new Set(['Interruption.Begin', 'Interruption.End', 'Sampl
 const AUTHORIZATION_KEYS = Object.freeze(['AuthorizationCacheEnabled', 'AuthorizeRemoteTxRequests',
   'LocalPreAuthorize', 'LocalAuthorizeOffline', 'ExternalAuthorizationRequired']);
 const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability', 'TriggerMessage']);
+const READ_ONLY_REQUEST_ACTIONS = new Set(['GetCompositeSchedule', 'GetConfiguration', 'TriggerMessage']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
 for (const [address, prefix, type] of [['0.0.0.0', 8, 'ipv4'], ['127.0.0.0', 8, 'ipv4'],
@@ -344,7 +345,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
     // Background reads have no physical effect. A missing acknowledgement
     // must never keep a control action or an explicitly scoped read waiting.
-    const background = call => call.meterRefresh || call.authorizationRead;
+    const background = call => call.meterRefresh || call.authorizationRead || call.diagnosticRead;
     if (callQueue.some(call => !background(call))) for (const [id, call] of pendingCalls) {
       if (background(call)) {
         pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked');
@@ -989,8 +990,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const modeDisableIntent = { requestedAt: now, connectionId: authenticatedConnectionId };
       persist(active && !active.modeDisableIntent ? updateTransaction({ ...active, modeDisableIntent }) : ledger);
     },
-    request(action, payload, { signal, guard = () => true, beforeSend = () => true, attempt } = {}) {
+    request(action, payload, { signal, guard = () => true, beforeSend = () => true, attempt, diagnosticRead = false } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
+      if (typeof diagnosticRead !== 'boolean' || diagnosticRead && action !== 'GetCompositeSchedule')
+        return Promise.reject(requestError('ocpp-invalid-request'));
       if (action === 'TriggerMessage' && (!payload || payload.connectorId !== 1 || payload.requestedMessage !== 'MeterValues'
         || Object.keys(payload).some(key => !['connectorId', 'requestedMessage'].includes(key))))
         return Promise.reject(requestError('ocpp-invalid-payload'));
@@ -1010,19 +1013,19 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (!permittedBy(guard)) return Promise.reject(requestError('ocpp-request-revoked'));
       if (callQueue.filter(call => call.resolve).length >= 8) return Promise.reject(requestError('ocpp-queue-full'));
       return new Promise((resolve, reject) => {
-        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, beforeSend, resolve, reject,
+        const call = { action, payload: JSON.parse(encoded), connection: socket, queuedAt: clock(), signal, guard, beforeSend, resolve, reject, diagnosticRead,
           attempt: attempt ?? (['SetChargingProfile', 'ClearChargingProfile', 'ChangeAvailability'].includes(action)
             ? controlAttempt() : createControlAttempt({ kind: 'query' })) };
         call.abort = () => {
           const index = callQueue.indexOf(call);
           if (index >= 0) callQueue.splice(index, 1);
           finishRequest(call, 'ocpp-request-aborted');
-          // This specific read-only request has no charging effect to resolve.
+          // Read-only requests have no physical effect to resolve.
           // A late sample/reply remains ordinary telemetry; it must not hold a
           // physical pause or restoration behind its acknowledgement timeout.
-          if (action === 'TriggerMessage') for (const [id, pending] of pendingCalls)
+          if (READ_ONLY_REQUEST_ACTIONS.has(action)) for (const [id, pending] of pendingCalls)
             if (pending === call) pendingCalls.delete(id);
-          // Other already sent requests still occupy the wire until reply or
+          // Mutations already sent still occupy the wire until reply or
           // timeout; cancelling a promise cannot cancel its physical effect.
           sendNextCall();
         };

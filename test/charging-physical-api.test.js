@@ -43,6 +43,42 @@ function production(runtime) {
     vehicleFeeds: status.vehicleFeeds, revision: status.revision, coordination: status.coordination });
 }
 
+test('native-envelope diagnostics require admin master access and cancel on client disconnect', async t => {
+  const f = fixture(t), token = 'synthetic-native-envelope-admin', familyToken = 'synthetic-native-envelope-family';
+  await f.runtime.historyService.close(); f.runtime.historyService = null;
+  await f.engine.update(); await f.engine.initializeCommittedStatus();
+  let calls = 0, pending = null;
+  f.runtime.readNativeEnvelope = async (id, input, options) => {
+    calls++; assert.equal(id, 'charger1'); assert.equal(options.isAuthorized(), true);
+    assert.deepEqual(input, { association: 'invented-association', sessionId: 'invented-session', revision: 1 });
+    if (!pending) return { kind: 'native-effective-current-envelope', available: false, envelope: null };
+    pending.entered.resolve();
+    return await new Promise(resolve => options.signal.addEventListener('abort', () => {
+      pending.cancelled.resolve(); resolve({ available: false, envelope: null });
+    }, { once: true }));
+  };
+  const server = createAppServer({ engine: f.engine, store: f.store, token, familyToken,
+    controlAuthority: { canControl: f.primary, status: () => ({}) } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1/native-envelope`;
+  const input = { association: 'invented-association', sessionId: 'invented-session', revision: 1 };
+  const post = (credential, signal) => fetch(url, { method: 'POST', signal,
+    headers: { 'content-type': 'application/json', ...(credential ? { authorization: `Bearer ${credential}` } : {}) },
+    body: JSON.stringify(input) });
+  assert.equal((await post()).status, 401);
+  assert.equal((await post(familyToken)).status, 403);
+  assert.equal(calls, 0);
+  const accepted = await post(token); assert.equal(accepted.status, 200);
+  assert.equal((await accepted.json()).envelope, null); assert.equal(calls, 1);
+  pending = { entered: Promise.withResolvers(), cancelled: Promise.withResolvers() };
+  const cancel = new AbortController(), request = post(token, cancel.signal);
+  const rejected = assert.rejects(request, error => error.name === 'AbortError');
+  await pending.entered.promise; cancel.abort(); await rejected; await pending.cancelled.promise;
+  assert.equal(calls, 2);
+  f.demote(); assert.equal((await post(token)).status, 409); assert.equal(calls, 2);
+});
+
 test('guided-test API uses real normalized charger readiness and keeps declarations out of production settings', async t => {
   const f = fixture(t), token = 'synthetic-physical-test-authorization';
   // Keep background household preparation out of the action comparison.

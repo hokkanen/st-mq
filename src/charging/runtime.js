@@ -314,8 +314,8 @@ const scheduleCeiling = snapshot => {
 /** Every charger has configured defaults, scoped requests, readings, planning episode
  * and controller slot. Adapters own provider-specific native command semantics. */
 export class ChargingRuntime {
-  constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
-    Object.assign(this, { engine, store, config, clock, canControl, definitions });
+  constructor({ engine, store, config, clock = Date.now, monotonicClock = () => performance.now(), canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
+    Object.assign(this, { engine, store, config, clock, monotonicClock, canControl, definitions });
     this.writeAbort = new AbortController();
     this.key = `charging:${config.input}`;
     this.configuration = chargingConfiguration(config.charging);
@@ -3578,6 +3578,63 @@ export class ChargingRuntime {
       || input.association !== item.association || input.sessionId !== item.request.sessionId
       || input.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
     return { item, view };
+  }
+  async readNativeEnvelope(id, input, { signal, isAuthorized = () => true } = {}) {
+    this.checkControlAuthority();
+    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
+      throw new Error('Reading native limits requires the displayed charging connection.');
+    const scope = { association: input.association, sessionId: input.sessionId, revision: input.revision };
+    const { item } = this.checkedSession(id, scope), adapter = item.adapter, generation = item.adapterGeneration,
+      requestedAt = Math.floor(this.clock());
+    const startedMono = this.monotonicClock();
+    const expired = () => this.monotonicClock() - startedMono >= 5000 || this.clock() - requestedAt >= 5000;
+    if (typeof adapter?.read !== 'function' || typeof adapter?.composite !== 'function')
+      throw new Error('This charger does not report a native composite schedule.');
+    if (item.nativeEnvelopeFlight || adapter.controlPending?.() !== false)
+      throw new Error('Wait for the current native request before reading limits.');
+    const current = () => {
+      try {
+        return !this.closed && this.canControl() && isAuthorized() && this.clock() >= requestedAt && item.adapter === adapter
+          && item.adapterGeneration === generation && !item.backendTransition
+          && this.checkedSession(id, scope).item === item;
+      } catch { return false; }
+    };
+    if (!current()) throw new Error('Charging connection changed; refresh before reading limits.');
+    const cancellation = new AbortController();
+    const readSignal = AbortSignal.any([cancellation.signal, this.writeAbort.signal, ...(signal ? [signal] : [])]);
+    const flight = {}; item.nativeEnvelopeFlight = flight;
+    let timedOut = false;
+    // This is an explicit caller's completion deadline, not background polling.
+    // Keep it alive until the request settles; shutdown also aborts the read.
+    const timer = setTimeout(() => { timedOut = true; cancellation.abort(); }, 5000);
+    try {
+      const snapshot = await adapter.read({ signal: readSignal }), now = this.clock();
+      if (!current()) throw new Error('Charging connection changed; refresh before reading limits.');
+      if (!snapshot.online || !Number.isSafeInteger(snapshot.readAt) || snapshot.readAt > now
+        || now - snapshot.readAt > 60_000 || snapshot.pluggedIn !== true)
+        return { kind: 'native-effective-current-envelope', available: false, envelope: null,
+          reason: 'native-readings-unavailable', requestedAt, completedAt: Math.floor(now) };
+      if (expired()) return { kind: 'native-effective-current-envelope', available: false, envelope: null,
+        reason: 'native-envelope-timeout', requestedAt, completedAt: Math.floor(this.clock()) };
+      const envelope = await adapter.composite(snapshot, Math.floor(this.clock()) + 60_000, {
+        signal: readSignal, guard: () => !readSignal.aborted && !expired() && current(), diagnostic: true });
+      if (!current()) throw new Error('Charging connection changed; refresh before reading limits.');
+      if (expired()) return { kind: 'native-effective-current-envelope', available: false, envelope: null,
+        reason: 'native-envelope-timeout', requestedAt, completedAt: Math.floor(this.clock()) };
+      return { kind: 'native-effective-current-envelope', available: true, unit: 'A', envelope,
+        requestedAt, completedAt: Math.floor(this.clock()),
+        basis: 'Reported composite schedule limits; not charging permission, available supply or physical charging proof.' };
+    } catch (error) {
+      if (!current()) throw new Error('Charging connection changed; refresh before reading limits.');
+      const known = ['composite-unavailable', 'ocpp-request-timeout', 'ocpp-request-aborted', 'ocpp-request-revoked',
+        'ocpp-unavailable', 'ocpp-queue-full', 'control-revoked'];
+      return { kind: 'native-effective-current-envelope', available: false, envelope: null,
+        reason: timedOut || expired() ? 'native-envelope-timeout' : known.includes(error?.code) ? error.code : 'native-envelope-unavailable',
+        requestedAt, completedAt: Math.floor(this.clock()) };
+    } finally {
+      clearTimeout(timer);
+      if (item.nativeEnvelopeFlight === flight) delete item.nativeEnvelopeFlight;
+    }
   }
   async settleActionInputs(id) {
     this.checkControlAuthority();

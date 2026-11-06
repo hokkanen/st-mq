@@ -645,6 +645,22 @@ At expiry, the restriction disappears on the charger without a new resume
 command. Charging then follows the charger, vehicle and Equalizer's existing
 limits. Normal release does not impose an artificial current setpoint or use a
 returned composite limit as the actual available current.
+
+For diagnosis, the active master offers an admin-only
+`POST /api/charging/chargers/charger1/native-envelope` read. Supply the displayed
+`association`, `sessionId` and `revision` from the current charging request.
+It requests one 60-second `GetCompositeSchedule` through the current adapter,
+including when the connected session has no confirmed transaction. One query
+per charger may be in flight; the read has a five-second deadline and yields
+to control instructions. Client disconnect, lost authority, changed equipment
+or a changed request withdraws the result. It changes no profile or charging
+choice and is unsupported on adapters without composite schedules.
+
+The response preserves controller request/completion clocks and the charger's
+schedule start. A reported zero limit remains valid; rejection, timeout or an
+unusable reply remains unavailable, never zero. This envelope reports schedule
+constraints, not available supply, authorization, ownership or physical charging.
+
 Intermediate pauses still require a running controller to install the next
 restriction. A process or network outage can therefore miss a future pause and
 increase cost, while an already installed restriction retains its own expiry.

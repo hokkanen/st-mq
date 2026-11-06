@@ -176,11 +176,11 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     setStartPermission, controlPending,
     deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
-    async composite(snapshot, until, { signal, guard = () => true } = {}) {
+    async composite(snapshot, until, { signal, guard = () => true, diagnostic = false } = {}) {
       const now = clock(), duration = Math.max(60, Math.ceil((until - now) / 1000));
       if (duration > MAX_PAUSE_MS / 1000 + 60) throw fail('invalid-plan');
       const reply = await request('GetCompositeSchedule', { connectorId: 1, duration, chargingRateUnit: 'A' },
-        { signal, guard: () => canControl() && guard() && isCurrent(snapshot) });
+        { signal, guard: () => canControl() && guard() && isCurrent(snapshot), ...(diagnostic ? { diagnosticRead: true } : {}) });
       if (!isCurrent(snapshot) || !guard()) throw fail('control-revoked');
       return normalizeOcppComposite(reply, { now, duration });
     },

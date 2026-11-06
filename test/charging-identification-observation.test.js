@@ -12,7 +12,7 @@ const START = Date.parse('2026-09-25T09:00:00Z'), MINUTE = 60_000, FUTURE = STAR
 // all command counts include every request the real controllers dispatch.
 async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true,
   atHome = true, normalCharging = false, autoCharge = false, freshPlug = false } = {}) {
-  let now = START, runtime, failPersistence = false, nativeReadHook = async () => {};
+  let now = START, elapsed = 0, runtime, failPersistence = false, nativeReadHook = async () => {}, nativeRequestHook = async () => {};
   const states = new Map(), writes = [], profiles = new Map();
   const store = { getState: key => structuredClone(states.get(key)),
     setState: (key, value) => {
@@ -86,14 +86,16 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       pluggedIn: physical.pluggedIn, connectorStatus: !physical.pluggedIn ? 'Available'
         : physical.charging ? 'Charging' : 'SuspendedEVSE', statusAt: physical.at,
       transactionId: physical.pluggedIn ? physical.transactionId : null,
-      transactionStartedAt: physical.pluggedIn ? physical.transactionStartedAt : null,
-      transactionConfirmed: physical.pluggedIn,
+      transactionStartedAt: physical.pluggedIn && physical.transactionId !== null ? physical.transactionStartedAt : null,
+      transactionConfirmed: physical.pluggedIn && physical.transactionId !== null,
       limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] },
       powerKw: physical.charging ? physical.powerKw : 0, powerAt: physical.powerAt === undefined ? now : physical.powerAt,
       appControl: { readAt: now, enabled: physical.enabled, enabledAt: physical.enabledAt,
         stopped: !physical.enabled, stopAt: physical.enabledAt, controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null } }); },
     request: async (action, payload, options) => {
       assert.equal(options.guard(), true);
+      const supplied = await nativeRequestHook(action, payload, options);
+      if (supplied !== undefined) return supplied;
       if (action === 'SetChargingProfile') {
         assert.equal(options.beforeSend(), true);
         writes.push({ action, payload: structuredClone(payload), requestedAt: now });
@@ -122,7 +124,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
         { measuredAt: at, readingId: `synthetic-${key}-${value}-${at}` }])) }), { retain: retained }, now), true);
   };
   const create = async () => {
-    runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => now });
+    runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => now, monotonicClock: () => elapsed });
     const current = runtime; t.after(() => current.close());
     // Drive reconciles explicitly so a test cannot pass due to timer ordering.
     runtime.tick = () => {};
@@ -147,7 +149,9 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
   return { get runtime() { return runtime; }, get now() { return now; }, writes, profiles, physical, tesla, publish, states,
     failPersistence: value => { failPersistence = value; },
     nativeReadHook: value => { nativeReadHook = value; },
+    nativeRequestHook: value => { nativeRequestHook = value; },
     setNow: value => { now = value; },
+    setElapsed: value => { elapsed = value; },
     update: input => runtime.chargers.charger1.controller.update({ enabled: true, ...input }),
     view: () => runtime.telemetry(now).charger1.vehicle,
     async restart() { runtime.persist(); await runtime.close(); await create(); },
@@ -274,6 +278,115 @@ for (const vehicle of ['bmw', 'tesla']) test(`${vehicle}: prior-unplug readiness
     f.tesla.atHome = true; f.tesla.healthy = false;
   }
   assert.equal(f.runtime.identificationFeedReady(item, f.now), false);
+});
+
+async function envelopeFixture(t, transport = 'ocpp') {
+  const f = await fixture(t, transport, 'bmw', { normalCharging: true, charging: false });
+  f.setNow(START + 1000); await f.update(); return f;
+}
+const envelopeInput = f => {
+  const view = f.runtime.status().chargers.find(row => row.id === 'charger1');
+  return { association: view.association, sessionId: view.request.sessionId, revision: view.request.revision };
+};
+const compositeReply = (f, limit = 16) => ({ status: 'Accepted', connectorId: 1,
+  scheduleStart: new Date(f.now).toISOString(), chargingSchedule: { chargingRateUnit: 'A', duration: 60,
+    chargingSchedulePeriod: [{ startPeriod: 0, limit, numberPhases: 3 }] } });
+
+for (const limit of [0, 16]) test(`a native diagnostic reads a ${limit} A envelope without a confirmed transaction or a control edit`, async t => {
+  const f = await envelopeFixture(t);
+  f.physical.transactionId = null; await f.update();
+  const calls = [], before = structuredClone([...f.states]), revision = f.runtime.revision;
+  f.nativeRequestHook((action, payload, options) => {
+    calls.push({ action, payload }); assert.equal(options.diagnosticRead, true);
+    return compositeReply(f, limit);
+  });
+  const result = await f.runtime.readNativeEnvelope('charger1', envelopeInput(f));
+  assert.equal(result.available, true); assert.equal(result.unit, 'A');
+  assert.equal(result.envelope.periods[0].limit, limit);
+  assert.equal(result.requestedAt, f.now); assert.equal(result.completedAt, f.now);
+  assert.deepEqual(calls, [{ action: 'GetCompositeSchedule', payload: { connectorId: 1, duration: 60, chargingRateUnit: 'A' } }]);
+  assert.equal(f.writes.length, 0); assert.equal(f.runtime.revision, revision);
+  assert.deepEqual([...f.states], before);
+});
+
+for (const change of ['authority', 'authorization', 'adapter', 'revision', 'clock-backward']) test(`native diagnostic refuses ${change} loss before the wire`, async t => {
+  const f = await envelopeFixture(t);
+  let permitted = true, calls = 0;
+  const item = f.runtime.chargers.charger1, originalAuthority = f.runtime.canControl;
+  f.nativeRequestHook(() => { calls++; return compositeReply(f); });
+  f.nativeReadHook(() => {
+    if (change === 'authority') f.runtime.canControl = () => false;
+    if (change === 'authorization') permitted = false;
+    if (change === 'adapter') item.adapterGeneration++;
+    if (change === 'revision') item.request.revision++;
+    if (change === 'clock-backward') f.setNow(f.now - 1);
+  });
+  try {
+    await assert.rejects(f.runtime.readNativeEnvelope('charger1', envelopeInput(f), { isAuthorized: () => permitted }), /changed/);
+    assert.equal(calls, 0); assert.equal(f.writes.length, 0);
+  } finally { f.runtime.canControl = originalAuthority; }
+});
+
+test('native diagnostic keeps the original request fence through a reply and leaves rejected results unknown', async t => {
+  const f = await envelopeFixture(t);
+  const input = envelopeInput(f), item = f.runtime.chargers.charger1;
+  f.nativeRequestHook(() => { item.request.revision++; input.revision = item.request.revision; return compositeReply(f); });
+  await assert.rejects(f.runtime.readNativeEnvelope('charger1', input), /changed/);
+  f.nativeRequestHook(() => ({ status: 'Rejected' }));
+  const rejected = await f.runtime.readNativeEnvelope('charger1', envelopeInput(f));
+  assert.equal(rejected.available, false); assert.equal(rejected.envelope, null);
+  assert.equal(rejected.reason, 'composite-unavailable'); assert.equal(f.writes.length, 0);
+});
+
+test('native diagnostic bounds concurrent reads and rejects unsupported adapters without commands', async t => {
+  const f = await envelopeFixture(t);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  let calls = 0;
+  f.nativeRequestHook(async () => { calls++; entered.resolve(); await release.promise; return compositeReply(f); });
+  const pending = f.runtime.readNativeEnvelope('charger1', envelopeInput(f)); await entered.promise;
+  await assert.rejects(f.runtime.readNativeEnvelope('charger1', envelopeInput(f)), /current native request/);
+  release.resolve(); assert.equal((await pending).available, true); assert.equal(calls, 1);
+  const cloud = await envelopeFixture(t, 'cloud');
+  await assert.rejects(cloud.runtime.readNativeEnvelope('charger1', envelopeInput(cloud)), /does not report/);
+  assert.equal(cloud.writes.length, 0);
+});
+
+test('native diagnostic refuses malformed, stale and busy requests before any native read', async t => {
+  const f = await envelopeFixture(t), input = envelopeInput(f);
+  let calls = 0; f.nativeReadHook(() => { calls++; });
+  await assert.rejects(f.runtime.readNativeEnvelope('charger1', { ...input, extra: true }), /displayed/);
+  await assert.rejects(f.runtime.readNativeEnvelope('charger1', { ...input, revision: input.revision - 1 }), /changed/);
+  f.physical.nativeCommandPending = true;
+  await assert.rejects(f.runtime.readNativeEnvelope('charger1', input), /current native request/);
+  assert.equal(calls, 0); assert.equal(f.writes.length, 0);
+});
+
+for (const boundary of ['wall', 'monotonic']) test(`native diagnostic enforces its ${boundary} deadline before a delayed timer runs`, async t => {
+  const f = await envelopeFixture(t); let calls = 0;
+  f.nativeReadHook(() => {
+    if (boundary === 'wall') f.setNow(f.now + 5001);
+    else f.setElapsed(5001);
+  });
+  f.nativeRequestHook(() => { calls++; return compositeReply(f); });
+  const value = await f.runtime.readNativeEnvelope('charger1', envelopeInput(f));
+  assert.equal(value.available, false); assert.equal(value.envelope, null);
+  assert.equal(value.reason, 'native-envelope-timeout'); assert.equal(calls, 0);
+});
+
+test('an unanswered native diagnostic reaches its deadline and releases its single-flight slot', async t => {
+  const f = await envelopeFixture(t);
+  f.nativeRequestHook((action, payload, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(Object.assign(new Error('Synthetic read cancellation'),
+      { code: 'ocpp-request-aborted' })), { once: true });
+  }));
+  const started = performance.now(), result = await f.runtime.readNativeEnvelope('charger1', envelopeInput(f));
+  assert.equal(result.available, false); assert.equal(result.envelope, null);
+  assert.equal(result.reason, 'native-envelope-timeout');
+  assert(performance.now() - started < 10_000);
+  assert.equal(f.runtime.chargers.charger1.nativeEnvelopeFlight, undefined);
+  f.nativeRequestHook(() => compositeReply(f));
+  assert.equal((await f.runtime.readNativeEnvelope('charger1', envelopeInput(f))).available, true);
+  assert.equal(f.writes.length, 0);
 });
 
 for (const transport of ['cloud', 'ocpp']) {

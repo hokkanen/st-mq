@@ -1332,10 +1332,47 @@ test('closing the native adapter cancels a quarantined acknowledgement without a
   f.now = at + 138; assert.equal(f.local.controlSnapshot(), null);
 });
 
-test('aborting an in-flight native request rejects the caller but retains wire serialization until its reply', async t => {
+for (const action of ['GetConfiguration', 'GetCompositeSchedule']) test(`aborting the read-only ${action} releases the wire for a physical instruction`, async t => {
+  const { f, client } = await readyRequests(t), abort = new AbortController();
+  const next = once(client.ws, 'message');
+  const read = resultOf(f.local.request(action, action === 'GetConfiguration' ? {} : { connectorId: 1, duration: 60 }, { signal: abort.signal }));
+  await next; const original = client.calls.at(-1);
+  const control = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }));
+  abort.abort(); assert.deepEqual(await read, { code: 'ocpp-request-aborted' });
+  await flushCalls(client);
+  assert.equal(client.calls.at(-1)[2], 'SetChargingProfile');
+  respond(client, original, { status: 'Rejected' });
+  respond(client, client.calls.at(-1), { status: 'Accepted' });
+  assert.deepEqual(await control, { value: { status: 'Accepted' } });
+});
+
+test('a diagnostic native schedule read yields immediately to a physical instruction', async t => {
+  const { f, client } = await readyRequests(t), next = once(client.ws, 'message');
+  const read = resultOf(f.local.request('GetCompositeSchedule', { connectorId: 1, duration: 60 }, { diagnosticRead: true }));
+  await next; const original = client.calls.at(-1);
+  const control = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }));
+  await flushCalls(client);
+  assert.equal(client.calls.at(-1)[2], 'SetChargingProfile');
+  assert.deepEqual(await read, { code: 'ocpp-request-revoked' });
+  respond(client, original, { status: 'Rejected' });
+  respond(client, client.calls.at(-1), { status: 'Accepted' });
+  assert.deepEqual(await control, { value: { status: 'Accepted' } });
+});
+
+test('only a composite read can use the diagnostic queue priority', async t => {
+  const { f, client } = await readyRequests(t), count = client.calls.length;
+  await assert.rejects(f.local.request('SetChargingProfile', { connectorId: 1 }, { diagnosticRead: true }),
+    { code: 'ocpp-invalid-request' });
+  for (const diagnosticRead of [null, 1, 'true'])
+    await assert.rejects(f.local.request('GetCompositeSchedule', { connectorId: 1, duration: 60 }, { diagnosticRead }),
+      { code: 'ocpp-invalid-request' });
+  assert.equal(client.calls.length, count);
+});
+
+test('aborting an in-flight native mutation retains wire serialization until its reply', async t => {
   const { f, client } = await readyRequests(t), controller = new AbortController();
   let next = once(client.ws, 'message');
-  const first = resultOf(f.local.request('GetConfiguration', {}, { signal: controller.signal })); await next;
+  const first = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, { signal: controller.signal })); await next;
   const sent = client.calls.at(-1), count = client.calls.length;
   const queuedController = new AbortController();
   const queued = resultOf(f.local.request('ClearChargingProfile', { id: 3 }, { signal: queuedController.signal }));
@@ -1343,7 +1380,7 @@ test('aborting an in-flight native request rejects the caller but retains wire s
   const second = f.local.request('GetConfiguration', { key: ['SupportedFeatureProfiles'] });
   controller.abort(); assert.deepEqual(await first, { code: 'ocpp-request-aborted' });
   await client.call('Heartbeat', {}); assert.equal(client.calls.length, count);
-  next = once(client.ws, 'message'); respond(client, sent, { configurationKey: [] }); await next;
+  next = once(client.ws, 'message'); respond(client, sent, { status: 'Accepted' }); await next;
   assert.deepEqual(client.calls.at(-1)[3], { key: ['SupportedFeatureProfiles'] });
   respond(client, client.calls.at(-1), { configurationKey: [{ key: 'SupportedFeatureProfiles', readonly: true, value: 'Core,SmartCharging' }] });
   assert.equal((await second).configurationKey[0].value, 'Core,SmartCharging');
