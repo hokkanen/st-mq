@@ -9,7 +9,7 @@ const detail = (label, value) => value === null || value === undefined ? [] : [{
 const lookup = (map, value) => typeof value === 'string' && Object.hasOwn(map, value) ? map[value] : undefined;
 const phase = value => lookup({ normal: 'Normal heating', preheat: 'Preheating', reduction: 'Reduced heating', recovery: 'Recovery heating', circulation: 'Hot-water circulation' }, value) ?? 'Heating';
 const register = value => lookup({ '0203': 'ROOM temperature', '0208': 'Hot-water stop temperature', '0212': 'Hot-water start temperature', '2201': 'Operating mode' }, value) ?? 'Native setting';
-const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heating was paused.', 'restart-with-automation-disabled': 'Restoration was checked after restart with Automatic paused.',
+const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heating control was unavailable.', 'restart-with-automation-disabled': 'Restoration was checked after restart while automatic heating control was unavailable.',
   'model-rebuilding': 'The learning model was being rebuilt.', 'execution-not-established': 'Command execution was not established.',
   'insufficient-cycle-energy-coverage': 'Recorded energy coverage was incomplete.', 'sensor-measurement-changed': 'A sensor change interrupted this cycle.',
   'native-room-setting-changed': 'A native ROOM setting change invalidated the applicable response evidence.', 'source-expired': 'Source evidence expired.',
