@@ -12,7 +12,7 @@ function fixture(t) {
   recordLearningContext(store, 'mqtt', { phase: 'normal', regime: 'occupied', targetC: 21,
     roomBoostC: 0, floorOverrideMode: 'off', treatmentKey: 'normal', dhwrActive: false }, START);
   return { store, at: value => { now = value; },
-    record: (mode, at) => Engine.prototype.recordFloorLearningMode.call(engine, { mode, at }) };
+    record: (mode, at, validUntil = null) => Engine.prototype.recordFloorLearningMode.call(engine, { mode, at, validUntil }) };
 }
 
 test('a manual GPIO pulse between controller ticks remains excluded in committed learning inputs', t => {
@@ -36,8 +36,8 @@ test('late GPIO evidence cannot backdate or overwrite committed control history'
   const after = f.store.learningJournal({ input: 'mqtt', limit: 100 });
   assert.deepEqual(after.slice(0, before.length), before);
   const latest = latestLearningControlContext(f.store, 'mqtt');
-  assert.equal(latest.at, START + 30_000);
-  assert.equal(latest.context.floorOverrideMode, 'unknown');
+  assert.equal(latest.at, START + 20_000);
+  assert.equal(latest.context.floorOverrideMode, 'partial', 'An older receipt cannot replace the newer GPIO fact');
 });
 
 test('floor context and the observation transaction roll back together', t => {
@@ -49,4 +49,20 @@ test('floor context and the observation transaction roll back together', t => {
     throw new Error('synthetic rollback');
   }), /synthetic rollback/);
   assert.deepEqual(f.store.learningJournal({ input: 'mqtt', limit: 100 }), before);
+});
+
+test('late but bounded GPIO evidence informs current knowledge without rewriting its original clock or prior context', t => {
+  const f = fixture(t);
+  f.at(START + 20_000);
+  recordLearningContext(f.store, 'mqtt', { ...latestLearningControlContext(f.store, 'mqtt').context,
+    phase: 'recovery' }, START + 20_000);
+  const before = f.store.learningJournal({ input: 'mqtt', limit: 100 });
+  f.at(START + 30_000); f.record('on', START + 15_000, START + 105_000);
+  const after = f.store.learningJournal({ input: 'mqtt', limit: 100 });
+  assert.deepEqual(after.slice(0, before.length), before);
+  const latest = latestLearningControlContext(f.store, 'mqtt');
+  assert.equal(latest.at, START + 30_000); assert.equal(latest.context.phase, 'recovery');
+  assert.equal(latest.context.floorOverrideMode, 'on');
+  f.at(START + 106_000); f.record('on', START + 16_000, START + 105_000);
+  assert.equal(latestLearningControlContext(f.store, 'mqtt').context.floorOverrideMode, 'unknown');
 });

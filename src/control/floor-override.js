@@ -136,6 +136,7 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
   let saved = loaded.state, connected = false, closed = false, epoch = 0, snapshot = null, busy = false, freshnessTimer = null;
   let chain = Promise.resolve(), runtime = null, recoveryToken = null, lastPoll = -Infinity, lastResult = null, lastLeaseEnd = null, unavailableRecorded = false;
   let dispatchedAcquire = null;
+  let observed = null, observationTimer = null;
   let lastFailure = null;
   const rememberFailure = (error, operation) => {
     lastFailure = { code: Object.hasOwn(FLOOR_COMMAND_ERRORS, error?.code) ? error.code : 'FLOOR_UNCONFIRMED',
@@ -157,6 +158,19 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
   const owns = frame => matchesLease(frame, saved?.outstanding) || runtime?.renewing
     && saved?.outstanding?.phase === 'acquiring' && saved.outstanding.mask === runtime.renewing.mask
     && matchesLease(frame, runtime.renewing);
+  const observationFresh = (now = clock()) => connected && observed && observed.epoch === epoch
+    && Number.isFinite(now) && now >= observed.at && now - observed.at <= MAX_AGE
+    && monotonicClock() >= observed.mono && monotonicClock() - observed.mono <= MAX_AGE;
+  const automaticWitness = frame => {
+    const current = saved?.outstanding;
+    if (currentIdentity(current) && current.kind === 'automatic' && matchesLease(frame, current))
+      return Object.fromEntries(['device','brokerDigest','generation','owner','treatment','seq','mask','deviceEnd']
+        .map(key => [key, current[key]]));
+    const previous = observed?.epoch === epoch ? observed.witness : null;
+    return currentIdentity(previous) && matchesLease(frame, previous) ? previous : null;
+  };
+  const observedMode = frame => !frame || !frame.board_ok || !frame.gpio_match ? 'unknown'
+    : frame.gpio_mask === 0 ? 'off' : frame.gpio_mask === 15 && automaticWitness(frame) ? 'on' : 'partial';
   const scope = () => healthy() ? hash([instance, epoch, settings.deviceMac, snapshot.frame.generation, saved?.sequence, saved?.outstanding?.phase,
       saved?.outstanding?.mask, saved?.lastRequest?.id]) : null;
   const obligation = () => Boolean(stateUnknown || saved?.outstanding && (!runtime || saved.outstanding.phase !== 'active' && !runtime.renewing || !healthy() || !owns(snapshot.frame)));
@@ -199,9 +213,8 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     });
   };
   const emit = (frame, at, quality = [], lifetimeMs = MAX_AGE) => {
-    const mode = !frame || !frame.board_ok || !frame.gpio_match ? 'unknown' : frame.gpio_mask === 0 ? 'off'
-      : saved?.outstanding?.kind === 'automatic' && owns(frame) && frame.gpio_mask === 15 ? 'on' : 'partial';
-    onLearningMode({ mode, at });
+    const mode = observedMode(frame);
+    onLearningMode({ mode, at, validUntil: frame ? at + lifetimeMs : null });
     for (const channel of FLOOR_PREHEAT_CIRCUITS) onObservation({ source: 'sonoff-floor', device: settings.deviceMac,
       signal: `floor_groundfloor_${channel.id}_active`, value: frame ? Number(Boolean(frame.gpio_mask & (1 << (channel.id - 1)))) : null,
       unit: 'state', sourceTime: frame ? at : null, receivedAt: at, quality,
@@ -210,9 +223,14 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
         ...(frame ? { generation: frame.generation, deviceMonotonicMs: frame.now_ms } : {}) } });
   };
   const withdraw = (reason, at = clock()) => {
+    const retainObservation = ['floor-feedback-stale','floor-feedback-unavailable'].includes(reason) && observationFresh();
     snapshot = null; clearTimeout(freshnessTimer); freshnessTimer = null;
     for (const request of pending.values()) request.reject(failure('FLOOR_UNCONFIRMED', 'Floor feedback is unavailable.'));
     if (runtime) runtime.releaseRequired = true;
+    // A control lease can end before the next native GPIO report. Keep only
+    // the original bounded observation; it grants no command authority.
+    if (retainObservation) return;
+    observed = null; clearTimeout(observationTimer); observationTimer = null;
     if (unavailableRecorded || !settings.deviceMac) return;
     unavailableRecorded = true;
     const withdrawalEpoch = epoch, current = () => canControl() && epoch === withdrawalEpoch;
@@ -230,6 +248,9 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
     const mode = out?.kind ?? null, manualReason = commonReason ?? (mode === 'automatic' ? 'automatic-treatment-active' : null);
     const reason = commonReason ?? (mode === 'manual' ? 'manual-treatment-active' : !settings.enabled ? 'disabled' : null);
     Object.assign(result, { mqttStatus: { connected, subscriptionStatus: connected ? 'subscribed' : 'unavailable', lastLiveAt: snapshot?.at ?? null },
+      observedMode: observationFresh(now) ? observed.mode : 'unknown',
+      observedAt: observed?.at ?? null, observedValidUntil: observed ? observed.at + MAX_AGE : null,
+      observationBasis: 'bounded-last-gpio-readback',
       connected, available: reason === null, manualAvailable: manualReason === null, commandScope: scope(),
       active: Boolean(healthy() && runtime && mode === 'automatic' && owns(frame) && frame.mask === 15 && !obligation()), mode,
       owner: out?.key ?? null, leaseUntil: out?.until ?? null, manualUntil: mode === 'manual' ? out.until : null,
@@ -437,24 +458,41 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
       const frame = decode(payload);
       if (!frame || frame.device !== settings.deviceMac) { withdraw('floor-feedback-invalid', receivedAt); return true; }
       retainReleaseCapability(frame);
+      if (observed?.epoch === epoch && receivedMono < observed.mono) return true;
       const waiting = frame.kind === 'reply' ? pending.get(frame.id) : null;
       if (frame.kind === 'reply' && (!waiting || waiting.op !== frame.op || !waiting.dispatched() || waiting.epoch !== epoch
         || receivedMono >= waiting.deadline || waiting.generation && frame.generation !== waiting.generation)) return true;
-      if (frame.kind === 'state' && (!snapshot || frame.generation !== snapshot.frame.generation || frame.now_ms <= snapshot.frame.now_ms)) {
-        if (snapshot && frame.generation !== snapshot.frame.generation) withdraw('floor-connection-changed', receivedAt);
+      const previousFrame = snapshot?.frame ?? (observationFresh(receivedAt) ? observed.frame : null);
+      const observationOnly = frame.kind === 'state' && !snapshot;
+      if (frame.kind === 'state' && (!previousFrame || frame.generation !== previousFrame.generation || frame.now_ms <= previousFrame.now_ms)) {
+        if (previousFrame && frame.generation !== previousFrame.generation) withdraw('floor-connection-changed', receivedAt);
         return true;
       }
-      if (snapshot && frame.generation === snapshot.frame.generation && frame.now_ms < snapshot.frame.now_ms) return true;
+      if (previousFrame && frame.generation === previousFrame.generation && frame.now_ms < previousFrame.now_ms) return true;
       if (!frame.connected || !matches(NONCE, frame.generation)) { withdraw('floor-device-offline', receivedAt); return true; }
       const ingressEpoch = epoch, remaining = frame.lease_until_ms - frame.now_ms;
       const expiryMono = frame.active ? Math.min(receivedMono + remaining, waiting ? waiting.sentMono() + remaining
         : snapshot?.frame.generation === frame.generation ? snapshot.expiryMono : receivedMono) : Infinity;
       const freshUntil = Math.min(receivedMono + MAX_AGE, expiryMono);
-      const lifetimeMs = Math.floor(freshUntil - receivedMono), admitted = lifetimeMs > 0 && monotonicClock() < freshUntil;
+      const admitted = monotonicClock() < receivedMono + MAX_AGE;
+      const mode = admitted ? observedMode(frame) : 'unknown', witness = admitted ? automaticWitness(frame) : null;
       emit(admitted ? frame : null, receivedAt, !admitted ? ['floor-feedback-stale']
-        : frame.board_ok && frame.gpio_match ? [] : ['floor-hardware-fault'], Math.max(1, lifetimeMs));
+        : frame.board_ok && frame.gpio_match ? [] : ['floor-hardware-fault']);
       afterCommit(() => {
         if (closed || !connected || ingressEpoch !== epoch || !canControl()) return;
+        observed = admitted ? { frame: { generation: frame.generation, now_ms: frame.now_ms },
+          at: receivedAt, mono: receivedMono, epoch, mode, witness } : null;
+        clearTimeout(observationTimer);
+        if (observed) {
+          const point = observed;
+          observationTimer = setTimeout(() => {
+            if (observed === point && !observationFresh()) withdraw('floor-feedback-stale');
+          }, Math.max(1, Math.ceil(receivedMono + MAX_AGE - monotonicClock()) + 1));
+          observationTimer.unref?.();
+        }
+        // A held GPIO witness can admit a later observation, never recreate
+        // the expired control snapshot or its lease from a publication alone.
+        if (observationOnly) return;
         if (snapshot && frame.generation !== snapshot.frame.generation && runtime) runtime.releaseRequired = true;
         snapshot = { expiryMono, frame: Object.fromEntries(Object.entries(frame).filter(([key]) => !['token', 'challenge', 'issued_ms', 'lifetime_ms'].includes(key))),
           at: receivedAt, mono: receivedMono, epoch };
@@ -522,7 +560,8 @@ export function createFloorOverride({ store, settings = floorOverrideConfigurati
           try { await refresh(); } catch (error) {
             // A failed query does not invalidate still-fresh readback or renew
             // its clock. Disconnects and invalid feedback withdraw separately.
-            if (error.code !== 'FLOOR_UNCONFIRMED' || !healthy()) withdraw('floor-feedback-unavailable');
+            if (error.code !== 'FLOOR_UNCONFIRMED') withdraw('floor-feedback-rejected');
+            else if (!healthy()) withdraw('floor-feedback-unavailable');
           }
         }
         if (saved?.outstanding && (obligation() || runtime?.releaseRequired)) await releaseInternal({ reason: 'feedback-lost' });

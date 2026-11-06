@@ -45,6 +45,17 @@ an accepted request alone is insufficient. GPIO agreement is not proof that a
 relay contact moved or that ordinary thermostat operation was physically restored.
 Controls and history label both override confirmation and release as GPIO feedback.
 
+Learning holds the last admitted GPIO report for at most 90 seconds from its
+original receipt, within the same live connection and device generation. This
+bounded observation is separate from the control lease: beginning release or
+reaching its deadline does not itself measure a changed output. The next report
+establishes the actual observed transition. Holding a report neither confirms
+continuous output nor renews command authority, its timestamp or its freshness.
+Disconnects, invalid or faulty feedback, a changed device generation and expired
+observation freshness withdraw that evidence. Individual manual outputs remain
+a partial treatment, even when all four are selected. Existing unknown intervals
+remain unknown; later reports do not repair their history.
+
 The wiring must make **OFF release the override while leaving ordinary thermostat
 heating electrically possible**, including loss of device power. Verify that
 independently during commissioning. The controller cannot detect a mechanically

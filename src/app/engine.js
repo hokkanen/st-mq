@@ -860,14 +860,18 @@ export class Engine {
   preheatValveStatus(now = this.clock()) {
     return this.floorOverride?.status(now) ?? floorOverrideStatus(this.config.floorPreheat, floorOverrideObligation(this.store));
   }
-  recordFloorLearningMode({ mode, at }) {
+  recordFloorLearningMode({ mode, at, validUntil = null }) {
     if (!['on', 'off', 'partial', 'unknown'].includes(mode) || !Number.isSafeInteger(at))
       throw new TypeError('Floor learning evidence requires a dated output mode.');
     const previous = latestLearningControlContext(this.store, this.config.input);
     const now = Math.floor(this.clock());
-    // A delayed receipt cannot rewrite a later committed control context. Keep
-    // its original GPIO observation and establish unknown at current admission.
+    if (Number.isFinite(this.lastFloorLearningAt) && at < this.lastFloorLearningAt && now >= this.lastFloorLearningAt)
+      return; // An older GPIO receipt cannot supersede a newer admitted fact.
+    // A delayed receipt cannot rewrite a later control context. Its original
+    // GPIO clock stays on the observation; a still-valid held report can inform
+    // the current knowledge boundary without becoming a new measurement.
     const late = at > now || previous && at < previous.at;
+    const held = at <= now && Number.isFinite(validUntil) && now < validUntil && (!previous || previous.at <= now);
     const context = previous?.context ?? {
       phase: this.applied.phase ?? 'normal', roomBoostC: this.applied.roomBoostC ?? 0,
       targetC: this.settings.comfort.targetC ?? this.checkpoint?.baselineC ?? null,
@@ -875,14 +879,20 @@ export class Engine {
       episodeId: this.cycles.active()?.id ?? null, treatmentKey: 'native',
       dhwrActive: this.executor.status().pulseUntil > now,
     };
-    return recordLearningContext(this.store, this.config.input,
-      { ...context, floorOverrideMode: late ? 'unknown' : mode },
+    const result = recordLearningContext(this.store, this.config.input,
+      { ...context, floorOverrideMode: late && !held ? 'unknown' : mode },
       late ? Math.max(now, previous?.at ?? now) : at, { config: this.control, seed: this.checkpoint });
+    if (at <= now) {
+      const remember = () => { this.lastFloorLearningAt = Math.max(this.lastFloorLearningAt ?? -Infinity, at); };
+      if (this.store.afterCommit) this.store.afterCommit(remember); else remember();
+    }
+    return result;
   }
   floorOverrideMode(now = this.clock()) {
     const status = this.preheatValveStatus(now);
-    if (status.active && status.mode !== 'manual') return 'on';
     if (!status.enabled && !status.restorationPending && (!status.devices.length || status.configured === false)) return 'off';
+    if (status.observedMode !== undefined) return status.observedMode;
+    if (status.active && status.mode !== 'manual') return 'on';
     if (!status.devices.every(device => device.available) || status.restorationPending) return 'unknown';
     // Individual valve edits are not the pooled, heat-pump-coupled treatment,
     // even when all four outputs happen to be selected.
@@ -1519,6 +1529,7 @@ export class Engine {
     this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
     const h66 = this.h66Status?.() ?? { available: false, connected: false, controlsReady: false,
       reason: this.config.deviceId ? 'Waiting for H66 connection and current readings' : 'H66 not configured; conservative MQTT control remains available', readings: {}, controls: {} };
+    const floorStatus = this.preheatValveStatus(now), capturedFloorMode = this.floorOverrideMode(now);
     if (!this.plant) observations.actual = this.heatingActual(now, h66);
     const manualPause = priorExecutor?.manualPause;
     const ownsPausedSettings = Boolean(manualPause || h66.pauseId);
@@ -1577,9 +1588,8 @@ export class Engine {
       checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
     const nativeReference=this.cycles.active()?.plan.equipment;
     if(currentPhase==='preheat'&&Number.isFinite(nativeReference?.normalSupplyC))equipment.normalSupplyC=nativeReference.normalSupplyC;
-    const floorStatus = this.preheatValveStatus(now);
     equipment.floorOverrideAvailable = floorStatus.available;
-    equipment.floorOverrideMode = this.floorOverrideMode(now);
+    equipment.floorOverrideMode = capturedFloorMode;
     equipment.preheatAvailable &&= (!floorStatus.enabled || floorStatus.available)
       && (preheatRoomRequest(equipment, this.control).roomBoostC > 0 || floorStatus.available);
     const fireplaceContext = this.currentFireplaceContext(now);
@@ -1600,9 +1610,9 @@ export class Engine {
     }
     sample.integral = equipment.integral; sample.supplyShortfallC = equipment.supplyShortfallC;
     const context = { phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0,
-      floorOverrideMode: this.floorOverrideMode(now), dhwrActive: this.executor.status().pulseUntil > now,
+      floorOverrideMode: capturedFloorMode, dhwrActive: this.executor.status().pulseUntil > now,
       treatmentKey: this.cycles.active()?.plan.schedule.treatmentKey ?? (currentPhase === 'preheat'
-        ? (this.floorOverrideMode(now) === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : currentPhase === 'reduction' ? 'reduction-only-v1' : 'normal'),
+        ? (capturedFloorMode === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : currentPhase === 'reduction' ? 'reduction-only-v1' : 'normal'),
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime,
       episodeId: this.cycles.active()?.id ?? this.store.getState(`manual-learning:${input}`)?.id ?? null };
     const contextRevision = recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});

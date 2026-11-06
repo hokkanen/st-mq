@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { floorWriterFixture } from './helpers/floor-writer-fixture.js';
+import { CycleTracker } from '../src/app/cycles.js';
+import { Engine } from '../src/app/engine.js';
+import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
+import { committedLearningSample, recordLearningContext } from '../src/app/committed-learning.js';
 
 test('floor acquire bytes wait for the real worker obligation COMMIT', async t => {
   const f = await floorWriterFixture(t), gate = f.holdCommit({ obligation: true });
@@ -17,6 +21,58 @@ test('floor acquire bytes wait for the real worker obligation COMMIT', async t =
   assert.equal(f.committedState().outstanding.mask, 1);
   assert.equal(f.nativeMask, 1);
   assert.equal(f.store.writeHealth.status().history.windows.day.commandsNotSent, 0, 'Queries and confirmed activation are not unsent commands');
+});
+
+test('native lease expiry preserves continuous recorded floor evidence and the cycle stored-heat observer', async t => {
+  const f = await floorWriterFixture(t), start = f.now;
+  const config = { heatPumpModelConfirmed: true, recoveryTimeoutHours: 12,
+    floorThermalPriors: { capacityKwhPerC: 2, exchangeKwPerC: .5, openAllocationFraction: .7, closedAllocationFraction: 0 } };
+  const model = initialAdaptiveModel(config);
+  const mode = () => Engine.prototype.floorOverrideMode.call({ preheatValveStatus: now => f.adapter.status(now) }, f.now);
+  await f.adapter.lease({ owner: 'recorded-cycle', until: start + 1000 });
+  await f.store.runWrite(() => recordLearningContext(f.store, 'mqtt', {
+    phase: 'preheat', roomBoostC: 2, floorOverrideMode: mode(), treatmentKey: 'room-boost-floor-v1',
+    regime: 'occupied', targetC: 21, dhwrActive: false,
+  }, start));
+  const plan = { model, config, initialState: { indoorC: 21, reserveC: 21, slabC: 21 }, targetC: 21,
+    maxDropC: 1, occupancy: { mode: 'occupied' }, reference: null, referenceLabel: 'continuous normal operation',
+    equipment: { supplyC: 35, brineC: 0, nativeAuxAllowed: false },
+    intervals: [{ start, end: start + 3600000, outdoorC: 21, solarRadiationWm2: 0, price: 20 }],
+    schedule: { preheatStart: start, preheatEnd: start + 1000, reductionStart: start + 1000,
+      reductionEnd: start + 1500, roomBoostC: 2, floorOverride: true, treatmentKey: 'room-boost-floor-v1' } };
+  const tracker = new CycleTracker({ store: f.store, input: 'mqtt', config });
+  const physical = { indoorC: 21, outdoorC: 21, solarRadiationWm2: 0, supplyC: 35, brineC: 0,
+    powerKw: 2, thermalCompressorDuty: 1, thermalAuxKw: 0, compressorDuty: 1, auxKw: 0,
+    compressorPowerKw: 2, circulationKw: 0, energyBasis: 'estimated',
+    auxRoute: 'space', compressorActivityObserved: true, auxiliaryObserved: true, auxiliaryRouteKnown: true };
+  await f.store.runWrite(() => tracker.start(plan, { ...physical, timestamp: start, phase: 'preheat' }, start));
+  f.advance(1000);
+  assert.equal(f.adapter.status().active, false);
+  assert.equal(mode(), 'on', 'The original GPIO observation remains bounded and separate from expired authority');
+  await f.store.runWrite(() => recordLearningContext(f.store, 'mqtt', {
+    phase: 'reduction', roomBoostC: 0, floorOverrideMode: mode(), treatmentKey: 'room-boost-floor-v1',
+    regime: 'occupied', targetC: 21, dhwrActive: false,
+  }, f.now));
+  f.advance(1); await f.adapter.tick();
+  const offAt = f.now;
+  assert.equal(mode(), 'off'); assert.equal(f.nativeMask, 0);
+  f.advance(999);
+  const committed = committedLearningSample({ store: f.store, input: 'mqtt', at: f.now, config });
+  const segments = committed.inputSegments.filter(row => row.end > start).map(row => ({ ...physical,
+    start: Math.max(start, row.start), end: row.end, phase: row.phase,
+    floorOverrideMode: row.floorOverrideMode, roomBoostC: row.roomBoostC, treatmentKey: row.treatmentKey }));
+  assert(segments.length > 1);
+  assert(segments.every(row => ['on', 'off'].includes(row.floorOverrideMode)));
+  const sample = { ...physical, timestamp: f.now, phase: 'recovery', floorOverrideMode: 'off',
+    inputSegments: segments };
+  await f.store.runWrite(() => tracker.record(sample, f.now));
+  const cycle = tracker.active();
+  assert(Number.isFinite(cycle.observerState?.reserveC));
+  assert(Number.isFinite(cycle.observerState?.slabC));
+  const intervals = [...f.store.cycleEvidence(cycle.id)];
+  assert(intervals.every(row => row.floorOverrideMode !== 'unknown'));
+  assert(intervals.some(row => row.floorOverrideMode === 'on' && row.end === offAt));
+  assert(intervals.some(row => row.floorOverrideMode === 'off' && row.start === offAt));
 });
 
 test('a rejected worker obligation COMMIT cannot activate or retain provisional learning', async t => {

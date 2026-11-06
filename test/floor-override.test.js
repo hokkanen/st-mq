@@ -66,6 +66,88 @@ test('fresh correlated custom get establishes GPIO evidence without enabling unc
   assert.equal(f.observations.filter(row => row.value === 0).length, 4);
 });
 
+test('own release readiness does not erase still-fresh observed automatic GPIO outputs', async t => {
+  let f, duringRelease;
+  f = fixture({ beforeSave: state => {
+    if (state.outstanding?.phase === 'releasing' && !duringRelease) duringRelease = f.adapter.status();
+  } });
+  t.after(() => f.adapter.close({ restore: false }));
+  await f.ready(); await f.adapter.lease({ owner: 'observed-release', until: f.now + 60000 });
+  const observedAt = f.adapter.status().observedAt;
+  const learningStart = f.learning.length;
+  f.advance(10); await f.adapter.release();
+  assert.equal(duringRelease.restorationPending, true);
+  assert.equal(duringRelease.observedMode, 'on');
+  assert.equal(duringRelease.observedAt, observedAt, 'A release intent is not a new native report');
+  assert.equal(f.adapter.status().observedMode, 'off');
+  assert.equal(f.learning.slice(learningStart).some(row => row.mode === 'unknown'), false);
+});
+
+test('native lease expiry ends control while bounded original GPIO observation survives until OFF readback', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); t.after(() => f.adapter.close({ restore: false }));
+  await f.ready(); await f.adapter.lease({ owner: 'observed-expiry', until: f.now + 1000 });
+  const observedAt = f.adapter.status().observedAt;
+  f.advance(1001); t.mock.timers.tick(1001);
+  const expired = f.adapter.status();
+  assert.equal(expired.active, false); assert.equal(expired.restorationPending, true);
+  assert.equal(expired.observedMode, 'on'); assert.equal(expired.observedAt, observedAt);
+  assert.equal(f.learning.at(-1).mode, 'on', 'Lease expiry creates no new GPIO observation');
+  Object.assign(f.native, { active: false, mask: 0, gpio_mask: 0, lease_until_ms: 0, reason: 'expired' });
+  f.deliver(f.frame({ kind: 'state', id: '', op: 'state', now_ms: f.mono }));
+  assert.equal(f.adapter.status().observedMode, 'off');
+  assert.equal(f.adapter.status().available, false, 'A publication cannot restore expired command readiness');
+  assert.equal(f.adapter.status().restorationPending, true);
+  await f.adapter.tick();
+  assert.equal(f.adapter.status().observedMode, 'off');
+  assert.equal(f.adapter.status().observedAt, f.now);
+  assert.equal(f.adapter.status().restorationPending, false);
+});
+
+test('held GPIO evidence keeps its original age, expires, and cannot answer a view before its receipt', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); t.after(() => f.adapter.close({ restore: false }));
+  await f.ready(); await f.adapter.lease({ owner: 'observed-clock', until: f.now + 1000 });
+  const original = f.adapter.status(), before = f.now;
+  f.advance(1);
+  f.deliver(f.frame({ kind: 'state', id: '', op: 'state', now_ms: f.mono }));
+  const report = f.adapter.status();
+  assert.equal(report.observedAt, f.now); assert.equal(report.observedMode, 'on');
+  assert.equal(f.adapter.status(before).observedMode, 'unknown', 'A later native report cannot become earlier evidence');
+  f.advance(1000); t.mock.timers.tick(1001);
+  assert.equal(f.adapter.status().observedAt, report.observedAt);
+  assert.equal(f.adapter.status().observedValidUntil, report.observedValidUntil);
+  assert(report.observedValidUntil > original.observedValidUntil, 'Only the genuine newer report refreshed its age');
+  f.advance(90001); t.mock.timers.tick(90001);
+  assert.equal(f.adapter.status().observedMode, 'unknown');
+  assert(f.observations.slice(-4).every(row => row.value === null));
+});
+
+test('manual full-mask GPIO remains partial and disconnected or bad GPIO evidence is withdrawn', async t => {
+  const f = fixture(); t.after(() => f.adapter.close({ restore: false }));
+  await f.ready();
+  for (let channel = 1; channel <= 4; channel++) await f.manual(channel, true, 'manual_'+channel);
+  assert.equal(f.native.gpio_mask, 15); assert.equal(f.adapter.status().observedMode, 'partial');
+  f.advance(1);
+  f.deliver(f.frame({ kind: 'state', id: '', op: 'state', now_ms: f.mono, gpio_match: false }));
+  assert.equal(f.adapter.status().observedMode, 'unknown');
+  f.adapter.setConnected(false);
+  assert.equal(f.adapter.status().observedMode, 'unknown');
+  const restarted = fixture({ saved: f.saved }); t.after(() => restarted.adapter.close({ restore: false }));
+  assert.equal(restarted.adapter.status().observedMode, 'unknown', 'Saved duties create no observation after restart');
+});
+
+test('a new native generation withdraws an observation-only witness after control expiry', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); t.after(() => f.adapter.close({ restore: false }));
+  await f.ready(); await f.adapter.lease({ owner: 'observed-generation', until: f.now + 1000 });
+  f.advance(1001); t.mock.timers.tick(1001);
+  assert.equal(f.adapter.status().observedMode, 'on');
+  f.deliver(f.frame({ kind: 'state', id: '', op: 'state', generation: 'e'.repeat(32), now_ms: f.mono }));
+  assert.equal(f.adapter.status().observedMode, 'unknown');
+  assert(f.observations.slice(-4).every(row => row.value === null));
+});
+
 test('failed monitoring polls retain original GPIO evidence only until its freshness deadline', async () => {
   let failPoll = false;
   const f = fixture({ transport: ({ body, standard }) => {
