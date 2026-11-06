@@ -18,7 +18,7 @@ function validStartRecoveries(value) {
       && (!index || row.at >= value.attempts[index - 1].at));
 }
 
-export const validOcppTransactionState = (value, scope = value?.scope) => value && value.version === 5
+export const validOcppTransactionState = (value, scope = value?.scope) => value && value.version === 6
   && typeof scope === 'string' && /^[a-f0-9]{64}$/.test(scope) && value.scope === scope
   && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered', 'automaticStartRecoveries'].includes(key))
   && Object.hasOwn(value, 'automaticStartRecoveries')
@@ -28,7 +28,8 @@ export const validOcppTransactionState = (value, scope = value?.scope) => value 
   && (value.activeId === null || Number.isSafeInteger(value.activeId))
   && Array.isArray(value.transactions) && value.transactions.length <= 128
   && new Set(value.transactions.map(row => row.id)).size === value.transactions.length
-  && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'status', 'startedAt', 'startReceivedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
+    && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'automatic', 'status', 'startedAt', 'startReceivedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
+    && typeof row.automatic === 'boolean'
     && Number.isSafeInteger(row.id) && row.id > 0 && row.id < value.nextId
     && /^[a-f0-9]{64}$/.test(row.fingerprint) && /^[a-f0-9]{64}$/.test(row.tagHash) && ['Accepted', 'Blocked', 'Invalid'].includes(row.status)
     && Number.isSafeInteger(row.startedAt) && row.startedAt >= 0 && row.startedAt <= value.latestStartAt

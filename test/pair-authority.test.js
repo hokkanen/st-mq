@@ -537,9 +537,9 @@ test('handover completes restoration and closes VIP connections before address r
 test('final handover snapshot preserves OCPP transactions and setup after listener shutdown', async t => {
   const root = await fixture(t), requirements = { version: 1, fingerprint: 'b'.repeat(64) };
   let source, checked = 0;
-  const ledger = { version: 5, scope: 'b'.repeat(64), activeId: 17, nextId: 18, latestStartAt: 100,
+  const ledger = { version: 6, scope: 'b'.repeat(64), activeId: 17, nextId: 18, latestStartAt: 100,
     automaticStartRecoveries: { connectedAt: 50, attempts: [{ key: 'd'.repeat(64), at: 80 }] },
-    transactions: [{ id: 17, meterStart: 123, status: 'Accepted', startedAt: 100, lastEvidenceAt: 100,
+    transactions: [{ id: 17, meterStart: 123, status: 'Accepted', automatic: false, startedAt: 100, lastEvidenceAt: 100,
       fingerprint: 'a'.repeat(64), tagHash: 'c'.repeat(64) }] };
   const setup = { version: 1, scope: 'b'.repeat(64), ownedFingerprint: requirements.fingerprint,
     appliedFingerprint: requirements.fingerprint, adoptionFingerprint: null, intent: null,

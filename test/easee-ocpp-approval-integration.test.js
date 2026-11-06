@@ -383,15 +383,18 @@ test('pending native approval starts through the real OCPP transport only when t
   await f.controller.update({ enabled: true, plan });
   await f.status('Preparing'); await f.call('Heartbeat', {});
   assert.equal(remoteStarts().length, 1);
-  assert.deepEqual(remoteStarts()[0].payload, { connectorId: 1, idTag: f.installation.virtualTag });
+  assert.equal(remoteStarts()[0].payload.connectorId,1);
+  const automaticCode=remoteStarts()[0].payload.idTag;
+  assert.match(automaticCode,/^[a-f0-9]{20}$/);
+  assert.notEqual(automaticCode,f.installation.virtualTag,'A previously refused cached tag is not reused');
 
   // Pending-approval telemetry can advance while the local start is in flight.
   // That source clock is not a new Stop and cannot revoke the issued permission.
   f.advance(1000); f.observe({ 96: 55 });
   await f.adapter.read({ forceAppRefresh: true });
-  const authorized = await f.call('Authorize', { idTag: f.installation.virtualTag });
+  const authorized = await f.call('Authorize', { idTag: automaticCode });
   assert.equal(authorized[2].idTagInfo.status, 'Accepted');
-  const started = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+  const started = await f.call('StartTransaction', { connectorId: 1, idTag: automaticCode,
     timestamp: new Date(f.now).toISOString(), meterStart: 0 });
   assert.equal(started[0], 3);
   assert.equal(started[2].idTagInfo.status, 'Accepted');

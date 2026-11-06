@@ -423,8 +423,10 @@ interpretation. Startup rejects incompatible physical schemas before mutation;
 there is no older-schema branch, alternate journal decoder or automatic reset.
 A pair cannot mirror or hand over between incompatible physical schemas.
 
-The current Direct OCPP transaction state is version 5. Its bounded consumed
-Start-recovery contexts belong to one physical connection and survive restart;
+The current Direct OCPP transaction state is version 6. Its bounded consumed
+automatic Start contexts belong to one physical connection and survive restart.
+Each transaction retains whether its original reply used automatic authorization,
+so replacement of current attempt keys cannot change a historical reply's expiry;
 an older or malformed transaction state is rejected before database mutation,
 including during read-only inspection and full verification. This state contract
 does not change physical schema 37 or journaled layout 32.
@@ -524,6 +526,12 @@ remain required.
   attempts or connection boundaries. Keep verified originals and rehearse the
   current-state, unchanged-history and rollback checks before paired activation.
   There is no runtime older-state decoder or repository conversion tool.
+  The same overnight approval covers external version 5 to version 6 adoption.
+  Preserve every transaction, consumed context and original reply. Classify the
+  original automatic-tag replies only from verified installation evidence;
+  unknown historical classifications block adoption. After a derived-code
+  transaction, rollback must retain the version 6 codec and original replies,
+  rather than removing its marker or discarding newly recorded history.
 
 ## Version discipline
 

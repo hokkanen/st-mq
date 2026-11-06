@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { timingSafeEqual, randomInt, randomUUID, createHash } from 'node:crypto';
+import { timingSafeEqual, randomInt, randomUUID, createHash, createHmac } from 'node:crypto';
 import { BlockList, isIP } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { chargingDeviceInfo } from '../charging/device-info.js';
@@ -127,7 +127,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let ownsConnection = false, telemetryConfigured = false, meterTriggerUnsupported = false;
   let meterRequestedAt = null;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
-  let preparingAttempted = false, remoteStartStatus = 'idle';
+  let remoteStartStatus = 'idle';
   // Process-local, current-connection evidence only. No tags, transaction IDs
   // or message bodies; observation never refreshes these original clocks.
   let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
@@ -290,7 +290,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
     currentSupplyBoundaryAt = null; phaseWeightBoundaryAt = null;
-    preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
+    remoteStartStatus = 'idle'; statusTransition++;
     startProgress = { remote: null, authorization: null, transaction: null, stop: null };
     startReadiness = null;
     authorizationConfiguration = null;
@@ -337,6 +337,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (!history || history.connectedAt < context.connectedAt) return [];
     return history.connectedAt === context.connectedAt ? history.attempts : null;
   }
+  const startCode = context => createHmac('sha256', virtualTag)
+    .update(JSON.stringify(['automatic-start', scope, context.connectedAt, context.key])).digest('hex').slice(0, 20);
+  const currentStartContext = call => {
+    const context = startRecoveryScope();
+    return recoveryAttempts(context) && context.key === call.startKey && context.connectedAt === call.connectedAt;
+  };
   function blockedStartRecovery(allowedAttempt = null) {
     const context = startRecoveryScope(), now = clock();
     const attempts = recoveryAttempts(context);
@@ -350,7 +356,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     // Recover only our own refused automatic start, never an accepted session's
     // external Stop or an unexplained native suspension. Original source clocks
     // and the controller's physical connection fence all of this evidence.
-    if (row?.status !== 'Blocked' || row.tagHash !== digest({ scope, idTag: virtualTag })
+    if (row?.status !== 'Blocked' || row.automatic !== true
       || row.startedAt < context.connectedAt || row.stopReason !== 'DeAuthorized'
       || !Number.isSafeInteger(row.stoppedAt) || !Number.isSafeInteger(row.stopReceivedAt)
       || connectorStatus !== 'SuspendedEVSE' || !connectorStatusExplicit
@@ -384,17 +390,20 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
     }
     if (action === 'RemoteStartTransaction') {
-      if (!stateReady || !authorizationReady || !permittedBy(canStart) || !canRequestRemoteStart() || !remoteStartStateReady(call)
+      if (!stateReady || !authorizationReady || !permittedBy(canStart) || !currentStartContext(call) || !canRequestRemoteStart() || !remoteStartStateReady(call)
         || transition !== statusTransition || clock() < connectorStatusAt || !transportFresh()) {
-        preparingAttempted = false; remoteStartStatus = 'cancelled'; sendNextCall(); return;
+        remoteStartStatus = 'cancelled'; sendNextCall(); return;
       }
       // A start permission must not outlive durable transaction storage.
       const active = activeTransaction();
       try {
         const recovery = call.recoveryKey ? blockedStartRecovery() : null;
-        persist(recovery ? { ...ledger, automaticStartRecoveries: { connectedAt: recovery.connectedAt,
-          attempts: [...recovery.attempts, { key: recovery.key, at: clock() }] } }
-          : active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger, call.attempt);
+        const context = startRecoveryScope(), attempts = recoveryAttempts(context);
+        if (!attempts || attempts.some(row => row.key === context.key) || attempts.length >= OCPP_RECOVERY_ATTEMPT_LIMIT)
+          throw requestError('ocpp-request-revoked');
+        const next = active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger;
+        persist({ ...next, automaticStartRecoveries: { connectedAt: context.connectedAt,
+          attempts: [...attempts, { key: context.key, at: clock() }] } }, call.attempt);
         if (recovery) call.recoveryCommitted = true;
       }
       catch { remoteStartStatus = 'unavailable'; sendNextCall(); return; }
@@ -413,11 +422,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         || call.resolve && (call.settled
         || call.connection !== socket || !transportFresh() || !permittedBy(call.guard)
         || !permittedBy(call.beforeSend))
-        || action === 'RemoteStartTransaction' && (!stateReady || !authorizationReady || !permittedBy(canStart)
+        || action === 'RemoteStartTransaction' && (!stateReady || !authorizationReady || !permittedBy(canStart) || !currentStartContext(call)
           || !remoteStartStateReady(call) || transition !== statusTransition || !transportFresh());
       if (revoked) {
         if (pendingCalls.get(id) === call) pendingCalls.delete(id);
-        if (action === 'RemoteStartTransaction') { preparingAttempted = false; remoteStartStatus = 'cancelled'; }
+        if (action === 'RemoteStartTransaction') { remoteStartStatus = 'cancelled'; }
         finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return false;
       }
       call.sentAt = clock();
@@ -438,20 +447,25 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         contextAvailable: Boolean(context), recoveryEligible };
       return blocked;
     };
-    if (checked(recoveryAttempts(context)?.some(row => row.key === context.key), 'context-already-consumed')) return;
+    const attempts = recoveryAttempts(context);
+    if (checked(!attempts, 'start-context-unavailable')) return;
+    if (checked(attempts.some(row => row.key === context.key), 'context-already-consumed')) return;
+    if (attempts.length >= OCPP_RECOVERY_ATTEMPT_LIMIT) {
+      remoteStartStatus = 'recovery-capacity'; checked(true, 'context-capacity'); return;
+    }
     const recovery = connectorStatus === 'SuspendedEVSE' && blockedStartRecovery();
     const blocked = (condition, reason) => checked(condition, reason, Boolean(recovery));
     if (blocked(!plugAndCharge, 'rfid-mode') || blocked(!authorizationReady, 'authorization-unavailable')
       || blocked(!stateReady, 'transaction-storage-unavailable') || blocked(!permittedBy(canStart), 'start-permission-unavailable')
-      || blocked(preparingAttempted && !recovery, 'preparing-attempt-consumed')
       || blocked([...pendingCalls.values(), ...callQueue].some(call => call.action === 'RemoteStartTransaction'), 'start-already-pending')
       || blocked(connectorStatus !== 'Preparing' && !recovery, 'connector-not-ready')
       || blocked(!canRequestRemoteStart(), 'transaction-evidence-unresolved')
       || blocked(clock() < connectorStatusAt, 'future-connector-status') || blocked(!transportFresh(), 'transport-unavailable')) return;
     startReadiness = { checkedAt: clock(), allowed: true, reason: 'queued',
       contextAvailable: Boolean(context), recoveryEligible: Boolean(recovery) };
-    preparingAttempted = true; remoteStartStatus = 'queued';
-    callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition,
+    remoteStartStatus = 'queued';
+    callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: startCode(context) }, transition: statusTransition,
+      startKey: context.key, connectedAt: context.connectedAt,
       ...(recovery ? { recoveryKey: recovery.key } : {}),
       connection: socket, attempt: controlAttempt() });
     sendNextCall();
@@ -624,7 +638,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     try {
       const saved = state.get();
       if (saved !== null && saved !== undefined && !validOcppTransactionState(saved, scope)) { error = 'incompatible-transaction-state'; stateReady = false; return false; }
-      ledger = saved ?? { version: 5, automaticStartRecoveries: null, scope, nextId: randomInt(1, 1000000000), latestStartAt: 0, activeId: null, transactions: [] };
+      ledger = saved ?? { version: 6, automaticStartRecoveries: null, scope, nextId: randomInt(1, 1000000000), latestStartAt: 0, activeId: null, transactions: [] };
       stateReady = true; persist(ledger); error = null; return true;
     } catch { error = 'transaction-state-unavailable'; stateReady = false; return false; }
   }
@@ -638,11 +652,18 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   const configuredTag = tag => typeof tag === 'string' && config.authorization_tags.some(value => equal(value, tag));
   const automaticTag = tag => typeof tag === 'string' && !configuredTag(tag)
-    && plugAndCharge && authorizationReady && equal(virtualTag, tag);
+    && plugAndCharge && authorizationReady && (equal(virtualTag, tag)
+      || ledger?.automaticStartRecoveries?.attempts.some(row => equal(startCode({
+        connectedAt: ledger.automaticStartRecoveries.connectedAt, key: row.key }), tag)));
+  const currentAutomaticTag = tag => {
+    if (equal(virtualTag, tag)) return true;
+    const context = startRecoveryScope();
+    return Boolean(recoveryAttempts(context) && equal(startCode(context), tag));
+  };
   const authorizationInfo = tag => automaticTag(tag)
     // This tag represents a live controller permission, never a reusable RFID
     // enrollment. Expiry cannot guarantee removal of a cached entry.
-    ? { status: transportFresh() && permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
+    ? { status: transportFresh() && permittedBy(canStart) && currentAutomaticTag(tag) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
   function completeResponse(id, pending, frame, waited = false, receivedAt = clock()) {
     if (pendingCalls.get(id) !== pending) return;
@@ -776,7 +797,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false; observedTransaction = null;
       recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = receivedAt;
       currentSupplyBoundaryAt = receivedAt;
-      preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
+      remoteStartStatus = 'idle'; statusTransition++;
       response = { status: 'Accepted', currentTime: currentTime(), interval: 30 };
     } else if (action === 'Heartbeat') response = { currentTime: currentTime() };
     else if (action === 'MeterValues') {
@@ -821,7 +842,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         let nextId = ledger.nextId;
         while (ledger.recovered?.transactions.some(row => row.id === nextId)) nextId++;
         if (nextId >= 2147483646) { send([4, id, 'OccurrenceConstraintViolation', 'Transaction identifier unavailable', {}]); return; }
-        transaction = { id: nextId, fingerprint, tagHash: digest({ scope, idTag: payload.idTag }),
+        transaction = { id: nextId, fingerprint, tagHash: digest({ scope, idTag: payload.idTag }), automatic: Boolean(automaticTag(payload.idTag)),
           status: authorization.status, startedAt, startReceivedAt: receivedAt, lastEvidenceAt: startedAt, meterStart: payload.meterStart };
         const updated = supersedes ? updateTransaction({ ...active,
           endedByNewStart: { transactionId: transaction.id, startedAt } }, true) : ledger;
@@ -836,9 +857,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (transaction.status === 'Accepted' && ledger.activeId === transaction.id) {
         observedTransaction = { id: transaction.id, at: startedAt }; recoveryCandidate = null; recoveryConflict = false;
       }
-      if (transaction.status === 'Blocked') preparingAttempted = false;
       response = { transactionId: transaction.id, idTagInfo: { status: transaction.status,
-        ...(automaticTag(payload.idTag) ? { expiryDate: new Date(transaction.startedAt).toISOString() } : {}) } };
+        ...(transaction.automatic ? { expiryDate: new Date(transaction.startedAt).toISOString() } : {}) } };
       transactionProgress(payload,response.idTagInfo,receivedAt,replayed);
     } else if (action === 'StopTransaction') {
       if (!stateReady) { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
@@ -876,7 +896,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (payload.connectorId === 1 && Number.isSafeInteger(at) && at >= 0 && at <= receivedAt + MAX_FUTURE_MS
         && (connectorStatusAt === null || at >= connectorStatusAt)) {
         const status = payload.errorCode === 'NoError' ? payload.status : 'Faulted';
-        if (connectorStatus !== status) { preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++; }
+        if (connectorStatus !== status) { remoteStartStatus = 'idle'; statusTransition++; }
         if (NO_TRANSACTION_STATUSES.has(status) || status === 'Preparing' && connectorStatus !== status) {
           previousPhaseValues.clear(); phaseWeightBoundaryAt = at;
         }

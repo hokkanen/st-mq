@@ -425,8 +425,10 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   `authorization_tags`; unlisted tags are rejected. An empty list keeps this
   mode pending.
 - `plug-and-charge` authorizes a connected vehicle without an RFID tap. ST-MQ
-  derives a private virtual tag from the installation credentials and uses it
-  for `RemoteStartTransaction`. No physical tag list is required in this mode.
+  derives a private authorization seed from the installation credentials. Each
+  automatic `RemoteStartTransaction` uses a code bound to its reviewed controller
+  context and physical connection, avoiding reuse of a previously refused cached
+  code. No physical tag list is required in this mode.
   A remote-start acknowledgement alone does not prove charging: the native
   transaction and physical state must follow. The controller grants a short-lived
   start permission only when the current plan or an allowed session action calls
@@ -437,6 +439,14 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   removal of the tag from a charger's authorization cache. Accepted transaction
   retries keep their original durable reply. Configured RFID
   tags retain their independent authorization rules.
+
+  Every automatic Start attempt, including `Preparing`, is committed before
+  dispatch and consumes its exact context once. A new explicit context can retry
+  without requiring a physical status transition; reconnect or returning to an
+  already consumed context cannot repeat it. The bounded 256-context limit fails
+  closed. A derived code still requires the exact current grant and live permission
+  for incoming authorization and Start. The installation seed retains its existing
+  live authorization rule; it is not used as the outgoing automatic attempt code.
 
   If the controller refused its own automatic transaction and the charger
   confirms that transaction ended as `DeAuthorized`, it may recover from
@@ -964,7 +974,7 @@ References checked for this implementation: Easee's
 and [firmware 344 configuration keys](https://developer.easee.com/docs/supported-config-keys).
 
 Transaction acknowledgements are committed to the current SQLite state before
-authorization is returned. The compact current ledger uses strict version 5,
+authorization is returned. The compact current ledger uses strict version 6,
 binds to the configured charger and charge-point identity, stores hashes instead
 of plaintext tags, and keeps up to 128 transaction records plus a start-time
 watermark. Retries after a socket
@@ -972,8 +982,11 @@ reconnect, message-cache eviction or process restart receive the original
 transaction ID. Conflicting starts/stops, unknown stops and starts older than the
 retained watermark are rejected. A changed charger association or malformed
 ledger blocks the endpoint before mutation. Earlier development ledgers are not
-migrated or decoded as version 5; inspect the installation and use a deliberate
+migrated or decoded as version 6; inspect the installation and use a deliberate
 fresh setup rather than allowing another charger to inherit it.
+Each transaction retains its original automatic-authorization classification.
+An original Start reply therefore keeps its expiry after the current physical
+attempt keys are replaced and after restart.
 Storage failure blocks new Authorize and StartTransaction replies. This compact
 ledger is protocol identity state, not a duplicate session-energy series. A reset
 meter counter can still end its known transaction; the raw nonnegative start and

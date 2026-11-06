@@ -27,13 +27,15 @@ async function freePort() {
 async function fixture(t, overrides = {}, virtualTag = '', initialState, stateHooks = {}) {
   const port = await freePort();
   let saved = structuredClone(initialState), now = at, elapsed = 0, permitted = true, startPermitted = true, broken = false, writes = 0, sequence = 0;
+  let startContext = { connectedAt: at, key: 'a'.repeat(64) }, contextRevision = 0;
   const clients = [];
   const local = createEaseeOcpp({ config: { ...config, port, ...overrides }, chargerId: 'fixture-charger',
     clock: () => now, monotonicClock: () => elapsed, canControl: () => permitted, canStart: () => startPermitted, virtualTag,
+    startRecoveryScope: () => startContext,
     state: { get: () => saved, set: value => { if (broken) throw new Error('Synthetic storage failure'); saved = structuredClone(value); writes++; }, ...stateHooks } });
   t.after(async () => { for (const client of clients) client.terminate(); await local.close(); });
   await local.start();
-  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, get now() { return now; }, set now(value) { now = value; }, set elapsed(value) { elapsed = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
+  return { local, port, get saved() { return structuredClone(saved); }, get startContext(){return structuredClone(startContext);}, set startContext(value){startContext=structuredClone(value);}, get writes() { return writes; }, get now() { return now; }, set now(value) { now = value; }, set elapsed(value) { elapsed = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
     async connect({ autoReply = true } = {}) {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/fixture-charger`, 'ocpp1.6', {
         headers: { Authorization: `Basic ${Buffer.from(`fixture-charger:${config.password}`).toString('base64')}` },
@@ -50,6 +52,7 @@ async function fixture(t, overrides = {}, virtualTag = '', initialState, stateHo
       });
       await once(ws, 'open');
       return { ws, calls, call(action, payload, id = `fixture-${++sequence}`) {
+        if(action==='StatusNotification'&&payload.status==='Available')startContext={connectedAt:now,key:(++contextRevision).toString(16).padStart(64,'0')};
         return new Promise((resolve, reject) => {
           const timeout = setTimeout(() => { pending.delete(id); reject(new Error('Synthetic OCPP reply timeout')); }, 2000);
           pending.set(id, reply => { clearTimeout(timeout); resolve(reply); }); ws.send(JSON.stringify([2, id, action, payload]));
@@ -1100,7 +1103,7 @@ test('malformed recovery state and failed evidence persistence never grant contr
   assert.equal(bad.local.status().error, 'incompatible-transaction-state'); assert.equal(bad.writes, 0);
 });
 
-test('plug-and-charge uses only the known private tag and starts once per current Preparing transition', async t => {
+test('plug-and-charge uses a private attempt code and starts once per committed controller context', async t => {
   const virtualTag = 'fixture-virtual-tag';
   const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, virtualTag), client = await f.connect();
   assert.equal((await client.call('Authorize', { idTag: virtualTag }))[2].idTagInfo.status, 'Accepted');
@@ -1112,7 +1115,9 @@ test('plug-and-charge uses only the known private tag and starts once per curren
   await flushCalls(client); assert.equal(remoteStarts(client).length, 0);
   await client.call('StatusNotification', preparing, 'preparing-1'); await flushCalls(client);
   assert.equal(remoteStarts(client).length, 1);
-  assert.deepEqual(remoteStarts(client)[0][3], { connectorId: 1, idTag: virtualTag });
+  assert.equal(remoteStarts(client)[0][3].connectorId,1);
+  assert.match(remoteStarts(client)[0][3].idTag,/^[a-f0-9]{20}$/);
+  assert.notEqual(remoteStarts(client)[0][3].idTag,virtualTag,'A cached installation-tag refusal cannot poison another automatic attempt');
   assert.equal(f.local.status().remoteStartStatus, 'accepted');
   assert.equal(JSON.stringify(f.local.status()).includes(virtualTag), false, 'The private tag is absent from public status');
   await client.call('StatusNotification', preparing, 'preparing-1');
@@ -1124,13 +1129,13 @@ test('plug-and-charge uses only the known private tag and starts once per curren
   const next = await f.connect(); await next.call('Heartbeat', {}); await flushCalls(next);
   assert.equal(remoteStarts(next).length, 0, 'Reconnect requires a fresh Preparing report');
   await next.call('StatusNotification', preparing); await flushCalls(next);
-  assert.equal(remoteStarts(next).length, 1);
+  assert.equal(remoteStarts(next).length, 0,'Reconnect cannot repeat the already committed controller attempt');
   const started = await next.call('StartTransaction', { connectorId: 1, idTag: virtualTag,
     timestamp: new Date(at).toISOString(), meterStart: 0 });
   assert.equal(started[2].idTagInfo.status, 'Accepted');
   await next.call('StatusNotification', { ...preparing, status: 'Available' });
   await next.call('StatusNotification', preparing); await flushCalls(next);
-  assert.equal(remoteStarts(next).length, 1, 'An unresolved durable transaction prevents a second start');
+  assert.equal(remoteStarts(next).length, 0, 'An unresolved durable transaction prevents a second start');
 });
 
 test('RFID mode and missing plug-and-charge private identity never invent a remote-start tag', async t => {
@@ -1156,6 +1161,9 @@ test('remote start rejection and timeout do not loop, and obsolete queued starts
   assert.equal(remoteStarts(rejected).length, 1);
   const client = await f.connect({ autoReply: false });
   await client.call('StatusNotification', preparing);
+  assert.equal(remoteStarts(client).length,0,'A rejected committed attempt remains consumed after reconnect');
+  f.startContext={...f.startContext,key:'b'.repeat(64)};
+  await client.call('StatusNotification',preparing);
   assert.equal(f.local.status().remoteStartStatus, 'queued');
   await client.call('StatusNotification', { ...preparing, status: 'Available' });
   client.ws.send(JSON.stringify([3, client.calls[0][1], { status: 'Accepted' }]));
@@ -1553,8 +1561,8 @@ test('current supply keeps conflicting phase evidence invalid and quarantines fu
 
 test('old transaction ledgers are rejected before mutation and native reboot revokes prior control evidence', async t => {
   const f = await fixture(t), client = await f.connect();
-  assert.equal(f.saved.version, 5);
-  const old = { ...f.saved, version: 4 }; let writes = 0;
+  assert.equal(f.saved.version, 6);
+  const old = { ...f.saved, version: 5 }; let writes = 0;
   const stale = createEaseeOcpp({ config: { ...config, port: await freePort() }, chargerId: 'fixture-charger', canControl: () => true,
     state: { get: () => old, set() { writes++; } } });
   await stale.start(); t.after(() => stale.close());
@@ -2257,4 +2265,51 @@ test('native authorization diagnostics retain TCP receipt clocks across delayed 
   client.ws.send(JSON.stringify([3,start[1],{status:'Accepted'}]));
   await entered.promise;f.now=at+4000;held=false;release.resolve();await flushCalls(client);
   assert.equal(f.local.status().startProgress.remote.respondedAt,at+3000,'Start acknowledgement retains its wire receipt too');
+});
+
+test('a new reviewed Preparing context gets a fresh code while consumed contexts and stale codes remain fenced', async t => {
+  const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-private-seed'),client=await f.connect();
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  const first=remoteStarts(client).at(-1)[3].idTag,context=f.startContext;
+  assert.notEqual(first,'fixture-private-seed');
+  assert.equal((await client.call('Authorize',{idTag:first}))[2].idTagInfo.status,'Accepted');
+  f.startContext={...context,key:'b'.repeat(64)};
+  assert.equal((await client.call('Authorize',{idTag:first}))[2].idTagInfo.status,'Blocked','An old code cannot borrow the new grant');
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  const second=remoteStarts(client).at(-1)[3].idTag;
+  assert.equal(remoteStarts(client).length,2,'A fresh reviewed context does not require an invented physical status transition');
+  assert.notEqual(first,second);
+  assert.equal((await client.call('Authorize',{idTag:second}))[2].idTagInfo.status,'Accepted');
+  f.startContext=context;await client.call('StatusNotification',preparing);await flushCalls(client);
+  assert.equal(remoteStarts(client).length,2,'Returning A to B to A cannot replenish an attempt');
+});
+
+test('automatic Start replies retain their original expiry after new physical context replacement and process restart', async t => {
+  const seed='fixture-private-seed',f=await fixture(t,{authorization_mode:'plug-and-charge'},seed),client=await f.connect();
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  const code=remoteStarts(client).at(-1)[3].idTag,payload={connectorId:1,idTag:code,meterStart:0,timestamp:new Date(at).toISOString()};
+  const first=(await client.call('StartTransaction',payload))[2];assert.equal(first.idTagInfo.status,'Accepted');
+  assert.equal(first.idTagInfo.expiryDate,new Date(at).toISOString());
+  f.now=at+1000;await client.call('StopTransaction',{transactionId:first.transactionId,meterStop:0,timestamp:new Date(f.now).toISOString(),reason:'Remote'});
+  await client.call('StatusNotification',{...preparing,status:'Available'});
+  f.now=at+2000;await client.call('StatusNotification',preparing);await flushCalls(client);
+  assert.equal(f.saved.automaticStartRecoveries.connectedAt,at+1000,'The previous physical key history has been replaced');
+  assert.equal((await client.call('Authorize',{idTag:code}))[2].idTagInfo.status,'Invalid','Old physical codes grant no new authority');
+  assert.deepEqual((await client.call('StartTransaction',payload))[2],first,'Historical reply is independent of current key retention');
+  const restarted=await fixture(t,{authorization_mode:'plug-and-charge'},seed,f.saved);restarted.now=at+3000;const replacement=await restarted.connect();
+  assert.deepEqual((await replacement.call('StartTransaction',payload))[2],first,'Restart preserves original expiry and transaction ID');
+});
+
+test('a different current grant cannot send an old attempt after its durable reservation', async t => {
+  let f,changed=false;const committed=[];
+  f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-private-seed',undefined,{set(value){
+    committed.push(structuredClone(value));
+    if(value.automaticStartRecoveries?.attempts.length===1&&!changed){changed=true;f.startContext={...f.startContext,key:'b'.repeat(64)};}
+  }});
+  const client=await f.connect();await client.call('StatusNotification',preparing);await flushCalls(client);
+  assert(changed);assert.equal(remoteStarts(client).length,0,'The old code cannot borrow an unrelated live grant after COMMIT');
+  assert.equal(committed.at(-1).automaticStartRecoveries.attempts.length,1,'The original attempt stays consumed');
+  await client.call('StatusNotification',preparing);await flushCalls(client);
+  assert.equal(remoteStarts(client).length,1,'The new current context may make its own once-only attempt');
+  assert.equal(committed.at(-1).automaticStartRecoveries.attempts.length,2);
 });

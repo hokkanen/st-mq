@@ -9,7 +9,7 @@ import { verifyDatabase } from '../src/storage/full-verifier.js';
 import { validateOcppTransactionState, OCPP_RECOVERY_ATTEMPT_LIMIT } from '../src/domain/ocpp-transaction-state.js';
 
 const key = n => n.toString(16).padStart(64, '0');
-const current = () => ({ version: 5, scope: 'a'.repeat(64), nextId: 1, latestStartAt: 0,
+const current = () => ({ version: 6, scope: 'a'.repeat(64), nextId: 1, latestStartAt: 0,
   activeId: null, transactions: [], automaticStartRecoveries: null });
 const setup = () => ({ version: 1, scope: 'a'.repeat(64), ownedFingerprint: null,
   appliedFingerprint: null, adoptionFingerprint: null, intent: null,
@@ -22,7 +22,7 @@ test('current transaction state retains unique consumed contexts for one physica
     (_, i) => ({ key: key(i), at: 100 + i })) };
   validateOcppTransactionState(value);
   for (const change of [
-    v => { v.version = 4; },
+    v => { v.version = 5; },
     v => { delete v.automaticStartRecoveries; },
     v => { v.automaticStartRecovery = { key: key(1), at: 100 }; },
     v => { v.automaticStartRecoveries.attempts[1].key = key(0); },
@@ -36,7 +36,7 @@ test('current transaction state retains unique consumed contexts for one physica
 });
 
 for (const [name, stateKey, invalid] of [
-  ['retired transaction state', 'easee:ocpp', { ...current(), version: 4 }],
+  ['retired transaction state', 'easee:ocpp', { ...current(), version: 5 }],
   ['unsupported setup version', 'easee:ocpp-setup', { ...setup(), version: 999 }],
   ['invalid setup scope', 'easee:ocpp-setup', { ...setup(), scope: 'invalid' }],
   ['unknown setup field', 'easee:ocpp-setup', { ...setup(), retired: true }],
@@ -83,4 +83,15 @@ test('supported backup and restore preserve every consumed current-session conte
   }
   finally { restored.close(); }
   await verifyDatabase({ dbPath: destination, origin: 'manual' });
+});
+
+test('current transactions require an explicit original automatic-reply classification', () => {
+  const value={...current(),nextId:2,latestStartAt:100,activeId:1,transactions:[{id:1,fingerprint:key(1),tagHash:key(2),
+    automatic:true,status:'Accepted',startedAt:100,lastEvidenceAt:100,meterStart:0}]};
+  validateOcppTransactionState(value);
+  value.transactions[0].automatic=false;validateOcppTransactionState(value);
+  for(const marker of[undefined,null,0,'false']){
+    value.transactions[0].automatic=marker;
+    assert.throws(()=>validateOcppTransactionState(value),/Unsupported native transaction state/);
+  }
 });
