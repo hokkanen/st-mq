@@ -72,7 +72,9 @@ test('native compressor demand can run at full duty in the observed reduction ph
   const result=evaluateCycle({model:initialAdaptiveModel(),initialState:{indoorC:20,reserveC:20,integral:-1000},
     intervals:[{start:now,end:now+H/4,outdoorC:-15,solarRadiationWm2:0,price:20}],targetC:21,
     schedule:{preheatStart:now,preheatEnd:now,reductionStart:now,reductionEnd:now+H/4,roomBoostC:0},
-    equipment:{observedPhase:'reduction',h66Available:true,supplyShortfallC:30},
+    equipment:{observedPhase:'reduction',h66Available:true,supplyShortfallC:30,
+      integralTrendPerHour:0,supplyShortfallTrendPerHour:0,
+      nativeProjection:{integral:{observedAt:now,spanMs:H/4},shortfall:{observedAt:now,spanMs:H/4}}},
     config:{compressorIntegralA1:-100,compressorHysteresisC:10}});
   assert.equal(result.trajectory[0].compressorDuty,1);
   assert.equal(result.trajectory[0].auxiliaryKw,0);
