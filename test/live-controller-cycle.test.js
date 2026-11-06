@@ -98,14 +98,29 @@ test('a live trial continues after exposure grows beyond its initial estimate an
     JSON.stringify({ original: originalPlan.trialAllowanceCents, current: continued.trialBudget }));
   assert.ok(continued.trialBudget.reservedCents < 150);
   assert.deepEqual(continued.plan, originalPlan);
-  // The same real controller path still ends a trial when its authorized cap
-  // cannot fund the updated exposure; the fix does not bypass the budget gate.
+  // High prices alone do not imply that this complete-cycle cost difference
+  // exceeds the cap: the observed and Normal prefixes retain different heat.
   const adverseMarket = r.store.getState('provider:market');
   adverseMarket.intervals.forEach((row,i) => { if (i > 0) row.spotCtPerKwh = 5000; });
   r.store.setState('provider:market',adverseMarket);
   r.advance(60_000); r.engine.tick(); await r.settle();
+  const funded = r.engine.cycles.active();
+  assert.equal(r.engine.status().decision.phase, 'reduction');
+  assert(funded.trialBudget.reservedCents > continued.trialBudget.reservedCents);
+  assert(funded.trialBudget.reservedCents < 150);
+  // With the same recorded prefix, make the actual computed exposure exceed
+  // its authorized cap; the real reservation still owns admission and refusal.
+  let attemptedExposure;
+  const reserve = r.engine.cycles.reserveTrialExposure.bind(r.engine.cycles);
+  r.engine.cycles.reserveTrialExposure = value => { attemptedExposure = value; return reserve(value); };
+  adverseMarket.intervals.forEach((row,i) => { if (i > 0) row.spotCtPerKwh = 50000; });
+  r.store.setState('provider:market',adverseMarket);
+  r.engine.tick(); await r.settle();
+  assert(attemptedExposure > 150);
   assert.equal(r.engine.status().decision.phase, 'recovery');
   assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
+  assert.equal(r.engine.cycles.active().trialBudget.reservedCents, funded.trialBudget.reservedCents);
+  assert.equal(r.engine.cycles.active().observationCount, funded.observationCount, 'A forecast change creates no recorded interval');
 });
 
 test('a confirmed preheat trial survives its native target step and still ends at a real comfort limit', async t => {
