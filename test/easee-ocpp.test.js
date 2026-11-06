@@ -494,6 +494,29 @@ test('automatic virtual-tag authorization follows present permission without lea
   assert.equal(remoteStarts(client).length, 0);
 });
 
+test('native start diagnostics preserve the actual gate clock without exposing private start identifiers', async t => {
+  const tag = 'fixture-virtual-tag', f = await fixture(t, { authorization_mode: 'plug-and-charge' }, tag);
+  const client = await f.connect();
+  f.startPermitted = false;
+  await client.call('StatusNotification', { connectorId: 1, status: 'Preparing', errorCode: 'NoError',
+    timestamp: new Date(at).toISOString() });
+  const refused = f.local.status().startReadiness;
+  assert.equal(refused.reason, 'start-permission-unavailable');
+  assert.equal(refused.allowed, false); assert.equal(refused.checkedAt, at);
+  f.now = at + 1000;
+  assert.deepEqual(f.local.status().startReadiness, refused, 'Reading diagnostics creates no new admission evidence');
+  assert.equal(remoteStarts(client).length, 0);
+  f.startPermitted = true;
+  await client.call('StatusNotification', { connectorId: 1, status: 'Preparing', errorCode: 'NoError',
+    timestamp: new Date(f.now).toISOString() });
+  await client.call('Heartbeat', {});
+  const admitted = f.local.status().startReadiness;
+  assert.equal(admitted.reason, 'queued'); assert.equal(admitted.allowed, true);
+  assert.equal(admitted.checkedAt, f.now); assert.equal(remoteStarts(client).length, 1);
+  assert.equal(JSON.stringify(admitted).includes(tag), false);
+  assert.deepEqual(Object.keys(admitted), ['checkedAt', 'allowed', 'reason', 'contextAvailable', 'recoveryEligible']);
+});
+
 test('unsolicited virtual StartTransaction cannot bypass waiting and its later genuine start preserves historical replies', async t => {
   const tag = 'fixture-virtual-tag', f = await fixture(t, { authorization_mode: 'plug-and-charge' }, tag), client = await f.connect();
   const start = { connectorId: 1, idTag: tag, meterStart: 10, timestamp: new Date(at).toISOString() };

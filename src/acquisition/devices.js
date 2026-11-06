@@ -260,6 +260,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const lifetime = new AbortController();
   let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
   let nativeStartPermission = null;
+  let nativeStartPermissionStatus = null;
   const nativeSourcePending = () => stream?.pending?.(easee.charger_id, [31, 48, 96, 100, 109, 250]) === true;
   const streamedElectricity = new Set(), streamedVoltage = new Set(), transports = new Map(), reconcileAt = new Map();
   const cloudVoltage = new Map();
@@ -284,11 +285,31 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         && permission.until > clock() && current?.connectionId === permission.connectionId
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
         && instructionRevision === permission.instructionRevision);
-      if (!valid) nativeStartPermission = null;
-      return valid && !nativeSourcePending() && permission.guard();
+      if (!valid) {
+        nativeStartPermission = null;
+        nativeStartPermissionStatus = { checkedAt: clock(), allowed: false,
+          reason: !permission ? 'no-start-permission' : permission.until <= clock() ? 'permission-expired'
+            : current?.connectionId !== permission.connectionId ? 'connection-changed'
+              : instructionRevision !== permission.instructionRevision ? 'native-instruction-changed' : 'authority-or-connector-unavailable' };
+        return false;
+      }
+      if (nativeSourcePending()) {
+        nativeStartPermissionStatus = { checkedAt: clock(), allowed: false, reason: 'native-source-pending' };
+        return false;
+      }
+      try {
+        const allowed = permission.guard();
+        nativeStartPermissionStatus = { checkedAt: clock(), allowed: allowed === true,
+          reason: allowed === true ? 'permitted' : 'controller-guard-refused', until: permission.until };
+        return allowed;
+      } catch (error) {
+        nativeStartPermissionStatus = { checkedAt: clock(), allowed: false, reason: 'controller-guard-unavailable' };
+        throw error;
+      }
     },
     onDisconnect: () => {
       nativeStartPermission = null;
+      nativeStartPermissionStatus = null;
       if (!closed && supplied(easee.charger_id)) {
         electricityEpoch++; onStreamDisconnect([easee.charger_id], { transport: 'ocpp' });
       }
@@ -945,6 +966,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     },
     streamStatus() { return stream?.status() ?? null; },
     localOcppStatus(options) { return { ...local.status(), controlTransport: controlBackend === 'native' ? 'ocpp' : controlBackend,
+      startPermission: structuredClone(nativeStartPermissionStatus),
       ...(setup ? { setup: setup.status(options) } : {}) }; },
     async reconcileOcpp() {
       local.refreshAuthority?.();

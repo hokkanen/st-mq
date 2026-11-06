@@ -131,6 +131,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   // Process-local, current-connection evidence only. No tags, transaction IDs
   // or message bodies; observation never refreshes these original clocks.
   let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+  let startReadiness = null;
   let authorizationConfiguration = null;
   const authorizationProgress = (info, receivedAt, replayed = false) => {
     startProgress.authorization = { receivedAt, decidedAt: clock(), status: info.status, replayed };
@@ -272,6 +273,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     currentSupplyBoundaryAt = null; phaseWeightBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+    startReadiness = null;
     authorizationConfiguration = null;
     onDisconnect();
   }
@@ -411,11 +413,23 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   function requestRemoteStart() {
     reconcileTransactionStatus();
     const context = startRecoveryScope();
-    if (recoveryAttempts(context)?.some(row => row.key === context.key)) return;
+    const checked = (blocked, reason, recoveryEligible = null) => {
+      if (blocked) startReadiness = { checkedAt: clock(), allowed: false, reason,
+        contextAvailable: Boolean(context), recoveryEligible };
+      return blocked;
+    };
+    if (checked(recoveryAttempts(context)?.some(row => row.key === context.key), 'context-already-consumed')) return;
     const recovery = connectorStatus === 'SuspendedEVSE' && blockedStartRecovery();
-    if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted && !recovery
-      || [...pendingCalls.values(), ...callQueue].some(call => call.action === 'RemoteStartTransaction')
-      || connectorStatus !== 'Preparing' && !recovery || !canRequestRemoteStart() || clock() < connectorStatusAt || !transportFresh()) return;
+    const blocked = (condition, reason) => checked(condition, reason, Boolean(recovery));
+    if (blocked(!plugAndCharge, 'rfid-mode') || blocked(!authorizationReady, 'authorization-unavailable')
+      || blocked(!stateReady, 'transaction-storage-unavailable') || blocked(!permittedBy(canStart), 'start-permission-unavailable')
+      || blocked(preparingAttempted && !recovery, 'preparing-attempt-consumed')
+      || blocked([...pendingCalls.values(), ...callQueue].some(call => call.action === 'RemoteStartTransaction'), 'start-already-pending')
+      || blocked(connectorStatus !== 'Preparing' && !recovery, 'connector-not-ready')
+      || blocked(!canRequestRemoteStart(), 'transaction-evidence-unresolved')
+      || blocked(clock() < connectorStatusAt, 'future-connector-status') || blocked(!transportFresh(), 'transport-unavailable')) return;
+    startReadiness = { checkedAt: clock(), allowed: true, reason: 'queued',
+      contextAvailable: Boolean(context), recoveryEligible: Boolean(recovery) };
     preparingAttempted = true; remoteStartStatus = 'queued';
     callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition,
       ...(recovery ? { recoveryKey: recovery.key } : {}),
@@ -1125,6 +1139,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         connected: Boolean(canControl() && socket?.readyState === 1 && lastMessageAt !== null), hasBootReported: booted, available,
         error: error ?? (authorizationReady ? null : 'authorization-unavailable'), lastMessageAt, configurationFailures: [...configurationFailures],
         authorizationMode: config.authorization_mode, remoteStartStatus, startProgress: structuredClone(startProgress),
+        startReadiness: structuredClone(startReadiness),
         authorizationConfiguration: structuredClone(authorizationConfiguration),
         pendingConfiguration: [...pendingCalls.values(), ...callQueue.map(call => ({ action: call.action, key: call.payload.key }))]
           .filter(call => call.action === 'ChangeConfiguration').map(call => call.key),

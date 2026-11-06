@@ -1093,6 +1093,12 @@ transaction or power draw followed. These bounded diagnostics contain no
 authorization tags, transaction identifiers or message payloads and clear on
 connection replacement; ordinary status reads do not renew them.
 
+The last remote-start admission check also reports its original check time and
+the blocking condition, separately from an outgoing request or acknowledgement.
+The provider records the last evaluation of its start lease and controller guard.
+These bounded in-memory diagnostics contain only reasons, booleans and clocks;
+they grant no permission and do not disclose connection or recovery identifiers.
+
 In plug-and-charge mode, connection setup also reads the five native authorization
 and cache flags with `GetConfiguration`. Diagnostics retain only the requested
 boolean values and their receipt time for the current connection. Missing,
