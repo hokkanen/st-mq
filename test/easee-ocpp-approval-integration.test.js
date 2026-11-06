@@ -531,3 +531,46 @@ test('refreshing start permission retains its original expiry and immediate revo
     }
   });
 });
+
+
+test('native admission diagnostics follow real pending, grant and economic refusal without renewing evidence', async t => {
+  const f = await fixture(t);
+  const authorize = async () => (await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status;
+  f.admission(false);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  assert.deepEqual(f.provider.localOcppStatus().startAdmission,
+    { checkedAt: f.now, allowed: false, reason: 'input-admission-pending' });
+  assert.equal(await authorize(), 'Blocked');
+  f.admission(true);
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  assert.deepEqual(f.provider.localOcppStatus().startAdmission,
+    { checkedAt: f.now, allowed: true, reason: 'controller-admitted' });
+  assert.deepEqual(f.provider.localOcppStatus().startPermissionChange,
+    { checkedAt: f.now, action: 'granted', reason: 'controller-admitted' });
+  assert.equal(await authorize(), 'Accepted');
+  const granted = f.provider.localOcppStatus();
+  f.advance(1000);
+  assert.deepEqual(f.provider.localOcppStatus().startAdmission, granted.startAdmission,
+    'Reading the status does not create a newer controller decision');
+  assert.deepEqual(f.provider.localOcppStatus().startPermissionChange, granted.startPermissionChange);
+  const startAt = f.now + 30 * MINUTE;
+  await f.controller.update({ enabled: true, plan: { startAt, feasible: true, periods: [{ startAt, endAt: null }] } });
+  assert.deepEqual(f.provider.localOcppStatus().startAdmission,
+    { checkedAt: f.now, allowed: false, reason: 'waiting-for-economic-period' });
+  assert.deepEqual(f.provider.localOcppStatus().startPermissionChange,
+    { checkedAt: f.now, action: 'revoked', reason: 'waiting-for-economic-period' });
+  assert.equal(await authorize(), 'Blocked');
+  f.controller.invalidate();
+  assert.deepEqual(f.provider.localOcppStatus().startPermissionChange,
+    { checkedAt: f.now, action: 'revoked', reason: 'controller-invalidated' });
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  assert.equal(await authorize(), 'Accepted');
+  f.advance(61_000);
+  assert.equal(await authorize(), 'Blocked');
+  const expired = f.provider.localOcppStatus().startPermissionChange;
+  assert.deepEqual(expired, { checkedAt: f.now, action: 'revoked', reason: 'permission-expired' });
+  f.advance(1000);
+  assert.equal(await authorize(), 'Blocked');
+  assert.deepEqual(f.provider.localOcppStatus().startPermissionChange, expired,
+    'A later missing-lease check preserves the original expiry revocation evidence');
+});

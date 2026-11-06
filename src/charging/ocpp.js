@@ -162,7 +162,7 @@ async function handoverOperation(step, operation) {
 }
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
-  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
+  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, recordStartAdmission = () => {}, readCurrentSupply,
   readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback,
   controlAttempt = () => createControlAttempt(), controlPending = () => null } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
@@ -173,7 +173,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     ...(typeof requestMeterReadback === 'function' ? { requestMeterReadback(snapshot, { signal, guard = () => false } = {}) {
       return requestMeterReadback({ signal, guard: () => canControl() && guard() && isCurrent(snapshot) });
     } } : {}),
-    setStartPermission, controlPending,
+    setStartPermission, recordStartAdmission, controlPending,
     deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true, diagnostic = false } = {}) {
@@ -604,26 +604,29 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
     // decision that calls for a pause must withdraw it before any awaited work.
-    const revoke = () => { adapter.setStartPermission?.(null); return false; };
+    const record = (allowed, reason) => adapter.recordStartAdmission?.({ checkedAt: clock(), allowed, reason });
+    const revoke = reason => { record(false, reason); adapter.setStartPermission?.(null, { reason }); return false; };
     const now = clock(), app = snapshot?.appControl;
-    if (closed || current !== generation || !hasAuthority() || !snapshot?.online || snapshot.pluggedIn !== true
-      || !fresh(snapshot.readAt, now) || ['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)
-      || app?.faulted || app?.authorizationBlocked
-      || sessionPauseActive() || nativeStopped() || state.takeoverPending || state.automaticTakeover
-      || state.manual && state.manual.kind !== 'release') return revoke();
+    if (closed || current !== generation) return revoke('controller-superseded');
+    if (!hasAuthority()) return revoke('controller-authority-unavailable');
+    if (!snapshot?.online || snapshot.pluggedIn !== true || !fresh(snapshot.readAt, now)
+      || ['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return revoke('charger-unavailable');
+    if (app?.faulted || app?.authorizationBlocked) return revoke('native-restriction');
+    if (sessionPauseActive() || nativeStopped() || state.takeoverPending || state.automaticTakeover
+      || state.manual && state.manual.kind !== 'release') return revoke('independent-instruction');
     const selected = selectExecution(plan, state.execution, now, desired.deadlineRequest, state.session?.connectedAt);
     const periods = selected.execution?.periods ?? [];
     const active = periods.find(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
     const identifying = identification && identification.phase !== 'pausing'
       && (identification.mode !== 'probe' || now < identification.probeUntil);
-    if (identification && !identifying) return revoke();
+    if (identification && !identifying) return revoke('identification-ended');
     const openRelease = state.released && !state.provisional && !selected.priceRevision
       || selected.plan?.provisional === true || selected.plan?.feasible === false
       || !selected.execution && time(selected.plan?.startAt) && selected.plan.startAt <= now;
-    if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return revoke();
+    if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return revoke('waiting-for-economic-period');
     // Keep only the previous lease while unrelated input persistence is pending.
     // Its dynamic guard still denies Start, and this path cannot extend expiry.
-    if (!canWrite(current)) return true;
+    if (!canWrite(current)) { record(false, 'input-admission-pending'); return true; }
     const until = Math.min(now + MAX_AGE_MS,
       desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
       identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
@@ -634,6 +637,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const next = getStartRecoveryContext?.();
       return next?.id === retryId && next?.connectedAt === state.session.connectedAt;
     };
+    record(true, 'controller-admitted');
     adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
       recovery: { connectedAt: state.session.connectedAt,
         key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) } });
@@ -915,7 +919,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       ? 'Paused until unplugging. Charge now or Use automatic can resume charging.' : missingPauseEvidence());
   }
   async function reconcile(current) {
-    if (closed || current !== generation) return status();
+    const note = reason => adapter.recordStartAdmission?.({ checkedAt: clock(), allowed: null, reason });
+    if (closed || current !== generation) { note('superseded-before-read'); return status(); }
+    note('reconciliation-started');
     cancelMeterSample();
     const signal = abort.signal;
     const priorConfirmation = ownsInstruction ? { snapshot, fingerprint: state.owned?.fingerprint } : null;
@@ -935,12 +941,16 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         await commit({ vehicleDisconnect: { source: boundary.source, readingId: boundary.readingId, endedConnectedAt: boundary.endedConnectedAt,
           measuredAt: boundary.measuredAt, receivedAt: boundary.receivedAt, awaitingConnection: true,
           ...(boundary.admittedAt === undefined ? {} : { admittedAt: boundary.admittedAt }) }, execution: null, released: false });
+      note('reading-charger');
       snapshot = await adapter.read({ signal });
-      if (closed || current !== generation) return status();
+      if (closed || current !== generation) { note('superseded-after-read'); return status(); }
       // Starting a read is not contrary charger evidence. Retain the previous
       // confirmation while it is in flight, then evaluate the actual reply.
       observePause();
-      if (!snapshot.online || !fresh(snapshot.readAt, clock())) return display('unavailable', 'The local charger connection is unavailable; existing bounded profiles may still apply.', 'offline');
+      if (!snapshot.online || !fresh(snapshot.readAt, clock())) {
+        note('charger-read-unavailable');
+        return display('unavailable', 'The local charger connection is unavailable; existing bounded profiles may still apply.', 'offline');
+      }
       const prior = state.session;
       const knownPhysicalAt = Math.max(prior?.connectedAt ?? -1,
         state.pauseWitness?.at ?? -1, snapshot.transactionStartedAt ?? -1, snapshot.transactionConfirmedAt ?? -1);
@@ -952,8 +962,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       // A reconnect may replay an old Available status. Its new receipt time
       // cannot end a newer physical session or erase a later manual instruction.
       // A separately observed, newer physical disconnect retains its authority.
-      if (snapshot.pluggedIn === false && snapshot.statusAt <= knownConnectionAt && !explicitDisconnect)
+      if (snapshot.pluggedIn === false && snapshot.statusAt <= knownConnectionAt && !explicitDisconnect) {
+        note('stale-disconnect-status');
         return display('unavailable', REASONS['status-stale'], 'status-stale');
+      }
       const disconnected = snapshot.pluggedIn === false;
       const lastDisconnectedAt = Math.max(prior?.lastDisconnectedAt ?? -1, state.vehicleDisconnect?.measuredAt ?? -1,
         disconnected ? snapshot.statusAt : -1);
@@ -993,8 +1005,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
             nativeTakeoverAt: unresolved.requestedAt });
         else if ((desired.enabled === true || chargeNowActive()) && !sessionPauseActive()) return display('unconfirmed', REASONS['takeover-unconfirmed'], 'takeover-unconfirmed');
       }
+      note('observing-native-instructions');
       await observeAppControl(current, signal);
-      if (sessionPauseActive()) return await reconcileSessionPause(current, signal);
+      if (sessionPauseActive()) { note('session-pause'); return await reconcileSessionPause(current, signal); }
       if (desired.takeover) {
         const token = desired.takeover; desired.takeover = null;
         await takeOver(current, token, signal);
@@ -1037,12 +1050,14 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ownsInstruction = coversZero(composite, Math.max(clock(), composite.startAt), state.owned.startAt);
         observePause();
       }
+      note('refreshing-identification');
       await refreshIdentification();
-      if (closed || current !== generation) return status();
+      if (closed || current !== generation) { note('superseded-after-identification'); return status(); }
       // A scoped identification request already supplies its start/pause and
       // return deadline. Its physical duty, Charge now and disabled automation
       // cannot wait for an independent economic search to finish.
       const independentPermission = identification !== null || chargeNowActive() || desired.enabled !== true;
+      note('reading-plan');
       const startPlan = retainExecution(!independentPermission && typeof getPlan === 'function'
         ? await readPlan(signal) : desired.plan);
       retainedStartAdmission = permitStart(startPlan, current) === true;
@@ -1181,7 +1196,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ? 'The native pause is confirmed and expires at the planned start.'
         : missingPauseEvidence());
     } catch (error) {
-      if (!retainedStartAdmission || !hasAuthority()) adapter.setStartPermission?.(null);
+      if (!retainedStartAdmission || !hasAuthority()) adapter.setStartPermission?.(null, { reason: 'reconcile-error' });
       if (takeoverState === 'pending') takeoverState = 'blocked';
       if (closed || current !== generation) return status();
       // A blocked observational check does not erase a confirmed native profile.
@@ -1218,7 +1233,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   return { status, supportsIdentification: true,
     interruptPlanning() {
       if (!planningWait) return false;
-      adapter.setStartPermission?.(null); generation++; planningWait.cancel(); return true;
+      adapter.setStartPermission?.(null, { reason: 'planning-cancelled' }); generation++; planningWait.cancel(); return true;
     },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
@@ -1232,7 +1247,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         || identification?.mode === 'probe' && ['waiting', 'charging'].includes(identification.phase)
           && identification.connectedAt === state.session?.connectedAt && clock() < identification.probeUntil;
       if (!isDeepStrictEqual(controlIntent(next, independentStart), controlIntent(desired, independentStart))) {
-        adapter.setStartPermission?.(null);
+        adapter.setStartPermission?.(null, { reason: 'instruction-changed' });
         generation++; abort?.abort();
       }
       desired = clone(next);
@@ -1241,7 +1256,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       queue = queue.catch(() => {}).then(() => reconcile(current));
       return queue.then(() => status());
     },
-    invalidate() { adapter.setStartPermission?.(null); generation++; abort?.abort(); },
-    close() { adapter.setStartPermission?.(null); closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
+    invalidate() { adapter.setStartPermission?.(null, { reason: 'controller-invalidated' }); generation++; abort?.abort(); },
+    close() { adapter.setStartPermission?.(null, { reason: 'controller-closed' }); closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
   };
 }

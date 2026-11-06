@@ -1096,6 +1096,11 @@ connection replacement; ordinary status reads do not renew them.
 The last remote-start admission check also reports its original check time and
 the blocking condition, separately from an outgoing request or acknowledgement.
 The provider records the last evaluation of its start lease and controller guard.
+It also retains the controller admission stage and the last lease grant,
+withholding, rejection or revocation with its original decision time. These
+diagnostics live outside persisted charging views and create no journal writes.
+An in-progress reconciliation stage is not an admission decision and reports an
+unknown allowance until the actual gate is evaluated.
 These bounded in-memory diagnostics contain only reasons, booleans and clocks;
 they grant no permission and do not disclose connection or recovery identifiers.
 

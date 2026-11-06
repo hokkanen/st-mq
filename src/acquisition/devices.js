@@ -261,6 +261,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
   let nativeStartPermission = null;
   let nativeStartPermissionStatus = null;
+  let nativeStartAdmission = null, nativeStartPermissionChange = null;
   const nativeSourcePending = () => stream?.pending?.(easee.charger_id, [31, 48, 96, 100, 109, 250]) === true;
   const streamedElectricity = new Set(), streamedVoltage = new Set(), transports = new Map(), reconcileAt = new Map();
   const cloudVoltage = new Map();
@@ -286,6 +287,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
         && instructionRevision === permission.instructionRevision);
       if (!valid) {
+        if (permission) nativeStartPermissionChange = { checkedAt: clock(), action: 'revoked',
+          reason: permission.until <= clock() ? 'permission-expired'
+            : current?.connectionId !== permission.connectionId ? 'connection-changed'
+              : instructionRevision !== permission.instructionRevision ? 'native-instruction-changed' : 'authority-or-connector-unavailable' };
         nativeStartPermission = null;
         nativeStartPermissionStatus = { checkedAt: clock(), allowed: false,
           reason: !permission ? 'no-start-permission' : permission.until <= clock() ? 'permission-expired'
@@ -310,6 +315,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     onDisconnect: () => {
       nativeStartPermission = null;
       nativeStartPermissionStatus = null;
+      nativeStartAdmission = nativeStartPermissionChange = null;
       if (!closed && supplied(easee.charger_id)) {
         electricityEpoch++; onStreamDisconnect([easee.charger_id], { transport: 'ocpp' });
       }
@@ -425,7 +431,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           // Preserve a live Stop/de-authorization edge even if its matching
           // recovery arrives before the next OCPP authorization check.
           if (restriction && Number.isSafeInteger(measuredAt) && measuredAt >= nativeStartPermission?.issuedAt
-            && measuredAt <= clock()) { nativeStartPermission = null; instructionRevision++; }
+            && measuredAt <= clock()) {
+            nativeStartPermission = null; instructionRevision++;
+            nativeStartPermissionChange = { checkedAt: clock(), action: 'revoked', reason: 'native-source-restriction' };
+          }
           onChargerObservation(observation);
         }
       },
@@ -657,6 +666,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     if (stop && (observedNativeStop === null || stop.at > observedNativeStop.at
       || stop.at === observedNativeStop.at && stop.transactionId !== observedNativeStop.transactionId)) {
       observedNativeStop = { ...stop }; instructionRevision++; nativeStartPermission = null;
+      nativeStartPermissionChange = { checkedAt: clock(), action: 'revoked', reason: 'native-stop' };
     }
   }
   function refreshNativeCloudTelemetry({ force = false } = {}) {
@@ -807,15 +817,21 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     readCurrentSupply,
     readDeviceInfo: () => local.deviceInfo?.() ?? null,
     canControl: () => !closed && canControl() && controlBackend === 'native' && !nativeSourcePending(),
+    recordStartAdmission: decision => { nativeStartAdmission = { ...decision }; },
     setStartPermission: (snapshot, options = {}) => {
       if (snapshot) nativeAppControl();
       // A pending source receipt withholds use/renewal of the previous lease.
       // Explicit revocation (null) still clears it immediately.
-      if (snapshot && nativeSourcePending()) return;
+      if (snapshot && nativeSourcePending()) {
+        nativeStartPermissionChange = { checkedAt: clock(), action: 'withheld', reason: 'native-source-pending' };
+        return;
+      }
       nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
         && snapshot.instructionRevision === instructionRevision
         ? { connectionId: snapshot.connectionId, instructionRevision,
           issuedAt: clock(), until: options.until, guard: options.guard, recovery: options.recovery ?? null } : null;
+      nativeStartPermissionChange = { checkedAt: clock(), action: nativeStartPermission ? 'granted' : snapshot ? 'rejected' : 'revoked',
+        reason: nativeStartPermission ? 'controller-admitted' : snapshot ? 'invalid-permission' : options.reason ?? 'controller-revoked' };
     },
     request: (...args) => local.request(...args),
     requestMeterReadback: options => local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }, options),
@@ -967,6 +983,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     streamStatus() { return stream?.status() ?? null; },
     localOcppStatus(options) { return { ...local.status(), controlTransport: controlBackend === 'native' ? 'ocpp' : controlBackend,
       startPermission: structuredClone(nativeStartPermissionStatus),
+      startAdmission: structuredClone(nativeStartAdmission), startPermissionChange: structuredClone(nativeStartPermissionChange),
       ...(setup ? { setup: setup.status(options) } : {}) }; },
     async reconcileOcpp() {
       local.refreshAuthority?.();
