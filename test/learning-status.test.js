@@ -30,6 +30,27 @@ test('every thermal parameter and additional numeric initial assumption has a co
     'groundC', 'openAllocationFraction', 'closedAllocationFraction']) assert(rows.has(`floor-${key}`));
 });
 
+test('DHWR electrical assumptions show the retained model power, including zero and unavailable values', () => {
+  for (const value of [.025, .05, 0, undefined, null]) {
+    const model = initialAdaptiveModel({ dhwrKw: .025 });
+    if (value === undefined) delete model.energy.dhwrKw;
+    else model.energy.dhwrKw = value;
+    const display = learningDisplay({ adaptive: { model }, parameters: { dhwrKw: .1 } });
+    const row = display.coefficientEvidenceRows.find(row => row.key === 'Hot-water recirculation electrical power');
+    const available = Number.isFinite(value);
+    assert.equal(row.group, 'Energy estimates'); assert.equal(row.unit, 'kW');
+    assert.equal(row.available, available);
+    assert.equal(row.value, available ? `${value.toFixed(3)} kW` : 'Unavailable');
+    assert.equal(row.provenance, available ? 'Fixed configured assumption' : 'Unavailable');
+    assert.match(row.detail, /not measured power, a fitted coefficient or room heat/);
+    assert.match(row.calculation.equations[0].expression, /E_DHWR = P_DHWR × h_recorded/);
+    assert.match(row.calculation.equations[0].legend, /own recorded configuration revisions/);
+    assert.match(row.calculation.equations[0].legend, available ? new RegExp(value.toFixed(3).replace('.', '\\.')) : /Unavailable/);
+    assert.doesNotMatch(row.calculation.equations[0].legend, /0\.100 kW/);
+    assert(!display.policyRows.some(item => item.key === row.key), 'An electrical assumption is not a household policy');
+  }
+});
+
 test('fixed initial assumptions preserve valid zero and distinguish missing values from configured zero', () => {
   const model = initialAdaptiveModel({ homeModel: { internalCPerHour: 0, dutyPerDegree: 0, reductionRatio: 0 } });
   const rows = () => new Map(modelCoefficientDescriptions({ adaptive: { model } }).map(row => [row.key, row]));

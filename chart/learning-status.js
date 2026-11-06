@@ -7,7 +7,7 @@ import { renderLearningRows } from './learning-rows.js';
 import { coefficientCalculation, floorCalculation, sourceCalculation, heatBalanceCalculation, outcomeCalculation,
   inputCalculation, dutyCalculation, economicCalculation, validationCalculation, calibrationCalculation, fittingCalculation,
   preheatCalculation, recoveryHoldCalculation, hotWaterCalculation, initialModelCalculation,
-  trialBudgetCalculation } from './home-learning-math.js';
+  trialBudgetCalculation, dhwrCalculation } from './home-learning-math.js';
 
 const finite = Number.isFinite;
 const number = (value, digits = 2) => {
@@ -194,9 +194,9 @@ export function learningDisplay(learning = {}, context = {}) {
   };
   if (learning.reconstruction?.reason) record('Model reconstruction',
     status === 'reconstruction-failed' ? 'Rebuild needs attention' : 'Rebuilding', learning.reconstruction.reason);
-  const basis = (title, value, detail) => {
+  const basis = (title, value, detail, metadata = {}) => {
     coefficientEvidence.push(detail);
-    coefficientEvidenceRows.push({ key: title, title, value, detail });
+    coefficientEvidenceRows.push({ key: title, title, value, detail, ...metadata });
   };
   if (model.initialModel) basis('Initial model', model.initialModel.basis === 'historically-trained-initial-estimate'
     ? 'Historically trained starting estimates' : model.initialModel.basis === 'calibrated-initial-estimate'
@@ -221,6 +221,9 @@ export function learningDisplay(learning = {}, context = {}) {
   if (finite(p.lossPerHour)) basis('Heat loss in context', `${number(p.lossPerHour * 10)} °C/h at 10 °C difference`, `Current model: with the house 10 °C warmer than outdoors, heat loss contributes about ${number(p.lossPerHour * 10)} °C/h before heating, sunshine and stored heat. This is a model estimate, not a direct cooling measurement.`);
 
   if (finite(energy.compressorKw)) basis('Electricity assumptions', finite(p.hydronicCPerKwh) ? 'Performance map + AUX rating' : `${number(energy.compressorKw)} kW compressor`, `Electricity basis: ${finite(p.hydronicCPerKwh) ? `compressor input follows the fixed source map; the saved ${number(energy.compressorKw)} kW nominal/calibration statistic does not replace that map` : `compressor ${number(energy.compressorKw)} kW`}, auxiliary capacity ${number(energy.auxiliaryKw)} kW; ${words(energy.basis ?? 'estimated')}.`);
+  basis('Hot-water recirculation electrical power', finite(energy.dhwrKw) ? `${number(energy.dhwrKw, 3)} kW` : 'Unavailable',
+    'The selected model retains this configured DHWR pump power assumption. Recorded electrical estimates include it during recorded recirculation operation, using each interval’s configuration. It is separate from the circulation pumps already included in the compressor source map. It is not measured power, a fitted coefficient or room heat, and it supplies no space-heating savings credit.',
+    { unit: 'kW', available: finite(energy.dhwrKw), provenance: finite(energy.dhwrKw) ? 'Fixed configured assumption' : 'Unavailable' });
   if (finite(energy.recoveryMultiplier)) basis('Recovery diagnostic calibration', `${number(energy.recoveryMultiplier)} ×`, `This retained multiplier compares recovery electricity with the cycle’s predicted non-AUX recovery energy; the current planner uses the source performance map and does not apply this multiplier. ${energy.recoveryCalibrationEpisodes ?? 0} attributable completed episodes support this estimate${energy.recoveryCalibrationBasis ? `; ${words(energy.recoveryCalibrationBasis)}` : ''}. It is a reporting diagnostic, not another building heat-response coefficient or a measured COP.`);
   if (finite(energy.auxiliaryRiskScale)) basis('Auxiliary exposure calibration', `${number(energy.auxiliaryRiskScale)} ×`, `The separate auxiliary exposure scale is adjusted from observed output and routing against predicted space-heating AUX energy. ${energy.auxiliaryCalibrationEpisodes ?? 0} qualifying episodes; nominal heater power remains an estimate. This changes predicted risk and cost, not the shared response per thermal kWh.`);
   if (finite(energy.relativeUncertainty)) basis('Electricity uncertainty allowance', `${number(energy.relativeUncertainty * 100, 0)}%`, `Electricity uncertainty allowance: ${number(energy.relativeUncertainty * 100, 0)}%. This supports reported cost uncertainty; automatic economic admission uses the separate paired physical stress checks. It is not meter accuracy or a statistical confidence interval.`);
@@ -342,8 +345,8 @@ export function learningDisplay(learning = {}, context = {}) {
     group: evidenceGroup(row.key), calculation: validationCalculation(row.key) }));
   const visibleCoefficientRows = coefficientEvidenceRows.filter(row => !policyGroups[row.key] && row.key !== 'Heat loss in context')
     .map(row => ({ ...row, group: row.key.endsWith(' duty response') ? 'Equipment response'
-      : ['Electricity assumptions', 'Recovery diagnostic calibration', 'Auxiliary exposure calibration', 'Electricity uncertainty allowance'].includes(row.key)
-        ? 'Energy estimates' : 'Model structure', calculation: row.key.endsWith(' duty response') ? dutyCalculation(model) : row.key === 'Initial model' ? initialModelCalculation(model) : calibrationCalculation(row.key) }));
+      : ['Electricity assumptions', 'Hot-water recirculation electrical power', 'Recovery diagnostic calibration', 'Auxiliary exposure calibration', 'Electricity uncertainty allowance'].includes(row.key)
+        ? 'Energy estimates' : 'Model structure', calculation: row.key.endsWith(' duty response') ? dutyCalculation(model) : row.key === 'Initial model' ? initialModelCalculation(model) : row.key === 'Hot-water recirculation electrical power' ? dhwrCalculation(model) : calibrationCalculation(row.key) }));
   if (finite(p.hydronicCPerKwh)) visibleCoefficientRows.unshift({ key: 'heat-balance', title: 'How the heat balance works',
     value: model.floor?.enabled ? 'Room + reserve + selected slab' : 'Room + slow reserve', group: 'Model structure',
     detail: 'Heat loss cools the room; solar, fireplace and configured background heat warm it directly. Hydronic heat first enters storage, then reaches the room through temperature-driven exchange.',

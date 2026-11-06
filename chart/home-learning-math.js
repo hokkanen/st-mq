@@ -284,6 +284,14 @@ export function validationCalculation(key) {
   return undefined;
 }
 
+export function dhwrCalculation(model) {
+  const power = model.energy?.dhwrKw;
+  return calculation([
+    equation('Recirculation electricity', 'E_DHWR = P_DHWR × h_recorded',
+      `E_DHWR is electrical kWh; P_DHWR is ${Number.isFinite(power) ? power.toFixed(3) : 'Unavailable'} kW in the selected model. h_recorded is covered recirculation runtime in hours. Historical intervals use their own recorded configuration revisions.`),
+  ], ['This is a fixed configured electrical assumption, not fitted or metered power. It contributes to recorded electrical estimates only during recorded DHWR operation; it does not enter the room heat balance or establish space-heating savings. Missing power remains unavailable rather than being replaced with today’s default.']);
+}
+
 export function calibrationCalculation(key) {
   const weighting = 'α = 1 / min(20, n + 2), where n counts prior useful completed-episode updates, including episodes contributing other energy diagnostics. It is not just the number of AUX or metered episodes. clamp(x, lo, hi) keeps x within the stated bounds.';
   if (['auxiliary', 'Auxiliary exposure calibration'].includes(key)) return calculation([
