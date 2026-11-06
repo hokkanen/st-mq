@@ -419,6 +419,7 @@ test('dehumidifier automatic power choices are editable without device feedback 
     capabilities: { power: ['off', 'on'], fanSpeed: ['low'] },
   })), { retain: false });
   client.emit('message', 'invented-dehumidifier/online', Buffer.from('offline'), { retain: false });
+  await f.settleAcquisition();
   const changed = await f.post(route, { deviceId: 'caravan_dehumidifier', enabled: false, offAtC: 1.5, onAtC: 3 });
   assert.equal(changed.status, 200);
   const policy = changed.body.equipment.devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier.temperatureControl;
