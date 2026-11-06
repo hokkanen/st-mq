@@ -470,7 +470,12 @@ treatment and one selected-slab state for learning.
 
 Initial or learned estimates support ordinary economic action before new trials
 exist. Additional learning experiments require usable temperature/equipment
-evidence, enabled trials and remaining allowance. The controller
+evidence, enabled trials and remaining allowance. Configured floor equipment
+also needs a known output mode, including for reduction-only trials; an explicit
+physical floor model requires an ON/OFF mode. Unknown and partial output remains
+recorded, but cannot start or revalidate a learning trial whose complete stored-heat
+assessment would be unavailable. An installation without floor equipment gains
+no additional observation prerequisite. The controller
 seeks four useful trial opportunities per Finnish day by default, prioritizing
 learning before that target. This is an objective, not a promise to act through a
 blocked condition. Configured reduction ceilings also bound initial trials;

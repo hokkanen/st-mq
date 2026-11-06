@@ -50,15 +50,21 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
   const actionValidated = responseValidated && advanceValidated && !fireplacePending;
   const initialReady = model?.version === 4 && Object.entries(THERMAL_PARAMETER_BOUNDS)
     .every(([key, bounds]) => number(model.parameters?.[key]) && model.parameters[key] >= bounds[0] && model.parameters[key] <= bounds[1]);
+  // A reduction-only experiment also needs an assessable stored-heat observer.
+  // Held GPIO evidence is distinct from floor command readiness; an installation
+  // without floor equipment does not acquire a new observation requirement.
+  const floorObserved = !['partial', 'unknown'].includes(equipment.floorOverrideMode)
+    && (!model?.floor?.enabled || ['on', 'off'].includes(equipment.floorOverrideMode));
   const trialReady = c.learningTrials && initialReady
     && number(equipment.compressorOn) && number(equipment.dhwRouting)
-    && equipment.indoorEstimated !== true
+    && equipment.indoorEstimated !== true && floorObserved
     && (!number(equipment.trialBudgetRemainingCents)||equipment.trialBudgetRemainingCents>=0);
   return { thermalValidated, responseValidated, advanceValidated, fireplaceValidated, actionValidated, initialReady, trialReady,
     reasons: [!thermalValidated && 'awaiting-held-out-thermal-trajectories',
       !responseValidated && 'awaiting-held-out-tariff-response',
       !advanceValidated && 'awaiting-frozen-advance-cycle-predictions',
       fireplacePending && 'awaiting-fireplace-response-evidence',
+      !floorObserved && 'trials-require-known-floor-output',
       !trialReady && 'trials-require-enabled-budget-and-observed-equipment'].filter(Boolean),
     basis: 'Thermal and equipment-response checks are separate; counterfactual savings remain estimates.' };
 }

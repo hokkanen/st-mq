@@ -338,6 +338,30 @@ test('an owned native restoration does not turn fresh reduction telemetry into a
   assert(disconnected.decision.reasons.includes('control-or-forecast-coverage-lost'));
 });
 
+for (const mode of ['unknown', 'partial']) test(`actual Engine keeps an unassessable ${mode} floor trial from dispatching`, async t => {
+  const r = setup(t), native = r.native(); r.plan();
+  Object.assign(r.engine.control, { learningTrials: true, maxPreheatHours: 0,
+    maxReductionHours: 2, minimumHomeBenefitCents: 10_000 });
+  r.engine.checkpoint.samples = Array.from({ length: 4 }, (_, i) => ({
+    timestamp: new Date(r.now - (4 - i) * 15 * MINUTE).toISOString(),
+    indoorC: 21.2, outdoorC: 10, phase: 'normal', regime: 'occupied', quality: [],
+  }));
+  r.engine.checkpoint.cursor = r.engine.checkpoint.samples.at(-1).timestamp;
+  r.engine.checkpoint.health.usableSamples = 4;
+  r.engine.pendingPlan.trial = true;
+  r.engine.pendingPlan.schedule.reductionEnd = r.now + 2 * HOUR;
+  const market = r.store.getState('provider:market');
+  market.intervals.forEach(row => { row.spotCtPerKwh = 10; });
+  r.store.setState('provider:market', market);
+  r.engine.preheatValveStatus = () => ({ enabled: true, configured: true, devices: [],
+    observedMode: mode, available: false, active: false, restorationPending: false });
+  const result = r.engine.tick(); await r.settle();
+  assert.equal(result.decision.phase, 'normal');
+  assert.equal(r.engine.cycles.active(), null);
+  assert.equal(r.commands.some(row => row.batch.includes('reduction')), false);
+  assert.equal(native.writes.length, 0, 'An unavailable experiment grants no native heating write');
+});
+
 for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine ends ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {
   const r = setup(t); if (trial) r.native(); r.plan();
   if (trial) {
