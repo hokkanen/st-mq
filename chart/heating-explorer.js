@@ -23,6 +23,16 @@ const atTime = value => Number.isFinite(value) ? timeFormat.format(value) : 'Tim
 const phaseName = phase => ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduction', recovery: 'Recovery', hold: 'Normal heating' })[phase] ?? 'Heating';
 const humanize = value => String(value ?? '').replace(/[-_]/g, ' ');
 const reasonLabels = {
+  'accepted-cycle-scheduled': 'Waiting for the accepted cycle to start at its scheduled time.',
+  'complete-cycle-in-progress': 'The selected heating cycle is in progress.',
+  'continuing-with-retained-estimates': 'The accepted schedule remains in force using its last available estimates while current planning data is unavailable.',
+  'continuing-during-model-rebuild': 'The accepted schedule remains in force while the heating model rebuilds. Current device readiness still governs execution.',
+  'delivered-heat-upper-limit': 'Preheat ended to protect the upper temperature limit. The reduction remains scheduled.',
+  'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit. Recovery is requested.',
+  'configured-preheat-limit-reached': 'Preheat ended at its configured duration limit. The reduction remains scheduled.',
+  'configured-reduction-limit-changed': 'The remaining reduction was shortened to match the changed duration limit.',
+  'remaining-preheat-rescheduled': 'The remaining preheat window was adjusted while preserving the reduction schedule.',
+  'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery.',
   'normal-operation-preferred': 'Normal heating is preferred among the evaluated alternatives.',
   'continuous-normal-preferred': 'Normal heating is preferred among the evaluated alternatives.',
   'unvalidated-thermal-model': 'The model is still learning how the house holds and recovers heat.',

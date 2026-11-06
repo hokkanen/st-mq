@@ -136,6 +136,16 @@ const label = value => String(value ?? '').replaceAll(/[_-]/g, ' ');
 const tariffNames = { 'day-night': 'Day / night', seasonal: 'Seasonal' };
 const weatherStatuses = { simulated: 'Synthetic weather', available: 'Forecast available', 'partial-forecast-coverage': 'Forecast has missing intervals', 'missing-forecast': 'Waiting for a forecast', 'stale-forecast': 'Forecast is stale' };
 const reasons = {
+  'accepted-cycle-scheduled': 'Waiting for the accepted cycle to start at its scheduled time',
+  'complete-cycle-in-progress': 'The selected heating cycle is in progress',
+  'continuing-with-retained-estimates': 'Keeping the accepted schedule while current planning data is unavailable',
+  'continuing-during-model-rebuild': 'Keeping the accepted schedule while the heating model rebuilds',
+  'delivered-heat-upper-limit': 'Preheat ended at the upper temperature limit; reduction retained',
+  'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit',
+  'configured-preheat-limit-reached': 'Preheat ended at its duration limit; reduction retained',
+  'configured-reduction-limit-changed': 'The reduction was shortened to match the changed duration limit',
+  'remaining-preheat-rescheduled': 'The remaining preheat was adjusted while preserving the reduction schedule',
+  'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery',
   'unvalidated-thermal-model': 'Learning how the house holds and recovers heat',
   'unvalidated-heating-energy-model': 'Heating electricity use is not yet reliable enough to optimize',
   'thermal-state-reconciliation': 'Checking thermal reserve after startup',
