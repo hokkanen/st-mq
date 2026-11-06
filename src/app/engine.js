@@ -789,7 +789,7 @@ export class Engine {
       }, { priority: 'control' });
       if (!enabled && feature === 'home') {
         await this.runWrite(() => {
-          if (!this.heatingExplorer.authorizes(this.cycles.active()?.plan??this.pendingPlan)) {
+          if (!this.heatingExplorer.retains(this.cycles.active()?.plan??this.pendingPlan)) {
             this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
             if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
           }
@@ -798,7 +798,7 @@ export class Engine {
         // A dispatch admitted before this edit may have completed meanwhile.
         await this.runWrite(() => {
           const cycle=this.cycles.active();
-          if (cycle&&!this.heatingExplorer.authorizes(cycle.plan)) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+          if (cycle&&!this.heatingExplorer.retains(cycle.plan)) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
         }, { priority: 'control' });
         const state = this.executor.status();
         // An existing manual choice remains owned by the current pause. Its
@@ -808,7 +808,7 @@ export class Engine {
         }
         // Manual choices and independently timed circulation retain their scope.
         if (!state.manualPause && !state.manualTemporary && !this.heatingTestBusy
-          && !this.heatingExplorer.authorizes(this.cycles.active()?.plan??this.pendingPlan)) {
+          && !this.heatingExplorer.retains(this.cycles.active()?.plan??this.pendingPlan)) {
           this.dispatchPending = this.executor.restore({ now: this.clock(), reason: 'automatic-control-disabled', preserveManualDhwr: true })
             .catch(() => this.runWrite(() => this.store.event('restoration-pending', { reason: 'automatic-control-disabled' }, this.clock()), { priority: 'control' }));
           await this.dispatchPending;
@@ -1722,7 +1722,7 @@ export class Engine {
       this.store.setState(startupKey, startupReference);
     }
     const reviewedPlan=this.cycles.active()?.plan??this.pendingPlan;
-    const reviewedTarget=this.heatingExplorer.authorizes(reviewedPlan)?reviewedPlan.targetC:null;
+    const reviewedTarget=this.heatingExplorer.retains(reviewedPlan)?reviewedPlan.targetC:null;
     const acceptedTarget = reviewedPlan?.userTrial ? reviewedTarget : reviewedPlan?.targetC;
     const targetC = this.settings.comfort.targetC ?? acceptedTarget ?? checkpoint.baselineC ?? startupReference?.value ?? (this.plant ? 21 : null);
     const baseSettings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
@@ -1816,7 +1816,9 @@ export class Engine {
         }
       }
     }
-    if (!this.automationEnabled('home') && !reviewedCycle && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
+    // Missing live identity or authority blocks commands; it does not revoke
+    // the saved Automatic choice or erase its accepted cycle during handover.
+    if (!this.automation.features.home.enabled && !reviewedCycle && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
     if ((observations.indoorControl.stale || observations.outdoor.stale) && !decision.reasons.includes('missing-or-stale-observations'))
       decision.reasons.push('missing-or-stale-observations');
     const currentCycle = this.cycles.active();
@@ -1974,7 +1976,7 @@ export class Engine {
       : (ownsTemporarySettings || ownsPausedSettings) && !holdManualSettings
         ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })
         : holdManualSettings ? this.executor.maintainPause(now, override)
-          : (!this.automationEnabled('home') || override) && !this.heatingExplorer.authorizes(decision.plan)
+          : (!this.automation.features.home.enabled || override) && !this.heatingExplorer.retains(decision.plan)
             && (priorExecutor.legacyOutstanding || ['preheat', 'reduction', 'recovery'].includes(priorExecutor.phase)
             || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding
               && this.floorOverride?.status(now).mode !== 'manual')
@@ -2119,7 +2121,7 @@ export class Engine {
     let retained = null;
     const active = this.cycles.active(), plan = active?.plan ?? this.pendingPlan;
     const allowed = plan && this.canControl() && !holdManualSettings
-      && (plan.userTrial ? this.heatingExplorer.authorizes(plan) : this.automationEnabled('home') && !override);
+      && (plan.userTrial ? this.heatingExplorer.retains(plan) : this.automation.features.home.enabled && !override);
     if (allowed) {
       const targetC = this.settings.comfort.targetC ?? plan.targetC;
       const checkpoint = { model: this.checkpoint?.model ?? plan.model, baselineC: targetC };
@@ -2167,10 +2169,10 @@ export class Engine {
         || equipment.externalChangeRevision > (plan.equipment?.externalChangeRevision ?? 0)) retained = null;
       if (retained && !this.dispatchPending && !this.executor.status().busy && !this.heatingTestBusy) {
         const decision = retained;
-        this.dispatchPending = this.committedControl(() => this.executor.execute(decision, {
+        this.dispatchPending = Promise.resolve(this.committedControl(() => this.executor.execute(decision, {
           now: this.clock(), automationEnabled: this.automationEnabled('home'),
           authorizeCycle: plan.userTrial ? () => this.heatingExplorer.authorizes(plan) : null,
-        })).then(result => this.runWrite(() => {
+        }))).then(result => this.runWrite(() => {
           const at = this.clock();
           if (result.restorationPending || !['preheat', 'reduction', 'recovery', 'normal'].includes(result.phase)) return;
           this.applied = { phase: result.phase, at, roomBoostC: result.phase === 'preheat' ? decision.roomBoostC : 0, verified: false };

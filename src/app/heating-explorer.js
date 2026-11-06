@@ -274,7 +274,7 @@ export class HeatingExplorer {
     const e = this.engine;
     return digest({ target: e.automationTarget('home'), input: e.config.input });
   }
-  authorizes(plan) {
+  retains(plan) {
     const trial=this.trial(),now=this.engine.clock();
     return Boolean(plan?.userTrial?.id && trial?.id===plan.userTrial.id && ACTIVE.has(trial.status)
       && plan.schedule && trial.plan?.schedule
@@ -283,9 +283,11 @@ export class HeatingExplorer {
       && plan.trial===trial.plan.trial
       && plan.config?.learningTrials===trial.plan.config.learningTrials
       && plan.config?.maxTrialCostCents===trial.plan.config.maxTrialCostCents
-      && now<trial.expiresAt && (trial.status==='running'||now<=trial.latestStartAt)
-      && this.engine.canControl() && !this.engine.suspended && this.engine.config.input!=='offline'
-      && this.scopeBinding()===trial.scopeBinding);
+      && now<trial.expiresAt && (trial.status==='running'||now<=trial.latestStartAt));
+  }
+  authorizes(plan) {
+    return this.retains(plan) && this.engine.canControl() && !this.engine.suspended && this.engine.config.input!=='offline'
+      && this.scopeBinding()===this.trial().scopeBinding;
   }
   started(cycle) {
     if (!cycle.plan.userTrial) return;

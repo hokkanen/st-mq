@@ -459,6 +459,114 @@ test('a restarted cycle retains its identity and reduction despite missing start
   assert.deepEqual(r.commands.at(-1), ['reduction']);
 });
 
+for (const missing of ['identity', 'authority']) test(`an accepted automatic cycle survives temporary loss of ${missing} without sending commands`, async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active());
+  const permission = structuredClone(r.engine.automation.features.home);
+  const commandCount = r.commands.length;
+  if (missing === 'identity') r.transport.targetIdentity.tariff = null;
+  else r.engine.canControl = () => false;
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active()?.id, original.id);
+  assert.equal(r.engine.cycles.active().status, 'active');
+  assert.deepEqual(r.engine.cycles.active().plan.schedule, original.plan.schedule);
+  assert.deepEqual(r.engine.automation.features.home, permission);
+  assert.equal(r.commands.length, commandCount, 'unavailable authority or identity cannot dispatch or restore a device');
+  r.transport.targetIdentity.tariff = permission.targetIdentity;
+  r.engine.canControl = () => true;
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.cycles.active()?.id, original.id);
+  assert.deepEqual(r.engine.cycles.active().plan.schedule, original.plan.schedule);
+  assert.equal(r.engine.executor.status().phase, 'reduction');
+});
+
+test('restart waits for the original heating target and resumes the same active reduction', async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active());
+  clearTimeout(r.engine.executor.timer);
+  r.transport.targetIdentity.tariff = null;
+  const restarted = new Engine({ store: r.store, config: r.config, clock: () => r.now, commandTransport: r.transport });
+  t.after(async () => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; await restarted.closeFireplace(); });
+  restarted.tick(); await restarted.dispatchPending;
+  assert.equal(restarted.cycles.active()?.id, original.id);
+  assert.equal(restarted.status().decision.phase, 'reduction');
+  assert.equal(restarted.automation.features.home.enabled, true);
+  r.transport.targetIdentity.tariff = restarted.automation.features.home.targetIdentity;
+  r.advance(1000); restarted.tick(); await restarted.dispatchPending;
+  assert.equal(restarted.cycles.active()?.id, original.id);
+  assert.deepEqual(restarted.cycles.active().plan.schedule, original.plan.schedule);
+  assert.equal(restarted.executor.status().phase, 'reduction');
+  assert.deepEqual(r.commands.at(-1), ['reduction']);
+});
+
+for (const revoked of ['pause', 'replacement']) test(`an explicit ${revoked} still ends the accepted automatic cycle`, async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const original = r.engine.cycles.active();
+  if (revoked === 'pause') r.engine.automation.set('home', false);
+  else r.transport.targetIdentity.tariff = 'c'.repeat(64);
+  const commandCount = r.commands.length;
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.automation.features.home.enabled, false);
+  assert.equal(r.engine.cycles.active(), null);
+  assert.equal(r.store.cycleById({ id: original.id, input: 'mqtt' }).status, 'incomplete');
+  assert.equal(r.commands.slice(commandCount).some(batch => batch.includes('reduction')), false);
+});
+
+test('model rebuilding retains the planned phase while heating identity is unavailable', async t => {
+  const r = setup(t); r.native(); r.plan(); r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active()), saved = r.engine.status();
+  r.transport.targetIdentity.tariff = null;
+  const commandCount = r.commands.length;
+  r.advance(1000);
+  const view = r.engine.rebuildingStatus({ now: r.now, observations: saved.observations,
+    outlook: { prices: [], forecast: [] }, h66: r.engine.h66Status(), override: null,
+    priorExecutor: r.engine.executor.status(), ownsPausedSettings: false,
+    ownsTemporarySettings: false, holdManualSettings: false });
+  await r.settle();
+  assert.equal(view.decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active()?.id, original.id);
+  assert.deepEqual(r.engine.cycles.active().plan.schedule, original.plan.schedule);
+  assert.equal(r.commands.length, commandCount);
+  assert.equal(r.engine.automation.features.home.enabled, true);
+});
+
+for (const rebuilding of [false, true]) test(`a paused Home retains reviewed cycle limits during identity loss${rebuilding ? ' and rebuilding' : ''}`, async t => {
+  const r = setup(t, { automationEnabled: false }), plan = r.plan(), explorer = r.engine.heatingExplorer;
+  explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
+    checkpoint: r.engine.checkpoint, observations: {}, equipment: {} },
+  { phase: 'normal', reasons: ['heating-paused'], plan: null }, 'heating-paused');
+  r.engine.pendingPlan = null;
+  explorer.worker = { async run() { return { version: 1, executablePlan: plan }; }, async close() {} };
+  const view = await explorer.view(), preview = await explorer.simulate({ snapshotId: view.snapshotId, limits: { maxDropC: 1.75 } });
+  explorer.apply({ previewId: preview.previewId });
+  r.engine.tick(); await r.settle();
+  const original = structuredClone(r.engine.cycles.active()), saved = r.engine.status();
+  assert.ok(original);
+  r.transport.targetIdentity.tariff = null;
+  const commandCount = r.commands.length;
+  r.advance(1000);
+  if (rebuilding) r.engine.rebuildingStatus({ now: r.now, observations: saved.observations,
+    outlook: { prices: [], forecast: [] }, h66: r.engine.h66Status?.() ?? {}, override: saved.override,
+    priorExecutor: r.engine.executor.status(), ownsPausedSettings: false,
+    ownsTemporarySettings: false, holdManualSettings: false });
+  else r.engine.tick();
+  await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active()?.id, original.id);
+  assert.equal(explorer.publicTrial().status, 'running');
+  assert.equal(explorer.retains(original.plan), true);
+  assert.equal(explorer.authorizes(original.plan), false);
+  assert.equal(r.commands.length, commandCount);
+  assert.equal(r.engine.automation.features.home.enabled, false);
+  r.transport.targetIdentity.tariff = 'a'.repeat(64);
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.cycles.active()?.id, original.id);
+  assert.deepEqual(r.engine.cycles.active().plan.schedule, original.plan.schedule);
+  assert.equal(r.engine.cycles.active().plan.maxDropC, 1.75);
+  assert.equal(r.engine.executor.status().phase, 'reduction');
+});
+
 test('model rebuilding with missing temperature and outlook retains an executable reduction', async t => {
   const r = setup(t); r.native(); r.plan(); r.engine.tick(); await r.settle();
   const original = r.engine.cycles.active(); assert.ok(original);

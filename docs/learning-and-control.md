@@ -436,6 +436,10 @@ A retained estimate keeps its original source clocks and remains an assumption,
 never a new observation or a learning sample. Native device readiness, equipment
 identity, current control authority and restoration duties still govern commands.
 A blocked command is distinct from a cancelled plan.
+In particular, waiting for the original heating-command identity after restart
+or handover preserves Automatic permission and the accepted cycle. It does not
+grant permission to command an unavailable or replacement device. Missing live
+identity is neither a saved Pause nor a confirmed equipment change.
 
 The original forecast and cycle definition remain immutable. The execution
 schedule and up to sixteen recent adjustments describe the current remaining

@@ -148,6 +148,26 @@ test('restart preserves approval and its original deadline without erasing resto
   assert.deepEqual(r.store.getState('executor:home'), { restorationPending: true });
 });
 
+test('retained approval is distinct from command authority during identity loss and replacement', async t => {
+  const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });
+  const plan = structuredClone(r.engine.pendingPlan), scope = r.service.trial().scopeBinding;
+  for (const target of [null, 'c'.repeat(64)]) {
+    r.engine.automationTarget = () => target;
+    assert.equal(r.service.retains(plan), true, 'unavailable commands do not discard reviewed intent');
+    assert.equal(r.service.authorizes(plan), false, 'retained intent grants no device authority');
+    assert.equal(r.service.trial().scopeBinding, scope);
+  }
+  r.engine.automationTarget = () => 'a'.repeat(64);
+  assert.equal(r.service.authorizes(plan), true);
+  r.revoke();
+  assert.equal(r.service.retains(plan), true);
+  assert.equal(r.service.authorizes(plan), false);
+  const altered = structuredClone(plan); altered.schedule.reductionEnd++;
+  assert.equal(r.service.retains(altered), false, 'retention cannot accept a different schedule');
+  r.advance(HOUR);
+  assert.equal(r.service.retains(plan), false, 'retention does not extend the original approval window');
+});
+
 test('approval retains its opportunity across settings updates but expires at its original boundary', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });
   r.advance(HOUR); assert.equal(r.service.reconcile(r.now), null);
