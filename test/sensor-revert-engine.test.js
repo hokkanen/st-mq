@@ -103,7 +103,7 @@ test('sensor undo keeps the old model available, catches up and atomically repub
     assert.equal(reversed.rebuild.status, 'running');
     assert.deepEqual(f.engine.checkpoint, old);
     assert.deepEqual(f.externalState('adaptive:providers'), old);
-    assert.equal(f.engine.pendingPlan, null);
+    assert.deepEqual(f.engine.pendingPlan, { invented: true });
     const retained = (await f.engine.refreshLearning());
     assert.equal(retained.sensorRevision ?? 0, 0);
     assert.equal(retained.baselineC, f.initial.baselineC);
@@ -135,7 +135,7 @@ test('sensor undo keeps the old model available, catches up and atomically repub
     assert.deepEqual(f.externalState('adaptive:providers'), current);
     assert.equal(f.externalState('fireplace:rebuild:providers').status, 'current');
     assert.equal(f.externalState('fireplace:rebuild:providers').sensorRevision, reversed.revision);
-    assert.equal(f.externalState('pending-plan:providers'), null);
+    assert.deepEqual(f.externalState('pending-plan:providers'), { invented: 'new-plan' });
     assert.deepEqual(f.store.learningJournal({ input: 'providers' }).slice(0, prefix.length), prefix);
   });
 
@@ -189,7 +189,7 @@ test('restart resumes a sensor reversal with both source revisions pinned until 
     assert.deepEqual(current, pureReplay(f.store));
   });
 
-test('reverting a reset leaves its cancelled cycle and frozen observations intact', { timeout: testCompletionLimit(30_000) }, async t => {
+test('reverting a reset retains execution and its frozen observations without restoring assessment eligibility', { timeout: testCompletionLimit(30_000) }, async t => {
   const f = await fixture(t), cycleStart = start - HOUR;
   const plan = { model: f.initial.model, intervals: Array.from({ length: 8 }, (_, i) => ({
     start: cycleStart + i * HOUR / 4, end: cycleStart + (i + 1) * HOUR / 4,
@@ -203,16 +203,16 @@ test('reverting a reset leaves its cancelled cycle and frozen observations intac
   f.store.appendCycleEvidence('providers',cycle,[{ start: cycleStart, end: start, indoorC: 21, electricityKwh: 1 }],{sampleAt:start});
   f.engine.cycles.save(cycle);
   const changed = f.engine.changeSensor({ requestId: 'invented-cycle-reset', signal: 'indoor_temperature', reason: 'moved' });
-  const cancelled = structuredClone(f.store.cycles({ input: 'providers' }));
-  assert.equal(cancelled[0].status, 'incomplete');
-  assert.equal(cancelled[0].incompleteReason, 'sensor-measurement-changed');
+  const retained = structuredClone(f.store.cycles({ input: 'providers' }));
+  assert.equal(retained[0].status, 'active');
+  assert.equal(retained[0].assessmentUnavailableReason, 'sensor-measurement-changed');
   f.now++;
   f.engine.revertSensor({ id: changed.events[0].id, requestId: 'invented-cycle-undo' });
   await waitReady(f.engine);
   (await f.engine.refreshLearning());
   await f.engine.fireplaceManager().publication;
-  assert.equal(f.engine.cycles.active(), null);
-  assert.deepEqual(f.store.cycles({ input: 'providers' }), cancelled);
+  assert.equal(f.engine.cycles.active().id, cycle.id);
+  assert.deepEqual(f.store.cycles({ input: 'providers' }), retained);
 });
 
 for (const race of ['journal suffix', 'sensor correction']) test(`publication rejects a ${race} committed after candidate selection but before the writer lock`,
@@ -264,6 +264,6 @@ for (const race of ['journal suffix', 'sensor correction']) test(`publication re
     assert.equal(current.journalCursor, manager.head());
     assert.equal(current.sensorRevision, sensorLearningContext(f.store, 'providers').sensorRevision);
     assert.equal(current.baselineC, f.initial.baselineC);
-    assert.equal(f.externalState('pending-plan:providers'), null);
+    assert.deepEqual(f.externalState('pending-plan:providers'), pending);
     assert.equal(manager.status().status, 'current');
   });

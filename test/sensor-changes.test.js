@@ -167,7 +167,8 @@ test('a contributing sensor change preserves learned evidence and comfort while 
     assert.deepEqual(checkpoint[key], initial[key], key);
   assert.equal(checkpoint.state, null);
   assert.equal(checkpoint.measurementEpochAt, undefined); assert.equal(checkpoint.sensorEpochs.bedroom_temperature, now);
-  assert.equal(engine.pendingPlan, null); assert.equal(store.getState('pending-plan:providers'), null);
+  assert.deepEqual(engine.pendingPlan, { id: 'invented-pending' });
+  assert.deepEqual(store.getState('pending-plan:providers'), engine.pendingPlan, 'Measurement changes retain accepted intent');
   assert.equal(engine.lastSample, null); assert.equal(engine.fireplaceReserveOverride, null);
   assert.deepEqual(store.observations(), observations, 'Source measurements are never rewritten');
   assert.deepEqual(store.learningJournal({ input: 'providers' }).slice(0, prefix.length), prefix);
@@ -204,7 +205,7 @@ test('failed checkpoint publication rolls back the sensor event and retry publis
   assert.equal(engine.checkpoint.sensorEpochs.indoor_temperature, now);
 });
 
-test('sensor changes end an active heating cycle as incomplete without rewriting observations or frozen forecasts', t => {
+test('sensor changes retain active control and mark assessment unavailable without rewriting evidence', t => {
   const { store, engine } = fixture(t);
   const start = now - HOUR;
   const plan = { model: engine.checkpoint.model, intervals: Array.from({ length: 8 }, (_, i) => ({
@@ -220,9 +221,9 @@ test('sensor changes end an active heating cycle as incomplete without rewriting
   const before = structuredClone(store.cycles({ input: 'providers' })[0]);
   engine.changeSensor(change());
   const after = store.cycles({ input: 'providers' })[0];
-  assert.equal(engine.cycles.active(), null);
-  assert.equal(after.status, 'incomplete'); assert.equal(after.endedAt, now);
-  assert.equal(after.incompleteReason, 'sensor-measurement-changed');
+  assert.equal(engine.cycles.active().id, cycle.id);
+  assert.equal(after.status, 'active'); assert.equal(after.endedAt, undefined);
+  assert.equal(after.assessmentUnavailableReason, 'sensor-measurement-changed');
   assert.deepEqual(after.plan, before.plan);
   assert.deepEqual(after.originalPrediction, before.originalPrediction);
   assert.equal(after.observationCount,1);

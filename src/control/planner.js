@@ -70,7 +70,8 @@ export function learningReadiness(checkpoint, config = {}, equipment = {}) {
 }
 
 export function recoveryPolicy({ now, reductionEnd, indoorC, targetC, indoorTrendCPerHour,
-  occupancy = { mode: 'occupied' }, equipment = {}, config = {}, forced = false, fallbackAt = null, holdUntil = null }) {
+  occupancy = { mode: 'occupied' }, equipment = {}, config = {}, forced = false, fallbackAt = null, holdUntil = null,
+  retainedCompressorOnly = true }) {
   const c = { ...CONTROL_DEFAULTS, ...config };
   const recoveryHoldUntil = number(holdUntil) ? holdUntil : reductionEnd + c.recoveryHoldMinutes * 60_000;
   const recoveryHoldActive = now >= reductionEnd && now < recoveryHoldUntil;
@@ -80,12 +81,12 @@ export function recoveryPolicy({ now, reductionEnd, indoorC, targetC, indoorTren
   const reason = !recoveryHoldActive ? 'recovery-hold-ended'
     : !c.recoveryCompressorOnly ? 'native-recovery-configured' : forced ? 'control-or-comfort-fallback'
     : fallbackAt !== null ? 'native-recovery-fallback-latched'
-      : !equipment.h66Available ? 'native-settings-unavailable'
-        : !number(indoorC) || !number(targetC) || uncertaintyC === null ? 'missing-recovery-temperature'
+      : !number(indoorC) || !number(targetC) || uncertaintyC === null ? null
             : occupied && (conservativeIndoorC <= targetC - c.recoveryComfortMarginC
               || number(indoorTrendCPerHour) && conservativeIndoorC + Math.min(0, indoorTrendCPerHour) * 0.5 <= targetC - c.recoveryComfortMarginC)
               ? 'recovery-comfort-margin' : null;
-  return { recoveryHoldActive, recoveryHoldUntil, recoveryCompressorOnly: reason === null, recoveryFallbackReason: reason };
+  return { recoveryHoldActive, recoveryHoldUntil, recoveryCompressorOnly: reason === null && retainedCompressorOnly,
+    recoveryFallbackReason: reason };
 }
 
 export function preheatRoomRequest(equipment = {}, config = {}) {
@@ -179,7 +180,8 @@ function evaluateCyclePartition({ schedule = null, intervals, model, initialStat
   if (referenceInitialState !== undefined && (!number(referenceInitialState?.indoorC)
     || !number(referenceInitialState?.reserveC) || model.floor?.enabled && !number(referenceInitialState?.slabC)))
     throw new TypeError('A carried reference requires known indoor and stored heat');
-  const binding = resumable ? evaluationBinding({ algorithm: LEARNING_ALGORITHM, schedule, model, initialState, targetC,
+  const binding = resumable ? evaluationBinding({ algorithm: LEARNING_ALGORITHM,
+    recoveryPolicy: 'retained-evidence-v1', schedule, model, initialState, targetC,
     ...(referenceInitialState === undefined ? {} : { referenceInitialState }),
     occupancy, maxDropC, maxRiseC, config: c, equipment }) : null;
   if (continuation !== null) validateCycleEvaluationState(continuation, binding);

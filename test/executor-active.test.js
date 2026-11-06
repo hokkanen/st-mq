@@ -499,6 +499,26 @@ test('floor override and ROOM share only the preheat deadline and release before
   assert.equal(r.executor.status().dhwrOutstanding, true, 'Separately requested DHWR keeps its own run');
 });
 
+test('revised preheat releases the old fixed floor window before acquiring a new window', async t => {
+  const calls = []; let owner = null, until = null;
+  const floorOverride = { status: () => ({ enabled: true, mode: owner ? 'automatic' : null,
+    owner, leaseUntil: until }),
+    async lease(request) {
+      assert.equal(owner, null, 'A changed deadline must not extend an existing native lease');
+      owner = request.owner; until = request.until; calls.push(['lease', owner, until]);
+    },
+    async release() { calls.push(['release', owner]); owner = null; until = null; return { restorationPending: false }; } };
+  const r = rig(t, { floorOverride });
+  await r.run('preheat', 60_000, { floorOverride: true, owner: 'cycle', preheatOwner: 'window-one' });
+  r.advance(1000);
+  await r.run('preheat', 120_000, { floorOverride: true, owner: 'cycle', preheatOwner: 'window-two' });
+  assert.deepEqual(calls.map(row => row[0]), ['lease', 'release', 'lease']);
+  assert.equal(owner, 'window-two');
+  assert.equal(r.values['0203'], 24, 'Window replacement preserves the same native ROOM baseline and boost');
+  await r.run('normal');
+  assert.equal(r.values['0203'], 19);
+});
+
 test('an unconfirmed floor lease cannot leave a raised ROOM request active', async t => {
   let releases = 0;
   const floorOverride = { status: () => ({ enabled: true }),

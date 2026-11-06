@@ -29,6 +29,15 @@ const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heatin
   'complete-cycle-in-progress': 'The complete heating cycle was still in progress.', 'preheat-readback-unavailable': 'Preheat device readback was unavailable.',
   'control-or-forecast-coverage-lost': 'Required control or forecast coverage was lost.', 'predicted-comfort-limit': 'The continued cycle was predicted to cross a comfort limit.',
   'trial-exposure-now-exceeds-allowance': 'The learning trial would exceed its cost allowance.', 'recovery-cost-now-favours-ending': 'The current recovery assessment favoured ending the cycle.',
+  'accepted-cycle-scheduled': 'The accepted heating schedule remains in force.',
+  'continuing-with-retained-estimates': 'The accepted schedule continues using retained estimates; unavailable feeds do not create fresh evidence.',
+  'continuing-during-model-rebuild': 'The accepted schedule continued while model reconstruction was pending.',
+  'delivered-heat-upper-limit': 'Heat already delivered was predicted to exceed the upper limit after stopping preheat. Reduction was retained.',
+  'delivered-cooling-lower-limit': 'The current thermal state required ending reduction to protect the lower comfort limit.',
+  'configured-preheat-limit-reached': 'The configured cumulative preheat duration was reached; reduction was retained.',
+  'configured-reduction-limit-changed': 'The permitted remaining reduction was shortened to the changed configured limit.',
+  'remaining-preheat-rescheduled': 'The remaining preheat window was adjusted while preserving the reduction window.',
+  'ending-cycle-costs-less': 'A complete comparison found ending treatment cheaper, including restoration and recovery.',
   'awaiting-normal-temperature-reference': 'The normal occupied temperature reference was not established.',
   'awaiting-fireplace-response-evidence': 'The model was waiting for firewood response evidence.',
   'missing-or-incomplete-price-weather-horizon': 'The price or weather horizon was incomplete.', 'awaiting-tariff-response-evidence': 'The model was learning the heat-pump response to tariff control.',
@@ -59,6 +68,7 @@ const DEFINITIONS = {
   'cycle-completed': ['home', 'Heating cycle ended', 'The cycle ended. Any saving is an assessment, not a separate measured physical outcome.', { evidence: 'Recorded cycle assessment' }],
   'cycle-incomplete': ['home', 'Heating cycle interrupted', 'The cycle ended without a complete outcome assessment.', { severity: 'warning' }],
   'scheduled-cycle-rejected': ['home', 'Heating cycle was not admitted', 'The scheduled cycle did not pass the current admission checks.', { important: false }],
+  'heating-plan-adjusted': ['home', 'Heating schedule adjusted', 'The controller revised the remaining schedule; the original plan and recorded execution remain separate.', { evidence: 'Controller comparison' }],
   'heating-scenario-approved': ['home', 'One-cycle heating scenario approved', 'A bounded heating scenario was approved. Approval is separate from execution.', { evidence: 'Saved instruction' }],
   'heating-scenario-cancelled': ['home', 'Heating scenario cancelled', 'The one-cycle scenario was cancelled.'],
   'heating-scenario-expired': ['home', 'Heating scenario expired', 'The one-cycle scenario reached its scope deadline.'],
@@ -109,6 +119,9 @@ export function presentGeneral(type, payload = {}) {
       'The controller recorded its heating phase. This is separate from native confirmation and physical heat delivery.', { evidence: 'Recorded controller phase' });
     if (validTime(p.expiresAt)) out.details.push(...detail('Scope ends', new Date(p.expiresAt).toISOString()));
   }
+  if (type === 'heating-plan-adjusted' && p.comparison) out.details.push(
+    ...detail('Continue remaining cycle', reading(p.comparison.continuedCostCents, 'c')),
+    ...detail('End treatment and recover', reading(p.comparison.stoppedCostCents, 'c')));
   if (type === 'heating-automation-changed') out = fixed('home', p.enabled === true ? 'Automatic heating enabled' : p.enabled === false ? 'Automatic heating paused' : 'Heating permission recorded', 'A durable dashboard choice was recorded. Its current scope is shown on the dashboard.', { evidence: 'Saved instruction' });
   if (type === 'heating-pause-changed') { out = fixed('home', 'Heating Pause changed', 'The dashboard Pause scope was recorded.', { evidence: 'Saved instruction' }); out.details.push(...detail('Resume at', validTime(p.pause?.expiresAt) ? new Date(p.pause.expiresAt).toISOString() : p.pause?.expiresAt === null ? 'No scheduled end' : 'Not recorded')); }
   if (type === 'heating-pause-ended') out = fixed('home', 'Scheduled heating Pause ended', 'The saved Pause deadline resumed Automatic heating for the same equipment. This does not establish heat delivery.', { evidence: 'Saved instruction expiry' });

@@ -426,25 +426,74 @@ return time; trial screening includes the recovery period around that return.
 Equipment readiness, bounded trial costs and restoration remain required.
 Lower service during Away is not counted as evidence of occupied-operation savings.
 
-The complete schedule search runs in one background worker with one running
-request and only the newest waiting snapshot. Pending automatic schedules are
-searched again every 15 minutes, or sooner after changed numerical prices,
-weather, model, settings, equipment capability or a material room/reference change.
-New searches start at most once per minute; repeated provider receipt clocks and
-ordinary water-temperature or counter updates do not trigger full searches.
-The still-valid pending schedule participates in the fresh comparison and remains
-available while the worker runs or fails. A fresh result uses the same economic
-and learning-opportunity rules, including the cost of displacing that schedule.
-Empty results also use this bounded cadence. Manually approved schedules retain
-their reviewed timing; active cycles retain their continuation rules.
-Without an existing valid schedule, heating stays Normal until a result is ready.
-Results older than two minutes or from changed model, configuration,
-source corrections, native settings or control ownership are discarded. The
-controller rechecks current temperatures, prices, weather, evidence and trial
-allowance before adopting a plan. Active cycles keep their existing continuation
-and restoration checks independently of the search worker.
+## Accepted schedules and continuation
 
-Selection, dispatch and continuation share paired stress scenarios for action and
+An accepted Home cycle is durable intent. Missing information retains its schedule
+and last valid estimates; it does not select Normal, recovery or cancellation.
+This applies to automatic savings cycles, learning trials and explicitly approved
+one-cycle scenarios, including restart, model reconstruction and command failures.
+A retained estimate keeps its original source clocks and remains an assumption,
+never a new observation or a learning sample. Native device readiness, equipment
+identity, current control authority and restoration duties still govern commands.
+A blocked command is distinct from a cancelled plan.
+
+The original forecast and cycle definition remain immutable. The execution
+schedule and up to sixteen recent adjustments describe the current remaining
+intent; committed execution intervals retain the complete actual phase history.
+Missing temperature, energy or routing evidence can leave an outcome unassessed
+without ending control. A long observation gap is recorded as missing coverage,
+not extrapolated measured consumption. Recovery assessment and its timeout never
+extend native setting restrictions.
+
+| Condition | Controller consequence |
+| --- | --- |
+| No accepted schedule and insufficient inputs | No new economic action; ordinary service and owned restoration remain available. |
+| Search/worker/provider/model input unavailable | Retain the accepted schedule and its original deadlines. |
+| Full remaining preheat would exceed its allowance | Search a shorter or differently placed remaining window; retain reduction. |
+| Heat already delivered predicts exceeding the upper limit after removing preheat now | End the boost, retain reduction and use Normal during any scheduled gap. |
+| Warmth during reduction | No upper-temperature veto on reduction. |
+| Delivered cooling requires ending reduction to protect the configured lower bound | End reduction and recover. |
+| Complete economic comparison favors ending treatment | End treatment, including restoration and recovery in both alternatives. |
+| Economic comparison absent or equal | Keep the accepted schedule. |
+| Updated trial exposure exceeds its reservation/cap | Report exposure; this alone does not establish that cancellation saves money. |
+| Command pending, busy, unsent or unconfirmed | Retain intent and reconcile execution/readback through the existing executor. |
+| Explicit manual instruction, revoked authority, confirmed native conflict or equipment fault | Respect its scope and preserve unresolved restoration duties. |
+| Restart/reconnection | Reconcile the original equipment and execute the currently due feasible phase. Never replay missed heating or extend deadlines. |
+| Fixed phase/recovery-hold deadline | Advance the schedule and restore owned settings independently of assessment availability. |
+
+The live preheat stop uses the central delayed-peak prediction after removing the
+boost now, including stored building/slab heat and the intended reduction. It
+adds no command-delay allowance, uncertainty padding or hypothetical remaining
+preheat. The lower-limit stop similarly tests removal of reduction now. Unknown
+projection coverage cannot become a new temperature veto.
+
+The single background planning worker searches new cycles and compares remaining
+cycles; it has no command authority. Once accepted, the reduction window is
+retained. A bounded remaining-window search can stop optional preheat, shorten it,
+move it nearer reduction or choose an earlier cheaper window. It includes the
+incumbent, existing duration grid and bounded price-boundary endpoints; it is not
+a proof of a global optimum. Already executed preheat counts against the total
+configured duration, including across pauses and restart. Floor windows obtain
+separate leases through confirmed release/acquisition; no native lease is extended
+by changing its original meaning.
+
+Comparisons run every fifteen minutes or after meaningful changed numerical
+sources, thermal state or policy, at most once per minute. Results must match
+current owner, schedule, model, configuration, sources and thermal state and be no
+older than two minutes. A stale, failed or empty result preserves intent. A
+Normal-heating gap remains part of the cycle and does not start recovery.
+
+Economic cancellation compares the best remaining feasible cycle with ending
+now, from the same current state and future horizon, including auxiliary energy,
+restoration, recovery and remaining heat debt. Sunk costs are common to both paths.
+No new-cycle start penalty or positive minimum-saving hurdle is charged again.
+An explicitly authorized negative minimum and the originally accepted extra cost
+of a paid learning experiment retain their intended service value; a comparison
+must improve on that accepted tradeoff rather than repeatedly reject its known
+initial cost. Missing inputs grant no new economic cancellation verdict.
+
+
+New-cycle selection and admission share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor
 duty ±0.08, source electrical input within its operating-point allowance, and AUX
 exposure ±50%. A minimum savings uncertainty deduction is configurable and defaults
@@ -486,8 +535,9 @@ exist. Additional learning experiments require usable temperature/equipment
 evidence, enabled trials and remaining allowance. Configured floor equipment
 also needs a known output mode, including for reduction-only trials; an explicit
 physical floor model requires an ON/OFF mode. Unknown and partial output remains
-recorded, but cannot start or revalidate a learning trial whose complete stored-heat
-assessment would be unavailable. An installation without floor equipment gains
+recorded and cannot admit a new learning trial whose complete stored-heat
+assessment would be unavailable. A previously admitted trial retains its intent
+and last valid planning assumptions when observation feeds become unavailable. An installation without floor equipment gains
 no additional observation prerequisite. The controller
 seeks four useful trial opportunities per Finnish day by default, prioritizing
 learning before that target. This is an objective, not a promise to act through a
@@ -532,15 +582,20 @@ returning to an earlier estimate cannot repeatedly spend the same allowance.
 Three bounded RAM cursors update from new recorded intervals; missing cursors
 rebuild through the existing paged cycle worker, without a second evidence archive
 or a whole-cycle traversal on each control tick. Unknown or stale cost, routing,
-price or stored-heat evidence cannot grant continuation.
+price or stored-heat evidence retains the accepted schedule; it does not authorize
+a new trial or a new economic cancellation.
 The reservation and daily ledger commit
 together, including at initial cycle recording. An automatic trial spanning
 midnight remains funded by its Finnish start day. An explicitly edited reviewed
 one-cycle budget remains separate from the automatic daily ledger; unchanged
-reviewed budgets retain automatic restrictions. Unknown exposure cannot authorize
-continuation. These are conservative estimated exposure reservations, not measured
-additional electricity bills. Comfort, native protection and restoration checks
-still apply independently.
+reviewed budgets retain automatic admission restrictions. Unknown exposure cannot
+authorize a new trial; an existing trial retains its accepted schedule. These are conservative estimated exposure reservations, not measured
+additional electricity bills. Known exposure above the funded reservation is
+tracked separately, without repeatedly charging forecast oscillations. Automatic
+unfunded exposure reduces the start-day allowance for later trials; a separately
+reviewed budget does not consume the automatic ledger. An overrun alone never
+proves that ending the current cycle costs less. Comfort, native protection and
+restoration checks still apply independently.
 
 Disabling learning
 trials disables additional experimentation; ordinary economic plans still use
@@ -591,9 +646,12 @@ compressor cutoff. The hour is an initial engineering choice, not a learned
 recovery duration.
 
 Cold-average protection releases AUX permission early without restoring the DHW
-settings or restarting circulation. It considers the weighted indoor average and its uncertainty, using `recovery_comfort_margin_c` (default 0.5 °C) and a
-30-minute falling-trend projection where available. The AUX fallback remains
-latched for the cycle. Native AUX permission applies to the pump as a whole,
+settings or restarting circulation. Recovery uses its explicit configured
+`recovery_comfort_margin_c` preference (default 0.5 °C) and a thirty-minute
+falling-trend projection where available; this controls AUX permission during
+recovery and never cancels reduction or an entire cycle. The planner includes
+this service preference in recovery costs. Unavailable temperature evidence
+retains the last AUX decision. The AUX fallback remains latched for the cycle. Native AUX permission applies to the pump as a whole,
 not exclusively to space heating. `recovery_compressor_only: false` disables
 the AUX restriction while retaining the timed hot-water hold.
 

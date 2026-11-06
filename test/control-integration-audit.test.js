@@ -14,6 +14,7 @@ const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 
 test('active trial forecast bounces do not repeatedly reserve money without elapsed execution', async t => {
   const f = setup(t);
+  f.engine.heatingPlanning.continue = () => null; // Isolate reservation accounting from a separately tested cheaper exit.
   f.native(); f.plan();
   f.engine.control.learningTrials = true;
   const plan = { ...f.engine.pendingPlan, trial: true, trialAllowanceCents: .01,
@@ -62,11 +63,12 @@ test('active trial retains recorded preheat exposure even when all remaining ele
   f.engine.tick(); await f.settle();
   const cycle = f.engine.cycles.active();
   assert(cycle.actual.spaceHeatingCostCents > .05);
-  assert.equal(cycle.adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
-  assert.equal(cycle.executionSchedule.reductionEnd, f.now);
+  assert.equal(cycle.adjustments?.length ?? 0, 0);
+  assert.equal(cycle.plan.schedule.reductionEnd, plan.schedule.reductionEnd);
+  assert.ok(cycle.exposureEstimate.costExposureCents > .05);
 });
 
-test('unassessable recorded trial costs end the action without claiming the allowance was spent', async t => {
+test('unassessable trial costs retain reduction without inventing expenditure', async t => {
   const f = setup(t);
   f.native(); f.plan(); f.engine.control.learningTrials = true;
   const plan = { ...f.engine.pendingPlan, trial: true, trialAllowanceCents: 1,
@@ -84,8 +86,8 @@ test('unassessable recorded trial costs end the action without claiming the allo
   // component is measured, so its correlated source uncertainty stays unknown.
   f.engine.tick(); await f.settle();
   const cycle = f.engine.cycles.active();
-  assert.equal(cycle.adjustments.at(-1).reason, 'trial-cost-estimate-unavailable');
-  assert.equal(cycle.executionSchedule.reductionEnd, f.now);
+  assert.equal(cycle.adjustments?.length ?? 0, 0);
+  assert.equal(cycle.plan.schedule.reductionEnd, plan.schedule.reductionEnd);
   assert.equal(cycle.trialBudget.reservedCents, 1);
 });
 
@@ -309,7 +311,7 @@ test('pausing price control during recovery restores native DHW settings for an 
   assert.deepEqual(r.circulation,[{at:r.now,on:true}]);
 });
 
-test('an expiry-timer AUX release stays latched when fresh warm observations arrive',async t=>{
+test('expiry retains AUX restrictions on aged assessment and a real cold fallback stays latched',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
   const r=setup(t);r.plan();
   const first=r.engine.tick();await r.settle();
@@ -321,12 +323,15 @@ test('an expiry-timer AUX release stays latched when fresh warm observations arr
   if(r.engine.executor.pending)await r.engine.executor.pending;
   const saved=r.engine.executor.status();
   assert.equal(saved.phase,'recovery');
-  assert.equal(saved.recoveryAuxReleasedAt,r.now);
-  assert.equal(native.values['2201'],1,'An expired temperature assessment permits native AUX');
+  assert.equal(saved.recoveryAuxReleasedAt,null);
+  assert.equal(native.values['2201'],2,'An aged assessment cannot grant AUX permission');
   assert.equal(native.values['0212'],45);assert.equal(native.values['0208'],50);
-  const status=r.engine.tick();await r.settle();
-  assert.equal(status.decision.recoveryCompressorOnly,false);
+  let status=r.engine.tick();await r.settle();
+  assert.equal(status.decision.recoveryCompressorOnly,true);
   assert.equal(status.decision.recoveryHoldUntil,saved.recoveryHoldUntil);
+  r.room(20.4); r.advance(MINUTE); native.refresh(); status=r.engine.tick(); await r.settle();
+  assert.equal(status.decision.recoveryCompressorOnly,false);
+  r.room(21.2); r.advance(MINUTE); native.refresh(); status=r.engine.tick(); await r.settle();
   assert.equal(native.values['2201'],1,'Fresh warm observations cannot re-block AUX during the same hold');
 });
 
@@ -359,7 +364,7 @@ test('old algorithm history is refused both at startup and when a background see
     .some(entry => entry.payload.value.historySeed), false);
 });
 
-for (const mode of ['occupied', 'away']) test(`actual Engine honors a tightened ${mode} reduction limit without native telemetry`, async t => {
+for (const mode of ['occupied', 'away']) test(`actual Engine trims a tightened ${mode} reduction limit without discarding its permitted remainder`, async t => {
   const r = setup(t, { occupancyMode: mode });
   r.plan();
   r.engine.pendingPlan.schedule.reductionEnd = r.now + 30 * MINUTE;
@@ -369,9 +374,9 @@ for (const mode of ['occupied', 'away']) test(`actual Engine honors a tightened 
   r.engine.control[mode === 'away' ? 'maxAwayReductionHours' : 'maxReductionHours'] = .25;
   r.advance(MINUTE);
   const continued = r.engine.tick(); await r.settle();
-  assert.equal(continued.decision.phase, 'recovery');
-  assert(continued.decision.reasons.includes('control-or-forecast-coverage-lost'));
-  assert.equal(r.commands.at(-1).batch.at(-1), 'normal');
+  assert.equal(continued.decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active().executionSchedule.reductionEnd - r.now, 14 * MINUTE);
+  assert.equal(r.commands.at(-1).batch.at(-1), 'reduction');
 });
 
 test('telemetry fallback screens the remaining reduction without rejecting its already executed duration', async t => {
@@ -411,8 +416,8 @@ test('an owned native restoration does not turn fresh reduction telemetry into a
   assert.equal(r.engine.cycles.active().plan.schedule.reductionEnd - r.now, 29 * MINUTE);
   r.advance(MINUTE); native.h66.setConnected(false);
   const disconnected = r.engine.tick(); await r.settle();
-  assert.equal(disconnected.decision.phase, 'recovery', 'A real native outage still applies the remaining-duration ceiling');
-  assert(disconnected.decision.reasons.includes('control-or-forecast-coverage-lost'));
+  assert.equal(disconnected.decision.phase, 'reduction', 'An unavailable native feed does not revoke the admitted reduction');
+  assert.equal(r.engine.cycles.active().id, continued.learning.episode.id);
 });
 
 for (const mode of ['unknown', 'partial']) test(`actual Engine keeps an unassessable ${mode} floor trial from dispatching`, async t => {
@@ -439,7 +444,7 @@ for (const mode of ['unknown', 'partial']) test(`actual Engine keeps an unassess
   assert.equal(native.writes.length, 0, 'An unavailable experiment grants no native heating write');
 });
 
-for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine ends ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {
+for (const trial of [false, true]) for (const missing of ['treatment', 'recovery']) test(`actual Engine retains ${trial ? 'trial' : 'validated'} continuation when ${missing} coverage disappears`, async t => {
   const r = setup(t); if (trial) r.native(); r.plan();
   if (trial) {
     r.engine.control.learningTrials = true;
@@ -466,8 +471,9 @@ for (const trial of [false, true]) for (const missing of ['treatment', 'recovery
   r.store.setState('provider:weather', weather);
   r.advance(MINUTE);
   const continued = r.engine.tick(); await r.settle();
-  assert.equal(continued.decision.phase, 'recovery');
-  assert(continued.decision.reasons.includes('control-or-forecast-coverage-lost'));
-  assert.equal(r.commands.at(-1).batch.at(-1), 'normal');
-  assert.equal(r.engine.executor.status().legacyOutstanding, false);
+  assert.equal(continued.decision.phase, 'reduction');
+  assert(continued.decision.reasons.includes('continuing-with-retained-estimates'));
+  assert.equal(r.engine.cycles.active().id, cycle.id);
+  assert.equal(r.commands.at(-1).batch.at(-1), 'reduction');
+  assert.equal(r.engine.executor.status().legacyOutstanding, true);
 });

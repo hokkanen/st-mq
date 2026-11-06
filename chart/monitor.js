@@ -190,11 +190,14 @@ async function api(path, data, options = {}) {
   assertDashboardWrite(path, data, lastStatus);
   const observedAtRequest = lastStatus;
   const chartRead = data === undefined && path.startsWith('/api/chart?');
+  // Planner reads may use the worker's 30-second budget. Ordinary dashboard
+  // reads retain their shorter deadline so a slow view cannot stall polling.
   const { response,result } = await session.run(({ headers, signal }) => (chartRead ? fetchChartResponse : fetchJsonResponse)(applicationUrl(path), {
     signal, method: data === undefined ? 'GET' : 'POST',
     headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': options.binary ? 'application/vnd.sqlite3' : 'application/json' }) },
     ...(data === undefined ? {} : { body: options.binary ? data : JSON.stringify(data) }),
-  }, chartRead ? { onProgress: options.onProgress } : undefined), options);
+  }, chartRead ? { onProgress: options.onProgress }
+    : path === '/api/heating/explorer' ? { timeoutMs: 35_000 } : undefined), options);
   if (response.status === 401) {
     lockScreen({ authenticationFailed: true });
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;

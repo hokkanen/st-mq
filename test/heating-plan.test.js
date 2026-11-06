@@ -60,6 +60,19 @@ test('paused planning describes the scheduled resume or absence of actions, not 
   assert.match(homePlannedChange(status).detail, /Explore possible heating plans/);
 });
 
+test('an independently approved remaining cycle stays visible while Automatic is paused', () => {
+  const status = scheduled();
+  status.automation.home.enabled = false;
+  status.heatingScenario = { status: 'running' };
+  status.decision.plan.userTrial = { id: 'fixture-approved' };
+  status.override = { expiresAt: now + 3 * hour };
+  assert.equal(homePlannedChange(status).value, 'Preheat at 16:00');
+  status.now += 1.5 * hour;
+  status.decision.plan.schedule.preheatEnd = status.now;
+  status.decision.plan.schedule.preheatStart = now + hour;
+  assert.equal(homePlannedChange(status).value, 'Reduce heating at 17:00', 'A gap does not hide the retained reduction');
+});
+
 test('manual preheat end and automatic resume expose the earliest independent action', () => {
   const status = scheduled();
   status.automation.home.enabled = false;

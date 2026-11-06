@@ -17,7 +17,11 @@ the current equipment. Selecting Pause restores automatic changes to Normal;
 subsequent manual choices use the pause scope. Selecting Automatic clears the
 pause and restores owned manual changes before reassessing the plan.
 An explicitly approved manual-planner cycle has its own permission and cancellation;
-changing Automatic / Paused preserves that independent cycle.
+changing Automatic / Paused and restarting the application preserve that
+independent cycle within its original window. Accepted automatic cycles also
+survive restart. Missing planning feeds retain the schedule and last valid
+estimates; blocked execution is reported separately from cancellation. See
+[accepted schedules](learning-and-control.md#accepted-schedules-and-continuation).
 `POST /api/automation` accepts Home only (`enabled: true` for Automatic, `false`
 for indefinite Pause). `POST /api/temporary` sets an optional `pauseUntil` or
 `pauseUntilLocal`; clearing it keeps Pause without an end. A scheduled deadline

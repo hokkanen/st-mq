@@ -27,14 +27,15 @@ export function homePlannedChange(status = {}) {
   // Manual preheat and resuming Automatic have independent deadlines. Show the
   // first action even while automatic heating is paused or has no chosen plan.
   const hold = decision.manualHold;
+  const approved = ['pending', 'running'].includes(status.heatingScenario?.status) && decision.plan?.userTrial;
   const manualPreheatEnd = hold?.phase === 'preheat' && Number.isFinite(hold.until) && hold.until > now ? hold.until : null;
-  const pauseUntil = Number.isFinite(status.override?.expiresAt) && status.override.expiresAt > now ? status.override.expiresAt : null;
+  const pauseUntil = !approved && Number.isFinite(status.override?.expiresAt) && status.override.expiresAt > now ? status.override.expiresAt : null;
   if (manualPreheatEnd !== null && (pauseUntil === null || manualPreheatEnd <= pauseUntil)) return display(planLabel,
     `End preheat at ${plannedTime(manualPreheatEnd, now)}`,
     `The manual preheat boost is scheduled to end and its settings to be restored. ${pauseUntil !== null ? `Resume automatic at ${plannedTime(pauseUntil, now)}. ` : ''}${provenance}`, manualPreheatEnd);
   if (pauseUntil !== null) return display(planLabel, `Resume automatic at ${plannedTime(pauseUntil, now)}`,
     `Automatic heating will reassess the plan when it resumes. ${provenance}`, pauseUntil);
-  if (status.automation?.home?.enabled === false) return display(planLabel, 'No actions scheduled',
+  if (status.automation?.home?.enabled === false && !approved) return display(planLabel, 'No actions scheduled',
     `Automatic heating is paused with no resume time. Explore possible heating plans without enabling them. ${provenance}`);
   if (!decision.phase) return display(planLabel, 'Waiting for a plan',
     'The controller has not reported a current heating plan.');

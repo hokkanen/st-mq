@@ -7,6 +7,7 @@ import { Engine } from '../src/app/engine.js';
 import { validateSettings, CONTROL_DEFAULTS } from '../src/app/config.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { chooseCycle, evaluateCycle } from '../src/control/planner.js';
+import { reviseHeatingCycle } from '../src/control/heating-continuation.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder, auxiliaryPowerFromOutput } from '../src/domain/telemetry.js';
 
@@ -69,7 +70,7 @@ test('a completed live receipt publishes the bounded cycle summary instead of wo
   assert(r.engine.cycles.active().observationCount > 0, 'working evidence remains retained');
 });
 
-test('a live trial continues after exposure grows beyond its initial estimate and stops at the actual budget cap', async t => {
+test('a live trial retains reduction when an updated estimate exceeds the reservation cap', async t => {
   const r = setup(t), native = r.native(), plan = r.plan();
   native.receive('2201', 2);
   Object.assign(r.engine.control, { learningTrials: true, maxTrialCostCents: 150 });
@@ -117,13 +118,14 @@ test('a live trial continues after exposure grows beyond its initial estimate an
   r.store.setState('provider:market',adverseMarket);
   r.engine.tick(); await r.settle();
   assert(attemptedExposure > 150);
-  assert.equal(r.engine.status().decision.phase, 'recovery');
-  assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'trial-exposure-now-exceeds-allowance');
+  assert.equal(r.engine.status().decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active().adjustments?.length ?? 0, 0);
+  assert.ok(r.engine.cycles.active().exposureEstimate.costExposureCents > 150);
   assert.equal(r.engine.cycles.active().trialBudget.reservedCents, funded.trialBudget.reservedCents);
   assert.equal(r.engine.cycles.active().observationCount, funded.observationCount, 'A forecast change creates no recorded interval');
 });
 
-test('a confirmed preheat trial survives its native target step and still ends at a real comfort limit', async t => {
+test('a confirmed preheat trial stops its boost at a delivered-heat limit and preserves reduction', async t => {
   const r = setup(t), native = r.native({ tariffFeedback: () => ({
     mode: 'normal', verified: true, stale: false, identity: 'c'.repeat(64) }) }), plan = r.plan();
   Object.assign(r.engine.control, { learningTrials: true, maxTrialCostCents: 150, preheatRoomBoostC: 1 });
@@ -158,22 +160,34 @@ test('a confirmed preheat trial survives its native target step and still ends a
   assert.equal(r.engine.cycles.active().id, cycle.id);
   assert.equal(r.engine.cycles.active().adjustments?.length ?? 0, 0);
   assert.deepEqual(r.engine.cycles.active().plan, original, 'The recorded original forecast remains immutable');
+  const revised = { ...cycle.plan.schedule, preheatEnd: cycle.plan.schedule.preheatEnd - 60_000 };
+  r.engine.cycles.revise(revised, r.now, 'invented-window-revision');
+  r.advance(1000); observe(0, 33); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.applied.phase, 'preheat', 'A revised execution window must validate against its original plan identity');
+  assert.equal(native.values['0203'], 20);
+  assert.equal(r.engine.status().execution.status, 'mqtt');
   r.advance(1000); r.ingest('indoor_temperature', 24);
   const cancelledAt = r.now;
   const execute = r.engine.executor.execute.bind(r.engine.executor);
   r.engine.executor.execute = (decision, options) => { r.advance(1806); return execute(decision, options); };
   r.engine.tick(); await r.settle();
-  assert.equal(r.engine.status().decision.phase, 'recovery');
-  assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'indoor-comfort-limit');
-  assert.equal(native.values['0203'], 19, 'A real comfort limit still restores normal ROOM');
-  const cancelled = r.engine.cycles.active();
-  assert(cancelled.recoveryStartedAt > cancelledAt, 'Recovery execution has its own later clock');
-  assert.equal(cancelled.executionSchedule.reductionStart, cancelledAt);
-  assert.equal(cancelled.executionSchedule.reductionEnd, cancelledAt,
-    'Cancelling preheat cannot turn dispatch latency into an executed reduction');
-  assert.equal(cancelled.phases.includes('reduction'), false);
-  assert.equal(r.commands.some(batch => batch.includes('reduction')), false);
-  assert.deepEqual(cancelled.plan, original, 'The original proposed reduction remains immutable');
+  assert.equal(r.engine.status().decision.phase, 'normal');
+  assert.equal(r.engine.cycles.active().adjustments.at(-1).reason, 'delivered-heat-upper-limit');
+  assert.equal(native.values['0203'], 19, 'The boost ends through confirmed ROOM restoration');
+  const paused = r.engine.cycles.active();
+  assert.equal(paused.recoveryStartedAt, undefined, 'A scheduled gap is not recovery');
+  assert.equal(paused.executionSchedule.preheatEnd, cancelledAt);
+  assert.equal(paused.executionSchedule.reductionStart, original.schedule.reductionStart);
+  assert.equal(paused.executionSchedule.reductionEnd, original.schedule.reductionEnd);
+  assert.deepEqual(paused.plan, original);
+  r.engine.executor.execute = execute;
+  r.advance(original.schedule.reductionStart - r.now);
+  for (const [register, value] of Object.entries(native.values)) native.receive(register, value);
+  observe(-200, 30); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.status().decision.phase, 'reduction');
+  assert.equal(r.engine.cycles.active().id, cycle.id);
+  assert.ok(r.commands.some(batch => batch.includes('reduction')));
+
 });
 
 function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {
@@ -296,7 +310,7 @@ test('a background heating search is adopted only by a later current controller 
   assert.equal(r.engine.cycles.active().plan.initialState.indoorC, 21.2);
 });
 
-test('the controller refreshes a future automatic schedule without dropping it while search runs', async t => {
+test('the controller compares a retained future cycle without replacing its reduction window', async t => {
   const r = setup(t), plan = r.plan();
   // Isolate pending-plan lifecycle from this fixture's unobserved pump costs.
   r.engine.control.minimumHomeBenefitCents = -1000;
@@ -310,18 +324,17 @@ test('the controller refreshes a future automatic schedule without dropping it w
   };
   r.engine.tick(); await r.settle();
   assert.equal(requests.length, 1);
-  assert.ok(requests[0].input.incumbentPlan, JSON.stringify(r.store.events().filter(row => row.type === 'scheduled-cycle-rejected')));
-  assert.deepEqual(requests[0].input.incumbentPlan.schedule, plan.schedule);
+  assert.deepEqual(requests[0].input.continuation.schedule, plan.schedule);
   assert.deepEqual(r.engine.pendingPlan.schedule, plan.schedule);
-  assert.equal(r.engine.status().decision.reasons[0], 'waiting-for-scheduled-cycle');
+  assert.equal(r.engine.status().decision.reasons[0], 'accepted-cycle-scheduled');
   assert.equal(r.engine.cycles.active(), null);
-  requests[0].resolve(chooseCycle(requests[0].input));
-  await r.engine.heatingPlanning.pending.promise;
+  requests[0].resolve({ continuation: reviseHeatingCycle(requests[0].input.continuation) });
+  await r.engine.heatingPlanning.continuation.promise;
   r.engine.tick(); await r.settle();
   assert.ok(r.engine.pendingPlan);
-  r.advance(14 * 60_000); r.engine.tick(); await r.settle();
+  r.engine.tick(); await r.settle();
   assert.equal(requests.length, 1);
-  r.advance(60_000); r.engine.tick(); await r.settle();
+  r.advance(15 * 60_000); r.engine.tick(); await r.settle();
   assert.equal(requests.length, 2);
   assert.ok(r.engine.pendingPlan, 'The pending plan is retained during the next refresh');
 });
@@ -342,7 +355,7 @@ test('periodic optimization preserves the exact future manually approved schedul
   r.engine.tick(); await r.settle();
   const reviewed = structuredClone(r.engine.pendingPlan.schedule);
   r.advance(15 * 60_000); r.engine.tick(); await r.settle();
-  assert.equal(searches, 0);
+  assert.ok(searches > 0, 'A reviewed cycle may be compared without changing its approved reduction');
   assert.deepEqual(r.engine.pendingPlan.schedule, reviewed);
   assert.equal(r.engine.pendingPlan.userTrial.id, explorer.publicTrial().id);
 });
@@ -404,15 +417,79 @@ test('ending a price-control pause preserves permanent native edits made during 
   assert.deepEqual(native.h66.status().obligations, {});
 });
 
-test('a restarted interrupted live cycle is incomplete while relay restoration remains durable',async t=>{
-  const r=setup(t);r.plan();r.engine.tick();await r.settle();assert.ok(r.engine.cycles.active());
+test('a late rescheduled first preheat does not spend its duration allowance before delivering heat', async t => {
+  const r = setup(t); r.native({ tariffFeedback: () => ({
+    mode: 'normal', verified: true, stale: false, identity: 'c'.repeat(64) }) });
+  r.advance(1);
+  const plan = r.plan();
+  Object.assign(plan.schedule, { preheatStart: r.now - 3 * HOUR, preheatEnd: r.now - HOUR });
+  plan.executionSchedule = { ...plan.schedule, preheatStart: r.now, preheatEnd: r.now + HOUR / 4,
+    reductionStart: r.now + HOUR / 4, reductionEnd: r.now + HOUR,
+    roomBoostC: 1, roomSettingC: 20, treatmentKey: 'room-boost-v1' };
+  r.engine.cycles.start(plan, { timestamp: r.now, indoorC: 21.2, phase: 'preheat' }, r.now, { executed: true });
+  r.engine.pendingPlan = null;
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.phase, 'preheat');
+  assert.equal(r.engine.cycles.active().actual.preheatHours, 0);
+  assert.equal(r.engine.cycles.active().adjustments?.length ?? 0, 0);
+});
+
+test('a previous cycle AUX release does not grant native AUX recovery to a new owner', async t => {
+  const r = setup(t); r.native(); r.plan(); r.engine.tick(); await r.settle();
+  r.engine.cycles.shorten(r.now, 'invented-end-for-recovery');
+  Object.assign(r.engine.executor.state, { recoveryOwner: 'previous-cycle',
+    recoveryAuxReleasedAt: r.now - 1, recoveryFallbackReason: 'recovery-comfort-margin' });
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.phase, 'recovery');
+  assert.equal(status.decision.recoveryCompressorOnly, true);
+  assert.equal(r.engine.executor.status().recoveryAuxReleasedAt, null);
+});
+
+test('a restarted cycle retains its identity and reduction despite missing startup feeds', async t => {
+  const r = setup(t); r.plan(); r.engine.tick(); await r.settle();
+  const before = r.engine.cycles.active(); assert.ok(before);
   clearTimeout(r.engine.executor.timer);
-  const restarted=new Engine({store:r.store,config:{...r.config,settings:validateSettings()},clock:()=>r.now,commandTransport:r.transport});
-  t.after(()=>{clearTimeout(restarted.executor.timer);restarted.executor.closed=true;});
-  assert.equal(restarted.cycles.active(),null);assert.equal(restarted.applied.at,null);
-  assert.equal(r.store.cycles({input:'mqtt'})[0].status,'incomplete');
-  restarted.tick();await restarted.dispatchPending;
-  assert.deepEqual(r.commands.at(-1),['normal']);assert.equal(restarted.executor.status().legacyOutstanding,false);
+  const restarted = new Engine({ store: r.store, config: r.config, clock: () => r.now, commandTransport: r.transport });
+  t.after(async () => { clearTimeout(restarted.executor.timer); restarted.executor.closed = true; await restarted.closeFireplace(); });
+  assert.equal(restarted.cycles.active().id, before.id);
+  assert.equal(restarted.cycles.active().status, 'active');
+  restarted.tick(); await restarted.dispatchPending;
+  assert.equal(restarted.status().decision.phase, 'reduction');
+  assert.equal(restarted.cycles.active().id, before.id);
+  assert.deepEqual(r.commands.at(-1), ['reduction']);
+});
+
+test('model rebuilding with missing temperature and outlook retains an executable reduction', async t => {
+  const r = setup(t); r.native(); r.plan(); r.engine.tick(); await r.settle();
+  const original = r.engine.cycles.active(); assert.ok(original);
+  const saved = r.engine.status();
+  r.advance(60_000);
+  const view = r.engine.rebuildingStatus({ now: r.now,
+    observations: { ...saved.observations, indoor: { value: null, stale: true },
+      indoorControl: { value: null, stale: true }, outdoor: { value: null, stale: true } },
+    outlook: { prices: [], forecast: [] }, h66: r.engine.h66Status(), override: null,
+    priorExecutor: r.engine.executor.status(), ownsPausedSettings: false,
+    ownsTemporarySettings: false, holdManualSettings: false });
+  await r.settle();
+  assert.equal(view.decision.phase, 'reduction');
+  assert.ok(view.decision.reasons.includes('continuing-with-retained-estimates'));
+  assert.equal(view.learning.adaptive, null, 'The saved execution predictor is not published as the rebuilt learner');
+  assert.equal(r.engine.cycles.active().id, original.id);
+  assert.equal(r.engine.executor.status().phase, 'reduction');
+});
+
+test('an unconfirmed command retains accepted pending intent and retries only through reconciliation', async t => {
+  const r = setup(t), plan = r.plan();
+  r.transport.publish = async () => { throw Object.assign(new Error('fixture-unconfirmed'), { code: 'MQTT_UNAVAILABLE' }); };
+  r.engine.tick(); await r.settle();
+  assert.equal(r.engine.cycles.active(), null);
+  assert.deepEqual(r.engine.pendingPlan.schedule, plan.schedule);
+  assert.ok(r.store.getState('pending-plan:mqtt'));
+  r.transport.publish = async batch => { r.commands.push([...batch]); return { status: 'mqtt', sent: true, actual: null }; };
+  r.advance(1000); r.engine.tick(); await r.settle();
+  assert.equal(r.engine.cycles.active()?.status, 'active');
+  assert.equal(r.engine.executor.status().phase, 'reduction');
+  assert.equal(r.engine.pendingPlan, null, 'Successful execution transfers intent to the tracked cycle once');
 });
 
 test('history baseline arriving after startup is adopted without replacing live temperature records',async t=>{
@@ -510,7 +587,7 @@ test('an approved scenario uses the initial response when learned response is un
   assert.equal(r.commands.some(commands => commands.includes('reduction')), true);
 });
 
-test('one-cycle preferred limits cannot suppress the absolute two-degree occupied comfort guard', async t => {
+test('a cold new proposal waits without issuing reduction or inventing a second comfort limit', async t => {
   const r = setup(t), plan = r.plan(), explorer = r.engine.heatingExplorer;
   explorer.capture({ now: r.now, settings: r.engine.settings, config: r.engine.control,
     checkpoint: r.engine.checkpoint, observations: {}, equipment: {} }, { phase: 'normal', reasons: [], plan: null });
@@ -522,8 +599,8 @@ test('one-cycle preferred limits cannot suppress the absolute two-degree occupie
   r.ingest('indoor_temperature', 19);
   const status = r.engine.tick(); await r.settle();
   assert.equal(status.decision.phase, 'normal');
-  assert.ok(status.decision.reasons.includes('hard-comfort-limit'));
-  assert.equal(explorer.publicTrial().status, 'rejected');
+  assert.ok(status.decision.reasons.includes('scheduled-cycle-no-longer-admissible'));
+  assert.equal(explorer.publicTrial().status, 'pending');
   assert.equal(r.commands.some(commands => commands.includes('reduction')), false);
 });
 

@@ -19,13 +19,14 @@ function fixture(kind='normal', count=80) {
 }
 
 // Fixed current-algorithm results for the invented fixtures above. The v21
-// boundary deliberately changes native projections; all scalar and trajectory
+// boundary deliberately changes native projections. Missing native evidence now
+// retains the recovery permission instead of releasing AUX; all scalar and trajectory
 // fields remain exactly equal between whole and streamed evaluation.
 const originalDigests = {
  normal: 'ca8f0c673294cf1fac83000001141e29c609cb4b47ad598797465f40c30a50e0',
  reduction: '6bb7747dd5e6bda2f7a169571771ba2ac4dc7814acb75514244c805abdbe8bab',
  preheat: 'e8d83293c0c61a2f52f915caeb765ad933726b4aa4c1f4f93a8e78927c46ea35',
- estimated: '2be3728dd91246c3f439c96a67c8ffe3560b55aade7c5a05b30d422004c46343',
+ estimated: 'ad30325de07f6b25b3ff0becee614636263c8d22897ad5324234b47e95d64c0c',
 };
 const roundtrip = value => JSON.parse(JSON.stringify(value));
 for (const kind of Object.keys(originalDigests)) {
@@ -65,15 +66,16 @@ test('rolling assessment excludes terminal debt and final empty chunk charges it
  assert.deepEqual(advanceCycleEvaluation({...args,intervals:[],captureTrajectory:false},roundtrip(continuation)).result,final.result);
 });
 test('recovery settlement and native fallback stay latched across chunk boundaries', () => {
- for(const h66Available of [true,false]){
+ for(const cold of [false,true]){
   const args=fixture('reduction',32);
   args.schedule={preheatStart:START,preheatEnd:START,reductionStart:START,reductionEnd:START+HOUR/4,roomBoostC:0};
   Object.assign(args.config,{scenarioReductionScale:1,compressorIntegralA1:null,compressorHysteresisC:null});
-  Object.assign(args.equipment,{nativeAuxAllowed:false,h66Available});
+  Object.assign(args.equipment,{nativeAuxAllowed:false,h66Available:false});
+  if(cold)args.targetC=25;
   args.maxDropC=args.maxRiseC=10;
   const expected=evaluateCycle(args);assert(Number.isFinite(expected.recoveredAt));
   assert(expected.trajectory.some(row=>row.at>expected.recoveredAt&&row.phase==='normal'));
-  if(h66Available)assert(expected.trajectory.some(row=>row.recoveryHoldActive&&row.recoveryCompressorOnly));
+  if(!cold)assert(expected.trajectory.some(row=>row.recoveryHoldActive&&row.recoveryCompressorOnly));
   else assert(expected.trajectory.filter(row=>row.phase==='recovery').every(row=>!row.recoveryCompressorOnly));
   let continuation=null,firstFallbackAt=null;const trajectory=[];
   for(const interval of args.intervals){

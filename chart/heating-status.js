@@ -45,6 +45,8 @@ export function homeHeatingConfirmation(status = {}) {
       : execution.status === 'uncertain' ? 'Heating command delivery is unresolved. Check device feedback before retrying.'
         : 'The heating request failed; its detailed cause is unavailable. Check device feedback and restoration status.');
   if (h66.enabled === true && h66.connected !== true) reasons.push('H66 device readings are unavailable.');
+  if (status.decision?.reasons?.includes('continuing-with-retained-estimates'))
+    reasons.push('The accepted heating plan continues using retained estimates while planning inputs are unavailable.');
   const alarm = h66.readings?.['1A20'];
   if (alarm && h66ReadingStatus(h66, alarm, { now }).usable && alarm.value !== 0) reasons.push('The heat pump reports an active alarm.');
   for (const [register, requested] of Object.entries(h66.requested ?? {})) {

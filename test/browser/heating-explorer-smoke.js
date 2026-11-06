@@ -71,8 +71,8 @@ try {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  const until = async expression => {
-    for (let attempt = 0; attempt < 200; attempt++) {
+  const until = async (expression, timeoutMs = 6000) => {
+    for (let attempt = 0; attempt < Math.ceil(timeoutMs / 30); attempt++) {
       if (await evaluate(expression)) return;
       await pause(30);
     }
@@ -154,6 +154,9 @@ try {
           explorerFixture.value.activeTrial.status = 'cancelled';
           return Response.json({activeTrial:explorerFixture.value.activeTrial});
         }
+        const delay = explorerFixture.delayReadMs ?? 0;
+        explorerFixture.delayReadMs = 0;
+        if (!body && delay) await new Promise(resolve => setTimeout(resolve, delay));
         const data = structuredClone(explorerFixture.value);
         if (path.endsWith('/simulate')) {
           data.previewId = 'synthetic-reviewed-preview';
@@ -253,8 +256,9 @@ try {
   await evaluate(`delete explorerFixture.planner; await explorerFixture.poll()`);
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(`document.getElementById('home-planned-change').focus(); globalThis.initialHomeFold = document.getElementById('home-heat-pump-details').open`);
+  await evaluate('explorerFixture.delayReadMs = 21_000');
   await keyPress('Enter');
-  await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`);
+  await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`, 28_000);
   assert.equal(await evaluate(`document.getElementById('home-heat-pump-details').open === initialHomeFold`), true, 'Opening explorer does not toggle Home disclosure');
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true');
   assert.match(await evaluate(`document.getElementById('heating-explorer-constraints').textContent`), /4 h/);

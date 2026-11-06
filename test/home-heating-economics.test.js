@@ -293,7 +293,10 @@ test('aggregate source uncertainty triggers native recovery before the estimated
     equipment: { ...args.equipment, indoorEstimated: true, indoorUncertaintyC: .6 } });
   assert.equal(result.recoveryCompressorOnly, false);
   assert.equal(result.recoveryFallbackReason, 'recovery-comfort-margin');
-  assert.equal(recoveryPolicy({ ...args, equipment: { ...args.equipment, indoorEstimated: true } }).recoveryCompressorOnly, false);
+  assert.equal(recoveryPolicy({ ...args, equipment: { ...args.equipment, indoorEstimated: true } }).recoveryCompressorOnly, true,
+    'Unknown uncertainty retains the previous restriction instead of granting AUX permission');
+  assert.equal(recoveryPolicy({ ...args, indoorC: null, retainedCompressorOnly: false }).recoveryCompressorOnly, false,
+    'Missing data also cannot resurrect a previously released restriction');
 });
 
 test('estimated indoor evidence never admits a new learning trial', () => {

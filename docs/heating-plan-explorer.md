@@ -168,7 +168,9 @@ a separate one-cycle authority even while Home automatic control is paused or
 disabled. It preserves those saved choices and cannot override an independent
 manual action or grant authority to a history viewer or slave. The server enforces
 this independently of the buttons. The approved opportunity may start within
-the available forecast; it has a five-minute latest-start grace period. The outer scope expires after the planned reduction
+the available forecast. Its remaining treatment may start within the original
+cycle window, before reduction ends; missing an earlier preheat start does not
+invalidate the remaining reduction. The outer scope expires after the planned reduction
 and the configured recovery timeout, or earlier when the cycle ends. History and
 slave views show recorded-plan context; live simulation is unavailable there.
 
@@ -176,12 +178,13 @@ The confirmation summarizes estimated saving or extra cost against Normal,
 maximum predicted temperature drop and any learning-trial cost exposure and
 reviewed budget. The approval uses server-held comparison data. It is bound to the current
 equipment and configuration, expires, and is checked again before the cycle
-starts. Changes to the model, weighted room readings, forecasts, settings, protection or readiness
-can reject it. Routine water-temperature, integral, runtime-counter and compressor
-cycle updates do not erase the reviewed opportunity. The exact approved schedule
-is still revalidated with current physical inputs before dispatch; a preview does
-not freeze equipment conditions or bypass those checks. During execution the existing
-comfort, forecast, equipment and economic checks can shorten the cycle.
+starts. Changes before approval can require a fresh comparison. After approval, missing
+feeds or model work retain the accepted opportunity and its estimates. Routine water-temperature, integral, runtime-counter and compressor
+cycle updates do not erase the reviewed opportunity. The original approved schedule remains separate from execution adjustments.
+Current device capability, equipment identity, independent instructions and native
+protection still govern dispatch. Remaining preheat can be moved or shortened
+without moving reduction. The same accepted-cycle continuation policy applies
+to automatic and approved cycles; see [accepted schedules](learning-and-control.md#accepted-schedules-and-continuation).
 If a device acknowledgement arrives after the start window or approval scope has
 ended, the exposure remains recorded, and recovery ends the approved action
 without renewing permission or discarding restoration duties.
@@ -205,8 +208,10 @@ An unused approval cannot silently transfer to another opportunity. Cancellation
 ends the authorized scope; an active cycle follows the normal restoration and
 recovery path. Changing the saved Automatic / Paused choice does not cancel this
 independent reviewed cycle; use its cancellation action to end it. Closing the browser does not cancel a cycle or erase restoration
-obligations. Restart ends the approval and requires a fresh comparison; the
-existing executor still owns any outstanding physical restoration.
+obligations. Restart preserves the approval and its original expiry. The existing executor
+reconciles outstanding physical obligations before the currently due feasible
+action resumes; copied intent cannot grant a slave or replacement equipment
+control authority.
 
 ## What the model learns
 

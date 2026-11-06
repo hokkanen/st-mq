@@ -135,8 +135,31 @@ export class CycleTracker {
     const previous=this.store.cycleSummaries({input:this.input,limit:1})[0];
     if (previous && !number(previous.endedAt)) return 0;
     const state = this.store.getState(`trials:${this.input}`);
-    if (state && (!number(state.reservedCents) || state.reservedCents < 0)) return null;
-    return Math.max(0, this.config.trialBudgetCentsPerDay - (state?.date === dateKey(now) ? state.reservedCents : 0));
+    if (state && (!number(state.reservedCents) || state.reservedCents < 0
+      || state.unreservedExposureCents !== undefined && (!number(state.unreservedExposureCents) || state.unreservedExposureCents < 0))) return null;
+    return Math.max(0, this.config.trialBudgetCentsPerDay
+      - (state?.date === dateKey(now) ? state.reservedCents + (state.unreservedExposureCents ?? 0) : 0));
+  }
+  /** A known overrun cannot revoke an existing action, or fund another trial.
+   * Keep reservations separate from unfunded estimated exposure and real bills. */
+  observeTrialExposure(exposureCents, now) {
+    if (!number(exposureCents) || exposureCents < 0) return;
+    return this.store.transaction(() => {
+      this.reserveTrialExposure(exposureCents);
+      const cycle = this.active(); if (!cycle?.plan.trial) return;
+      const unreservedCents = Math.max(cycle.exposureEstimate?.unreservedCents ?? 0,
+        Math.max(0, exposureCents - (cycle.trialBudget?.reservedCents ?? 0)));
+      const additional = unreservedCents - (cycle.exposureEstimate?.unreservedCents ?? 0);
+      if (additional > 0 && cycle.plan.userTrial?.limits?.maxTrialCostCents === undefined) {
+        const ledger = this.store.getState(`trials:${this.input}`);
+        if (ledger?.date === dateKey(cycle.startedAt) && number(ledger.reservedCents)
+          && number(ledger.unreservedExposureCents ?? 0))
+          this.store.setState(`trials:${this.input}`, { ...ledger,
+            unreservedExposureCents: (ledger.unreservedExposureCents ?? 0) + additional });
+      }
+      cycle.exposureEstimate = { at: now, costExposureCents: exposureCents, unreservedCents };
+      this.save(cycle);
+    });
   }
   /** Keep the original forecast immutable and reserve the highest comparable
    * full-cycle estimate. Forecast oscillations never spend the same cap twice. */
@@ -147,12 +170,16 @@ export class CycleTracker {
       .every(value => number(value) && value >= 0)) return false;
     const additional = Math.max(0, exposureCents - budget.reservedCents);
     const reservedCents = budget.reservedCents + additional;
+    // Once exposure is outside the funded reservation, keep its high-water
+    // accounting separate. Reclassifying later forecasts could count it twice.
+    if (additional > 0 && (cycle.exposureEstimate?.unreservedCents ?? 0) > 0) return false;
     if (reservedCents > cap) return false;
     const automatic = cycle.plan.userTrial?.limits?.maxTrialCostCents === undefined;
     const ledger = automatic ? this.store.getState(`trials:${this.input}`) : null;
     if (automatic && (!ledger || ledger.date !== dateKey(cycle.startedAt)
       || !number(ledger.reservedCents) || ledger.reservedCents < budget.reservedCents
-      || ledger.reservedCents + additional > this.config.trialBudgetCentsPerDay)) return false;
+      || ledger.unreservedExposureCents !== undefined && !number(ledger.unreservedExposureCents)
+      || ledger.reservedCents + (ledger.unreservedExposureCents ?? 0) + additional > this.config.trialBudgetCentsPerDay)) return false;
     if (exposureCents === budget.lastExposureCents) return true;
     this.store.transaction(() => {
       if (automatic && additional > 0) this.store.setState(`trials:${this.input}`, {
@@ -178,16 +205,18 @@ export class CycleTracker {
   start(plan, sample, now, { executed = false } = {}) {
     if (this.active()) return this.active();
     if (!Number.isSafeInteger(now) || sample?.timestamp !== now) throw new TypeError('A cycle requires its actual acknowledged start sample.');
-    plan = structuredClone({ ...plan, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });
+    const { executionSchedule, ...definition } = plan;
+    plan = structuredClone({ ...definition, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });
     const common = { intervals: plan.intervals, model: plan.model, initialState: plan.initialState, targetC: plan.targetC,
       occupancy: plan.occupancy, maxDropC: plan.maxDropC, maxRiseC: plan.maxRiseC,
       config: plan.config ?? this.config, equipment: plan.equipment ?? {} };
     plan.prediction = summary(evaluateCycle({ ...common, schedule: plan.schedule }));
     plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
+      ...(executionSchedule ? { executionSchedule: structuredClone(executionSchedule) } : {}),
       executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observationCount: 0, phases: [], lastSample: sampleEndpoint(sample), lastForecastVersion: sample.provenance?.forecastVersion ?? null,
       observerState: { ...plan.initialState }, referenceState: null, estimatedIndoorUsed: plan.equipment?.indoorEstimated === true,
-      actual: { costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
+      actual: { preheatHours: 0, costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
         compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0,
         temperatureMissingHours: 0,
@@ -200,7 +229,8 @@ export class CycleTracker {
     this.store.transaction(() => {
       if (plan.trial && plan.userTrial?.limits?.maxTrialCostCents === undefined) {
         const old = this.store.getState(`trials:${this.input}`);
-        this.store.setState(`trials:${this.input}`, { date: dateKey(now), reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
+        this.store.setState(`trials:${this.input}`, { ...(old?.date === dateKey(now) ? old : {}), date: dateKey(now),
+          reservedCents: (old?.date === dateKey(now) ? old.reservedCents : 0) + plan.trialAllowanceCents });
       }
       this.save(cycle);
       const saved = this.saveWorking(cycle,{ count: 0, observer: cycle.observerState, reference: null });
@@ -234,6 +264,17 @@ export class CycleTracker {
     cycle.adjustments ??= []; cycle.adjustments.push({ at: now, reason });
     this.save(cycle);
   }
+  revise(schedule, now, reason, comparison = null) {
+    const cycle = this.active(); if (!cycle) return;
+    const previous = cycle.executionSchedule ?? cycle.plan.schedule;
+    if (JSON.stringify(previous) === JSON.stringify(schedule)) return;
+    cycle.executionSchedule = { ...schedule };
+    cycle.adjustments ??= [];
+    cycle.adjustments.push({ at: now, reason, previous, schedule: { ...schedule }, ...(comparison ? { comparison } : {}) });
+    cycle.adjustments = cycle.adjustments.slice(-16);
+    this.save(cycle);
+    this.store.event('heating-plan-adjusted', { id: cycle.id, reason, schedule, comparison }, now);
+  }
   record(sample,now,options = {}) {
     return this.store.transaction(() => this.#recordSample(sample,now,options));
   }
@@ -251,7 +292,7 @@ export class CycleTracker {
     const previous = cycle.lastSample, dt = (now - previous.timestamp) / HOUR;
     if (dt <= 0) return null;
     const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
-    if (!number(dt) || dt > 0.5) { this.cancel(now, 'cycle-observation-gap'); return null; }
+    if (!number(dt)) return null;
     const a = cycle.actual;
     cycle.estimatedIndoorUsed ||= controlIndoor?.estimated === true;
     let cursor = previous.timestamp;
@@ -275,11 +316,12 @@ export class CycleTracker {
         ...cycle.plan.intervals.flatMap(i => [i.start,i.end])].filter(t => number(t) && t > cursor);
       const end = Math.min(now, segment?.end ?? now, currentQuote?.end ?? frozen?.end ?? now,...boundaries);
       const hours = (end - cursor) / HOUR;
+      if (phase === 'preheat') a.preheatHours = (a.preheatHours ?? 0) + hours;
       // Meter/equipment coverage remains useful when a temperature is missing.
       // Temperature gaps separately prevent calibration and outcome validation.
       if (!number(previous.indoorC) || !number(sample.indoorC) || sample.indoorEstimated || previous.indoorEstimated)
         a.temperatureMissingHours = (a.temperatureMissingHours ?? 0) + hours;
-      const eligible = number(values.powerKw)
+      const eligible = (dt <= 0.5 || Boolean(segment)) && number(values.powerKw)
         && values.powerKw >= 0 && number(price) && (!sample.inputSegments || Boolean(segment))
         && (!number(sample.windowStart) || cursor >= sample.windowStart);
       if (eligible) {
@@ -310,8 +352,10 @@ export class CycleTracker {
       if (values.energyBasis !== 'measured') a.metered = false;
       } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false;
         a.auxiliaryRouteKnown = false; a.metered = false; cycle.observerState=null; }
-      rows.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}), outdoorC: values.outdoorC,
-        solarRadiationWm2: values.solarRadiationWm2, supplyC: values.supplyC ?? null, brineC: values.brineC ?? null,
+      rows.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}),
+        outdoorC: dt > 0.5 && !segment ? null : values.outdoorC,
+        solarRadiationWm2: dt > 0.5 && !segment ? null : values.solarRadiationWm2,
+        supplyC: values.supplyC ?? null, brineC: values.brineC ?? null,
         floorOverrideMode: values.floorOverrideMode ?? null, treatmentKey: values.treatmentKey ?? null, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
         phase, indoorC: sample.indoorEstimated ? null : sample.indoorC, powerKw: values.powerKw, eligible,
@@ -361,7 +405,7 @@ export class CycleTracker {
     if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
-      if (cycle.estimatedIndoorUsed || (a.temperatureMissingHours ?? 0) > 0) {
+      if (cycle.assessmentUnavailableReason || cycle.estimatedIndoorUsed || (a.temperatureMissingHours ?? 0) > 0) {
         // The control operation ended conservatively. An inferred endpoint or
         // unobserved trajectory cannot establish measured recovery or savings.
         cycle.status = 'completed'; cycle.endedAt = now;

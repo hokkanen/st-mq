@@ -219,18 +219,22 @@ test('recovery and reversal with unchanged learning preserve a newer live model 
   const f = await fixture(t, { module: { recoverHistory: unchanged, reviseRecovery: unchanged } });
   f.store.setState('adaptive:mqtt', saved);
   f.engine.checkpoint = live;
+  const acceptedPlan = { id: 'invented-accepted-cycle' };
+  f.engine.pendingPlan = acceptedPlan;
   const source = await (await f.upload(await f.backup())).json();
   assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true }))).status, 202);
   await f.coordinator.settled();
   assert.equal((await f.post(request('recover', { previewId: 'a'.repeat(64), confirmed: true }))).status, 202);
   await f.coordinator.settled();
   assert.equal(f.engine.checkpoint, live);
+  assert.deepEqual(f.engine.pendingPlan, acceptedPlan);
   for (const action of ['revert', 'restore']) {
     assert.equal((await f.post(request(`review-${action}`, { operationId: 'fixture' }))).status, 202);
     await f.coordinator.settled();
     assert.equal((await f.post(request(action, { previewId: 'b'.repeat(64), confirmed: true }))).status, 202);
     await f.coordinator.settled();
     assert.equal(f.engine.checkpoint, live, `${action} does not replace live learning with its older cache`);
+    assert.deepEqual(f.engine.pendingPlan, acceptedPlan, `${action} retains accepted execution intent`);
   }
   assert.deepEqual(f.store.getState('adaptive:mqtt'), saved, 'the fixture keeps the cache delayed throughout');
 });

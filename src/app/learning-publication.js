@@ -26,7 +26,6 @@ export function publishCorrection(store, input, candidate) {
   publishCoefficientGeneration(store,input,candidate.coefficientGeneration,candidate.checkpoint);
   store.setState(`fireplace:rebuild:${input}`, { ...job, status: 'current', revision: candidate.revision,
     sensorRevision: candidate.sensorRevision, epoch: candidate.epoch, requiresRebuild: false, error: null });
-  store.setState(`pending-plan:${input}`, null);
   return { epoch: candidate.epoch, checkpoint: candidate.checkpoint };
 }
 

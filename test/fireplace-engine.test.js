@@ -162,8 +162,8 @@ test('engine holds the old revision through real-worker replay and suffix catchu
     assert.equal(validLearningCheckpoint(current), true);
     assert.deepEqual(f.externalState('adaptive:mqtt'), current);
     assert.equal(f.externalState('fireplace:rebuild:mqtt').status, 'current');
-    assert.equal(f.externalState('pending-plan:mqtt'), null);
-    assert.equal(f.engine.pendingPlan, null);
+    assert.deepEqual(f.externalState('pending-plan:mqtt'), { invented: true });
+    assert.deepEqual(f.engine.pendingPlan, { invented: true }, 'Correction publication retains accepted intent');
     assert.equal(f.engine.fireplaceStatus().rebuild.status, 'idle');
     assert.deepEqual(f.store.learningJournal({ input: 'mqtt' }).slice(0, journalBefore.length), journalBefore);
   });

@@ -196,14 +196,15 @@ test('shortened actions do not count as errors of an unexecuted original forecas
   assert.equal(tracker.metrics(21).recoveryError.value, null);
 });
 
-test('a long observation gap closes an incomplete cycle without inventing energy or a heat reserve', t => {
+test('a long observation gap preserves intent without inventing energy or a heat reserve', t => {
   const { tracker, plan, store } = fixture(t);
   tracker.start(plan, sample(start), start);
   assert.equal(tracker.record(sample(start + HOUR), start + HOUR), null);
-  assert.equal(tracker.active(), null);
-  const cycle = store.cycles({ input: 'synthetic' })[0];
-  assert.equal(cycle.status, 'incomplete');
-  assert.equal(cycle.incompleteReason, 'cycle-observation-gap');
+  const cycle = tracker.active();
+  assert.equal(cycle.status, 'active');
+  assert.equal(cycle.actual.missingHours, 1);
+  assert.equal(cycle.actual.electricityKwh, 0);
+  assert.equal(cycle.observerState, null);
   assert.equal(tracker.metrics(21).profit.count, 0);
 });
 

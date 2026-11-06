@@ -6,10 +6,14 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
-- Pending automatic heating schedules refresh every 15 minutes and sooner after
-  meaningful input changes, with bounded background work. Fresh comparisons keep
-  the existing valid schedule among the alternatives. Manual approvals retain
-  their reviewed timing, and active cycles keep their continuation checks.
+- Accepted Home heating schedules survive missing inputs, restart and learning
+  rebuilds. Stopping preheat at the predicted limit of heat already delivered
+  preserves the planned reduction. Bounded background comparisons can shorten
+  and move remaining preheat to a cheaper suitable window; an economic exit
+  requires evidence that stopping, including recovery, costs less. Missing
+  assessment evidence and trial budget overruns do not discard accepted execution.
+  The dashboard also allows the planner view to finish within its existing
+  background calculation deadline.
 
 - Thermal equipment assumptions preserve the occupied temperature reference and
   room measurement continuity. Changing them no longer starts sensor settling.

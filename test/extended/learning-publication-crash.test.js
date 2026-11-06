@@ -46,6 +46,7 @@ for (const seed of seeds) test(`generated learning ${seed}: process death cannot
       const path = join(directory, `${action}-${boundary}.sqlite`);
       copyFileSync(baselines[action], path);
       let store = new Store(path);
+      store.setState('pending-plan:mqtt', { fixture: 'prior-plan' });
       const before = selectedState(store), original = originalEvidence(store);
       const decisionsBefore = store.db.prepare('SELECT COUNT(*) n FROM recovery_decisions').get().n;
       store.close(); store = null;
@@ -68,6 +69,8 @@ for (const seed of seeds) test(`generated learning ${seed}: process death cannot
           'only the in-transaction crash originates in the actual publication worker');
         store = new Store(path);
         const reopened = selectedState(store), published = boundary === 'after-commit';
+        assert.deepEqual(store.getState('pending-plan:mqtt'), { fixture: 'prior-plan' },
+          'Reconstruction and process death retain accepted execution intent');
         assertOriginalEvidence(store, original);
         assert.deepEqual(reopened.authority, before.authority);
         const decisionsAfter = store.db.prepare('SELECT COUNT(*) n FROM recovery_decisions').get().n;
@@ -82,7 +85,6 @@ for (const seed of seeds) test(`generated learning ${seed}: process death cannot
           assert.notEqual(reopened.epoch, before.epoch);
           assert.equal(store.getState('recovery:active:mqtt').status, 'complete');
           assert.equal(store.getState('fireplace:rebuild:mqtt').status, 'current');
-          assert.equal(store.getState('pending-plan:mqtt'), null);
         }
         await verifyDatabase({ dbPath: path, signal: t.signal });
         if (!published) await runRecoveryOperation(store, donorPath, action, { signal: t.signal });

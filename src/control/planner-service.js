@@ -5,6 +5,7 @@ const unavailable = () => new Error('Home heating planning is temporarily unavai
 // Keep learning history, database handles and device objects off the worker
 // boundary. The planner receives only its current calculation inputs.
 function planningInput(input) {
+  if (input.continuation) return structuredClone({ continuation: input.continuation });
   const { now, observations, prices, forecast, settings, config, thermalState, equipment, trialBudgetRemainingCents } = input;
   const incumbentPlan = input.incumbentPlan && !input.incumbentPlan.trial && !input.incumbentPlan.userTrial
     ? { schedule: input.incumbentPlan.schedule, reference: input.incumbentPlan.reference,

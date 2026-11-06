@@ -72,8 +72,10 @@ not wait for the model. The published learned model stays absent until the full
 controller view commits. Safe manual edits do not invalidate an intact canonical
 learning prefix; source selection, corrections, measurement boundaries and epoch
 changes still do. The subsequent control turn checks all current instructions
-and native evidence. Existing restoration duties and fixed deadlines progress
-independently of replay; model-dependent automatic economics remains unavailable.
+and native evidence. Existing restoration duties and fixed deadlines progress independently of replay.
+An accepted cycle can continue from its complete saved planning basis while the
+new canonical model remains unpublished; this does not seed or substitute for
+the reconstructed learner. New-cycle automatic economics waits for the model.
 One active save and one replacement candidate bound pending work. A failed cache
 save retains the previous cache and all committed inputs, reports reduced restart
 acceleration, and does not roll back an already committed controller update.

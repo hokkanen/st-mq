@@ -66,7 +66,7 @@ test('publication keeps queued controller writes behind committed model adoption
   const next = f.store.runWrite(() => {
     ran = true;
     assert.deepEqual(adopted, f.checkpoint, 'next update sees the adopted model');
-    assert.equal(f.store.getState('pending-plan:mqtt'), null);
+    assert.deepEqual(f.store.getState('pending-plan:mqtt'), { fixture: 'prior-plan' });
     f.store.event('synthetic-controller-after-publication', {}, start + 3 * W);
   });
   await new Promise(resolve => setImmediate(resolve));

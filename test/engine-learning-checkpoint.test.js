@@ -264,7 +264,7 @@ test('the MQTT controller advances a rich learning cache beside durable charging
     signal: 'indoor_temperature', reason: 'replacement' }));
   const changed = replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false });
   assert(changed.journalCursor > committed.journalCursor);
-  assert.equal(engine.pendingPlan, null);
+  assert.deepEqual(engine.pendingPlan, { id: 'invented-invalidated-plan' }, 'Model publication retains accepted intent');
   assert.equal(store.getState('pending-plan:mqtt'), null);
   assert.deepEqual(store.getState('adaptive:mqtt'), committed, 'the model cache still precedes the sensor boundary');
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true, persistCheckpoint: false }), changed);

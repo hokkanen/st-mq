@@ -90,11 +90,9 @@ export class HeatingExplorer {
     this.key = `heating-explorer:trial:${engine.config.input}`;
     const trial = this.trial();
     validateHeatingTrialState(trial);
-    // Native executor restoration already owns restart. Never turn copied intent into fresh permission.
-    if (trial && ACTIVE.has(trial.status)) {
-      if (engine.cycles.active()?.plan.userTrial?.id === trial.id) engine.cycles.shorten(engine.clock(), 'scenario-approval-ended-on-restart');
-      this.finish('interrupted', 'Application restarted; review a fresh comparison before another trial.');
-    }
+    // Approval owns the original opportunity, not the application process.
+    // Native reconciliation and current authority still gate every command.
+
   }
   trial() { return this.engine.store.getState(this.key); }
   publicTrial() {
@@ -192,7 +190,7 @@ export class HeatingExplorer {
   approvalScope(plan) {
     if (!plan?.schedule) return { reason: null, latestStartAt: null, expiresAt: null };
     const now = this.engine.clock(), firstActionAt = Math.min(plan.schedule.preheatStart, plan.schedule.reductionStart);
-    return { latestStartAt: firstActionAt + PREVIEW_MS,
+    return { latestStartAt: plan.schedule.reductionEnd - 1,
       expiresAt: plan.schedule.reductionEnd + this.engine.control.recoveryTimeoutHours * 3_600_000,
       reason: firstActionAt < now - INPUT_MAX_AGE_MS
         ? 'The proposed start is outside the approval window. Refresh the plan.' : null };
@@ -263,10 +261,7 @@ export class HeatingExplorer {
       return null;
     }
     const reason = now >= trial.expiresAt ? 'One-cycle scenario expired.'
-      : trial.status === 'pending' && now > trial.latestStartAt ? 'The approved start window expired.'
-        : this.scopeBinding() !== trial.scopeBinding ? 'Configuration or source evidence changed.'
-          : !this.engine.canControl() || this.engine.suspended || this.engine.config.input === 'offline'
-            ? 'Control authority is unavailable.' : null;
+      : trial.status === 'pending' && now > trial.latestStartAt ? 'The approved start window expired.' : null;
     if (reason) {
       if (active?.plan.userTrial?.id === trial.id) this.engine.cycles.shorten(now, 'scenario-scope-ended');
       this.finish(reason.includes('expired') ? 'expired' : 'interrupted', reason); return null;
@@ -276,11 +271,8 @@ export class HeatingExplorer {
     return trial;
   }
   scopeBinding() {
-    const e = this.engine, checkpoint = e.checkpoint;
-    return digest({ configuration: e.config, settings: e.settings, target: e.automationTarget('home'),
-      measurementEpochAt: checkpoint?.measurementEpochAt ?? null, sensorEpochs: checkpoint?.sensorEpochs ?? {},
-      fireplaceRevision: checkpoint?.fireplaceRevision ?? 0, sensorRevision: checkpoint?.sensorRevision ?? 0,
-      rebuild: e.store.getState(`fireplace:rebuild:${e.config.input}`)?.status });
+    const e = this.engine;
+    return digest({ target: e.automationTarget('home'), input: e.config.input });
   }
   authorizes(plan) {
     const trial=this.trial(),now=this.engine.clock();

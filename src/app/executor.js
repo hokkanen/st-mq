@@ -205,9 +205,8 @@ export class Executor {
             && recovery.externalChangeRevision === (native?.externalChangeRevision ?? 0))
             return this.executePhysical({ phase: 'recovery', commands: ['normal'], owner: recovery.owner,
               recoveryHoldActive: true,
-              recoveryCompressorOnly: recovery.compressorOnly && now <= recovery.temperatureValidUntil,
-              recoveryFallbackReason: now > recovery.temperatureValidUntil ? 'recovery-temperature-evidence-expired'
-                : !recovery.compressorOnly ? 'recovery-comfort-or-native-permission' : null,
+              recoveryCompressorOnly: recovery.compressorOnly,
+              recoveryFallbackReason: !recovery.compressorOnly ? 'recovery-comfort-or-native-permission' : null,
               expiresAt: now + this.recoveryHoldMinutes * 60_000 }, now);
           return this.restoreInternal({ now, reason: 'expiry', preserveManualDhwr: true });
         }
@@ -582,8 +581,7 @@ export class Executor {
     // A dated planning view must not borrow later observations. Physical
     // dispatch instead needs the current view after its preceding awaits.
     const phaseReadiness = this.h66?.status(this.clock());
-    if (phase === 'recovery' && decision.recoveryHoldActive === true
-      && phaseReadiness?.controlsReady && phaseReadiness.writesEnabled === true) {
+    if (phase === 'recovery' && decision.recoveryHoldActive === true) {
       const refresh = this.state.phase !== phase || this.state.legacyOutstanding
         || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
       if (refresh) await this.publish(['normal'], now);
@@ -607,8 +605,10 @@ export class Executor {
         await this.persistAsync();
       }
       const recoveryCompressorOnly = this.state.recoveryAuxReleasedAt == null && decision.recoveryCompressorOnly === true;
-      const native = await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
-        holdDhwReduced: true, now: this.clock(), expiresAt: recoveryHoldUntil });
+      const native = phaseReadiness?.controlsReady && phaseReadiness.writesEnabled === true
+        ? await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
+          holdDhwReduced: true, now: this.clock(), expiresAt: recoveryHoldUntil })
+        : { status: 'unavailable', reason: 'native-settings-unavailable' };
       this.state.phase = phase; await this.releaseTariff(); this.state.expiresAt = recoveryHoldUntil;
       this.restartRestore = false;
       return this.result(phase, refresh || native.changed?.length > 0, { native,
@@ -649,7 +649,13 @@ export class Executor {
         validatePreheat();
         if (decision.floorOverride === true) {
           if (!this.floorOverride?.status(this.clock()).enabled) throw failure('FLOOR_UNAVAILABLE', 'Floor preheat is unavailable.');
-          await this.floorOverride.lease({ owner: decision.owner ?? `automatic:${expiresAt}`, until: expiresAt, now: this.clock() });
+          const owner = decision.preheatOwner ?? decision.owner ?? `automatic:${expiresAt}`;
+          const floor = this.floorOverride.status(this.clock());
+          if (floor.mode === 'automatic' && (floor.owner !== owner || floor.leaseUntil !== expiresAt)) {
+            const released = await this.floorOverride.release({ scope: 'heating', reason: 'preheat-window-revised', now: this.clock() });
+            if (released.restorationPending) throw failure('FLOOR_PENDING', 'The previous preheat window is awaiting GPIO OFF.');
+          }
+          await this.floorOverride.lease({ owner, until: expiresAt, now: this.clock() });
         } else {
           const floor = await this.floorOverride?.release({ scope: 'heating', reason: 'room-only-preheat', now });
           if (floor?.restorationPending) throw failure('FLOOR_PENDING', 'Floor restoration must finish before ROOM-only preheat.');

@@ -138,21 +138,24 @@ test('one reviewed schedule is durable and one-shot; cancellation shortens the a
   assert.equal(r.store.learningJournal({ input: 'simulated' }).length, 0, 'approval itself is never a training observation');
 });
 
-test('restart ends pending approval without renewing scope or erasing a physical restoration obligation', async t => {
+test('restart preserves approval and its original deadline without erasing restoration obligations', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });
   r.store.setState('executor:home', { restorationPending: true });
   const restarted = new HeatingExplorer(r.engine, { worker: r.worker });
-  assert.equal(restarted.publicTrial().status, 'interrupted'); assert.equal(r.engine.pendingPlan, null);
+  assert.equal(restarted.publicTrial().status, 'pending');
+  assert.equal(restarted.authorizes(r.engine.pendingPlan), true);
+  assert.equal(restarted.trial().expiresAt, r.service.trial().expiresAt);
   assert.deepEqual(r.store.getState('executor:home'), { restorationPending: true });
 });
 
-test('scope expiry, configuration change and completed cycle end permissions independently of numerical learning', async t => {
+test('approval retains its opportunity across settings updates but expires at its original boundary', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });
-  r.advance(6 * 60_000); assert.equal(r.service.reconcile(r.now), null);
+  r.advance(HOUR); assert.equal(r.service.reconcile(r.now), null);
   assert.equal(r.service.publicTrial().status, 'expired'); assert.equal(r.engine.pendingPlan, null);
   r.capture(); const next = await r.preview(); r.service.apply({ previewId: next.previewId });
   r.engine.settings.occupancy = { mode: 'away' };
-  assert.equal(r.service.reconcile(r.now), null); assert.equal(r.service.publicTrial().status, 'interrupted');
+  assert.equal(r.service.reconcile(r.now).status, 'pending');
+  assert.equal(r.service.authorizes(r.engine.pendingPlan), true);
 });
 
 test('unknown or malformed saved approval fails closed before Engine construction mutates state', t => {
@@ -218,14 +221,20 @@ for (const change of ['start expiry', 'outer expiry', 'configuration', 'authorit
     const cycle = { id: `delayed-${change}`, plan: r.engine.pendingPlan, startedAt: r.now };
     r.setActive(cycle);
     r.store.setState('executor:home', { restorationPending: true });
-    if (change === 'start expiry') r.advance(6 * 60_000);
+    if (change === 'start expiry') r.advance(HOUR);
     if (change === 'outer expiry') r.advance(r.service.trial().expiresAt - r.now + 1);
     if (change === 'configuration') r.engine.config.controller = { max_drop_c: 1 };
     if (change === 'authority') r.engine.canControl = () => false;
     if (change === 'suspension') r.engine.suspended = true;
     r.store.transaction(() => r.service.started(cycle));
-    assert.equal(cycle.executionSchedule.reductionEnd, r.now);
-    assert.equal(r.service.publicTrial().status, change.includes('expiry') ? 'expired' : 'interrupted');
+    if (['configuration', 'authority', 'suspension'].includes(change)) {
+      assert.equal(cycle.executionSchedule, undefined, 'Execution fencing cannot erase household cycle intent');
+      assert.equal(r.service.publicTrial().status, 'running');
+      if (change !== 'configuration') assert.equal(r.service.authorizes(cycle.plan), false, 'Retained intent grants no command authority');
+    } else {
+      assert.equal(cycle.executionSchedule.reductionEnd, r.now);
+      assert.equal(r.service.publicTrial().status, change.includes('expiry') ? 'expired' : 'interrupted');
+    }
     assert.equal(r.engine.cycles.active(), cycle, 'the exposure remains recorded for recovery');
     assert.deepEqual(r.store.getState('executor:home'), { restorationPending: true });
   });

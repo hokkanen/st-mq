@@ -104,7 +104,10 @@ Under the owner-approved 2026-11-04 amendment, explicit admin approval authorize
 one reviewed Home cycle while automatic Home control is paused or disabled,
 without changing those saved choices. Approved cycle limits may relax heating
 policy; native protection, equipment identity, independent manual holds and
-restoration duties retain their authority.
+restoration duties retain their authority. Under the owner-approved 2026-11-06
+continuation policy, accepted automatic and approved cycles survive restart within
+their original window; unavailable planning data retains intent and last valid
+estimates, without granting equipment or control authority.
 Details: [configuration ownership](docs/configuration.md#where-a-setting-belongs),
 [Home controls](docs/automation-and-manual-control.md),
 [charging policies](docs/charging/policies.md), [Garage](docs/garage.md) and
@@ -155,6 +158,9 @@ occupied reference and a fixed weighted indoor average, bounded control-only roo
 estimates and native Away protection under the owner-approved 2026-10-07 policies.
 The owner-approved 2026-11-04 amendment applies configured comfort limits from
 startup without a separate provisional-reference drop cap or learning cooldown.
+The owner-approved 2026-11-06 continuation policy keeps accepted intent by default,
+uses delivered-heat predictions without extra stop padding for active thermal
+limits, and requires a complete comparative justification for economic exits.
 Details:
 [learning/control](docs/learning-and-control.md#planning-and-recovery),
 [temperature policy](docs/temperature-sensors.md#normal-temperature-reference) and

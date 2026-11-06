@@ -80,11 +80,12 @@ test('native compressor demand can run at full duty in the observed reduction ph
   assert.equal(result.trajectory[0].auxiliaryKw,0);
 });
 
-test('recovery starts compressor-only and falls back for comfort, trend, timeout or lost readback',()=>{
+test('recovery retains restrictions on missing readback and releases for positive comfort or deadline evidence',()=>{
   const args={now:now+H/2,reductionEnd:now,indoorC:21,targetC:21,equipment:{h66Available:true}};
   assert.equal(recoveryPolicy(args).recoveryCompressorOnly,true);
-  for(const change of [{indoorC:20.4},{indoorTrendCPerHour:-1.2},{now:now+H},{equipment:{}},{fallbackAt:now}])
+  for(const change of [{indoorC:20.4},{indoorTrendCPerHour:-1.2},{now:now+H},{fallbackAt:now}])
     assert.equal(recoveryPolicy({...args,...change}).recoveryCompressorOnly,false);
+  assert.equal(recoveryPolicy({...args,equipment:{}}).recoveryCompressorOnly,true);
   assert.equal(controlConfiguration({}).recoveryCompressorOnly,true);
   assert.equal(controlConfiguration({recovery_compressor_only:false}).recoveryCompressorOnly,false);
   assert.throws(()=>controlConfiguration({recovery_compressor_only:'yes'}));

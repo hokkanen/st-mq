@@ -50,6 +50,26 @@ test('forecast-only exposure oscillations do not spend the same allowance repeat
   assert.equal(r.tracker.active().trialBudget.reservedCents, 3);
 });
 
+test('known unfunded exposure retains the cycle but reduces allowance for later trials without double counting', t => {
+  const r = fixture(t, { exposure: 10, cap: 10, daily: 100 });
+  const id = r.tracker.active().id;
+  for (const exposure of [80, 20, 80]) r.tracker.observeTrialExposure(exposure, now);
+  assert.equal(r.tracker.active().id, id);
+  assert.equal(r.tracker.active().trialBudget.reservedCents, 10);
+  assert.equal(r.ledger().unreservedExposureCents, 70);
+  const cycle = r.tracker.active(); cycle.status = 'incomplete'; cycle.endedAt = now + hour; r.tracker.save(cycle);
+  assert.equal(r.tracker.budget(now + hour), 20, 'Retaining a cycle cannot grant the same daily allowance again');
+});
+
+test('a separately reviewed exposure overrun does not consume the automatic allowance', t => {
+  const r = fixture(t, { exposure: 10, cap: 10, daily: 100, reviewed: true });
+  r.tracker.observeTrialExposure(80, now);
+  assert.equal(r.ledger().unreservedExposureCents, undefined);
+  assert.equal(r.tracker.active().exposureEstimate.unreservedCents, 70);
+  const cycle = r.tracker.active(); cycle.status = 'incomplete'; cycle.endedAt = now + hour; r.tracker.save(cycle);
+  assert.equal(r.tracker.budget(now + hour), 100);
+});
+
 function prefixSample(timestamp, { duty = 0, auxKw = 0, price = -5, phase = 'reduction', ...changes } = {}) {
   return { timestamp, indoorC: 21, outdoorC: 10, solarRadiationWm2: 0, phase,
     priceCents: price, priceStart: now, priceEnd: now + 8 * hour,

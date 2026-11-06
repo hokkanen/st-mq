@@ -238,7 +238,6 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
             engine.checkpoint = result.checkpoint;
             engine.learningCheckpointCache?.confirmCommitted(result.checkpoint);
           }
-          engine.pendingPlan = null;
           engine.fireplaceRebuild = null; engine.fireplaceReserveOverride = null;
           engine.lastSample = null; engine.latestStatus = null;
         } });

@@ -41,6 +41,50 @@ export class HeatingPlanning {
     this.completed = null;
     this.lastSearch = null;
     this.lastNormal = null;
+    this.continuation = null;
+  }
+  /** Continuation results can revise optional heat or prove a cheaper exit.
+   * Missing results always retain intent. Dispatch rechecks the adopted phase. */
+  continue(args, schedule, owner, preheatHours = 0) {
+    if (this.closed || !this.engine.canControl()) return null;
+    const binding = JSON.stringify([owner, schedule]);
+    const scope = JSON.stringify([args.model, args.config, args.targetC, args.maxDropC, args.maxRiseC,
+      args.occupancy, args.equipment.externalChangeRevision, args.equipment.roomSettingC,
+      args.equipment.roomSettingMaximumC]);
+    const source = JSON.stringify(args.intervals.map(row => [row.end, row.price, row.outdoorC, row.solarRadiationWm2]));
+    let job = this.continuation;
+    if (job?.binding !== binding) job = this.continuation = null;
+    const thermalChanged = job && ['indoorC', 'reserveC', ...(args.model.floor?.enabled ? ['slabC'] : [])]
+      .some(key => !Number.isFinite(args.initialState[key]) || !Number.isFinite(job[key])
+        || Math.abs(args.initialState[key] - job[key]) >= .25);
+    if (job?.result && args.now >= job.at && args.now - job.at <= MAX_RESULT_AGE_MS && args.freshComparison
+      && job.scope === scope && job.source === source && !thermalChanged) {
+      const result = job.result; job.result = null;
+      if (result.schedule.preheatStart < args.now && result.schedule.preheatStart > job.at)
+        return null;
+      if (!result.end) {
+        const remainingMs = Math.max(0, args.config.maxPreheatHours - preheatHours) * 3_600_000;
+        if (result.schedule.preheatEnd - Math.max(args.now, result.schedule.preheatStart) > remainingMs)
+          result.schedule = { ...result.schedule,
+            preheatStart: remainingMs ? result.schedule.preheatEnd - remainingMs : args.now,
+            preheatEnd: remainingMs ? result.schedule.preheatEnd : args.now };
+      }
+      return result;
+    }
+    const changed = job && (job.source !== source || job.scope !== scope
+      || thermalChanged);
+    const due = !job || args.now < job.at || args.now - job.at >= REFRESH_MS || changed && args.now - job.at >= MIN_SEARCH_INTERVAL_MS;
+    if (args.freshComparison && due && !job?.pending) {
+      const request = { binding, at: args.now, source, scope, pending: true,
+        indoorC: args.initialState.indoorC, reserveC: args.initialState.reserveC, slabC: args.initialState.slabC };
+      this.continuation = request;
+      request.promise = this.service.request({ continuation: { args, schedule, preheatHours } }).then(result => {
+        if (this.closed || this.continuation !== request) return;
+        request.pending = false; request.result = result?.continuation ?? null;
+        this.engine.onTemporaryChange?.();
+      }).catch(() => { if (this.continuation === request) request.pending = false; });
+    }
+    return null;
   }
   choose(input, incumbentPlan = null) {
     if (this.closed || this.engine.suspended || !this.engine.canControl()

@@ -49,7 +49,6 @@ export function publishRecovery(store, input, message, { operationToken, preview
   store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });
   if (message.recoveryId) store.db.prepare('UPDATE history_recoveries SET status=?,completed_at=?,report=? WHERE id=?')
     .run('complete', Date.now(), JSON.stringify(report), message.recoveryId);
-  store.setState(`pending-plan:${input}`, null);
   if (message.runId) store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision,
     sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false, recoveryEpoch: message.epoch });
   if (message.runId) store.db.prepare("UPDATE recovery_runs SET status='complete',completed_at=?,report=?,source_head=?,fireplace_revision=? WHERE id=?")
@@ -101,7 +100,6 @@ export function publishRevision(store, input, message, { operationToken, preview
       WHERE input=? AND id=(SELECT generation FROM coefficient_selection WHERE input=?)`)
       .run(message.generation,input,input);
   }
-  store.setState(`pending-plan:${input}`, null);
   store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision: message.fireplaceRevision,
     sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false });
   store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });

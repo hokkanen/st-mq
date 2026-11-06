@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { HeatingPlanning } from '../src/app/heating-planning.js';
 import { chooseCycle } from '../src/control/planner.js';
 import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
+import { continuationInput } from '../src/control/heating-continuation.js';
 
 function rig(t) {
   const requests = [];
@@ -21,6 +22,25 @@ function rig(t) {
     await planner.pending?.promise;
   } };
 }
+
+for (const changedField of ['indoorC', 'reserveC', 'slabC']) test(`continuation completion cannot cancel through missing feeds or changed ${changedField}`, async t => {
+  const r = rig(t), plan = chooseCycle(r.input).plan;
+  const args = continuationInput(r.input, plan);
+  if (changedField === 'slabC') {
+    args.model = { ...args.model, floor: { ...args.model.floor, enabled: true } };
+    args.initialState.slabC = 21;
+  }
+  assert.equal(r.planner.continue(args, plan.schedule, 'accepted-owner'), null);
+  r.requests[0].resolve({ continuation: { schedule: plan.schedule, end: true,
+    continuedCostCents: 10, stoppedCostCents: 5 } });
+  await r.planner.continuation.promise;
+  assert.equal(r.planner.continue({ ...args, freshComparison: false }, plan.schedule, 'accepted-owner'), null);
+  const changed = { ...args, now: args.now + 60_000,
+    initialState: { ...args.initialState, [changedField]: args.initialState[changedField] + 1 } };
+  assert.equal(r.planner.continue(changed, plan.schedule, 'accepted-owner'), null);
+  assert.equal(r.requests.length, 2, 'Changed state requests a fresh comparison instead of applying an old exit');
+  assert.deepEqual(plan.schedule, r.requests[0].input.continuation.schedule);
+});
 
 test('background search returns Normal immediately and revalidates its plan with current measurements', async t => {
   const r = rig(t);
