@@ -138,12 +138,23 @@ Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
 
 An acknowledged Start or Stop retains its command correlation after the pending
-write completes. A late RPC notification with an earlier coarse timestamp in the
-same native setting second can use that retained acknowledgement only with
-matching value, session and boot, plus fresh correlated readback requested after
-both acknowledgement and notification receipt. Missing acknowledgement, another
-boot, an opposite value or a later instruction retains ordinary restrictions.
-Original native and receipt clocks remain unchanged.
+write completes. A fresh, verified `Sys.GetStatus` observation from the same boot
+bounds the command interval in native time using its whole-second precision and
+original request/reply clocks. The command retains that evidence across restart.
+This avoids requiring device and application clocks to land in the same second.
+Command publication and acknowledgement use their actual transport timestamps;
+queueing or writer delays never move the acknowledgement or widen that interval.
+Matching still requires the same value, physical session and boot, plus correlated
+readback requested after both acknowledgement and notification receipt. SYS off/on
+recovery can retain an earlier acknowledged Start without labelling it an external
+Enable. Current-limit confirmation and identification duties use the same evidence.
+Without the clock observation, strict same-second checks remain. A notification publication clock is distinct from its setting update clock; late
+publication alone is not another instruction. Missing acknowledgement, another
+boot, an opposite value or a later independent instruction
+retains ordinary restrictions. Original source and receipt clocks remain unchanged;
+there is no fixed clock-skew grace period. A temporarily unavailable clock check
+retains a possible own echo for confirmation instead of inventing a manual
+instruction; an independent Stop still proceeds through normal priority.
 
 ### Dashboard Pause
 

@@ -41,6 +41,7 @@ function fixture(t, overrides = {}) {
         assert.equal(f.saved.pending.stage, 'dispatched');
         assert.equal(typeof f.saved.pending.owned.witnessedCharging, 'boolean');
       }
+      const requestedAt = f.now;
       f.writes.push({ method, ...params }); f.now++;
       f.change(params.role, params.value);
       if (params.role === 'start_charging' && f.physicalPause) {
@@ -49,6 +50,7 @@ function fixture(t, overrides = {}) {
           ...Object.fromEntries(['a', 'b', 'c'].map(key => [`phase_${key}`, { current: params.value ? 12 : 0 }])) });
       }
       await f.afterPublish?.(method, params);
+      if (options.captureReceipt) return { value: null, requestedAt, receivedAt: f.now };
     } };
   f.restart = () => {
     f.controller?.close();

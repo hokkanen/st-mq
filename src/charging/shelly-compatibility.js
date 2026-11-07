@@ -97,9 +97,10 @@ export const SHELLY_RETRY_DELAYS_MS = Object.freeze([10_000, 30_000, 60_000]);
 // Permission-transition reconciliation of a known ACK through subsequent SYS
 // readback. Generic command correlation/freshness is supplied by the controller;
 // an absent reply or older SYS Stop never establishes this result.
-export function compatibilityAcknowledgedStart({ pending, field, correlated, held }) {
+export function compatibilityAcknowledgedStart({ pending, field, correlated, held,
+  afterDispatch = field.measuredAt > pending?.dispatchedAt }) {
   return pending?.stage === 'accepted' && time(pending.acceptedAt) && correlated === true
-    && (field.value === true || held && field.measuredAt > pending.dispatchedAt);
+    && (field.value === true || held && afterDispatch);
 }
 const ACTIVE = new Set(['waiting', 'verifying']);
 const ORIGINS = new Set(['scheduled', 'charge-now']);

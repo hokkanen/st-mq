@@ -1927,7 +1927,7 @@ export class ChargingRuntime {
           && currentLimit.receivedAt <= now && now - currentLimit.receivedAt <= item.adapter.config.maxAgeMs
           && currentLimit.retained !== true;
         const restorationReadback = restorationPending && currentFresh
-          && shellyCurrentCommandReadback(currentLimit, currentTest.pending);
+          && shellyCurrentCommandReadback(currentLimit, currentTest.pending, item.adapter.commandClock?.()?.epoch);
         const comparisonCurrentOwned = restorationReadback || sameCurrentTest && currentLimit?.invalidatedAt === undefined && currentLimit?.value
           === (currentTest.phase === 'restored' ? currentTest.restoreCurrentA : currentTest.appliedCurrentA)
           && (currentLimit.measuredAt === currentTest.permissionAt

@@ -264,11 +264,16 @@ evidence without changing its original source clock. An unchanged current-limit,
 start-permission or work-state reply can have an older update timestamp than its
 matching notification; the adapter preserves both timestamps while confirming
 the current value from the new query. This alone cannot establish a new native
-instruction or confirm a command whose dispatch is in a later source-clock second.
-When a native timestamp has whole-second precision, a matching correlated read
-requested after the command acknowledgement can confirm an update in that same
-second. It preserves the original timestamp; an older second or an unsolicited
-observation cannot supply that confirmation. Same-clock unsolicited notifications
+instruction. A verified, fresh `Sys.GetStatus` observation from the same boot can
+bound a command's interval in device time from its native whole-second precision
+and original request/reply clocks. The command retains that observation for
+confirmation and restart, including identification current changes and owned
+stops. A matching correlated read requested after acknowledgement can confirm an
+update within those bounds even when its raw clock precedes the application's
+dispatch second. Publication and ACK use actual transport receipt clocks;
+processing delays never extend them. Without verified clock evidence, strict
+same-second checks remain. Unsolicited observations cannot supply command
+confirmation. Same-clock unsolicited notifications
 do not renew freshness. Distinct control deltas can share an identical event
 timestamp, including connected work-state transitions such as `charger_pause`
 followed by `charger_end`. Preserve their arrival order and require a fresh
@@ -447,13 +452,18 @@ measurements to that contract. It has no native expiry for the temporary current
 setting or identification pause: an application/MQTT outage can prolong either,
 and recovery must reconcile the original scoped obligation.
 
-A late Shelly Start or Stop notification may carry a fractional native clock slightly
-before the application's dispatch clock in the same native setting second. Its
-original clock is preserved. Attribution requires the acknowledged same-session
-command and a fresh matching RPC readback requested after both acknowledgement and
-notification receipt, while that accepted command is still pending confirmation.
-This does not absorb an opposite instruction, different-second events or events
-without an RPC source, or permit a second write after an uncertain result.
+A late Shelly Start or Stop notification may carry a fractional native clock
+before the application's dispatch second. Attribution uses the captured native
+clock bounds, the acknowledged same-session command, its boot identity and a fresh
+correlated readback requested after both acknowledgement and notification receipt.
+The retained acknowledgement also handles a notification admitted after the
+pending command completed. A subsequent SYS off/on readback does not relabel the
+original Start as an external command. The notification publication clock does
+not replace its setting update timestamp or a matching queried setting clock.
+An opposite instruction, a setting update outside the command bounds, an unknown
+RPC source or a missing acknowledgement cannot
+acquire command ownership or permit a second write after an uncertain result.
+Original source and receipt timestamps remain unchanged.
 A matching same-second Stop without sufficient acknowledgement/readback remains
 stopped and unresolved; RPC provenance alone does not label its sender external.
 An owned identification pause retains the original whole-second permission

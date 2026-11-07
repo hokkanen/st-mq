@@ -15,6 +15,8 @@ import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } f
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
 import { createShellyRpcDiagnostics, shellyRpcReplyOutcome } from './shelly-rpc-diagnostics.js';
+import { validShellyCommandClock, shellyCommandWindow, shellyCommandEventTime,
+  shellyCommandSettingTime } from './shelly-command-clock.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -1355,6 +1357,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     ]);
   };
   const adapter = { association, config, snapshot, readings, refresh, rpc, waitForInputAdmission, controlAttempt,
+    commandClock() {
+      if (!connected || !admitted || !online || bootCandidate || verifiedSystem?.epoch !== state.boot?.epoch
+        || !verifiedSystem || clock() < verifiedSystem.sample.receivedAt
+        || clock() - verifiedSystem.sample.receivedAt > config.maxAgeMs) return null;
+      return copy(verifiedSystem);
+    },
     observeRebootIntent(value) {
       if (!validShellyRebootIntent(value)) throw fail('invalid-evse-command');
       rebootIntent = copy(value);
@@ -1470,9 +1478,11 @@ function validCurrentTest(value) {
     && (value.restoreCurrentA === null || Number.isSafeInteger(value.restoreCurrentA)
       && value.restoreCurrentA >= value.appliedCurrentA && value.restoreCurrentA <= value.originalCurrentA)
     && (value.pending === null || typeof value.pending === 'object' && !Array.isArray(value.pending)
-      && Object.keys(value.pending).filter(key => key !== 'bootEpoch').length === 3
-      && Object.keys(value.pending).every(key => ['value', 'dispatchedAt', 'acceptedAt', 'bootEpoch'].includes(key))
+      && Object.keys(value.pending).filter(key => !['bootEpoch', 'nativeClock'].includes(key)).length === 3
+      && Object.keys(value.pending).every(key => ['value', 'dispatchedAt', 'acceptedAt', 'bootEpoch', 'nativeClock'].includes(key))
       && (value.pending.bootEpoch === undefined || validShellyBootEpoch(value.pending.bootEpoch))
+      && (value.pending.nativeClock === undefined || validShellyCommandClock(value.pending.nativeClock,
+        value.pending.dispatchedAt, value.pending.bootEpoch))
       && Number.isSafeInteger(value.pending.value) && value.pending.value >= 6 && value.pending.value <= value.originalCurrentA
       && time(value.pending.dispatchedAt) && (value.pending.acceptedAt === null
         || time(value.pending.acceptedAt) && value.pending.acceptedAt >= value.pending.dispatchedAt));
@@ -1486,14 +1496,21 @@ const acceptedReadback = (field, pending) => field.bootEpoch === pending.bootEpo
   && field.readback?.measuredAt === field.measuredAt
   && field.readback.requestedAt >= pending.acceptedAt
   && field.readback.receivedAt >= field.readback.requestedAt;
-const commandReadback = (field, pending) => field.bootEpoch === pending.bootEpoch && (field.measuredAt >= pending.dispatchedAt
+const commandReadback = (field, pending, nativeEpoch) => field.bootEpoch === pending.bootEpoch && (pending.nativeClock
+  ? nativeEpoch === pending.nativeClock.epoch && acceptedReadback(field, pending)
+    && (shellyCommandSettingTime(field.measuredAt, pending)
+      || field.commandSource === 'sys' && field.value === pending.value
+        && shellyCommandWindow(pending) !== null && field.measuredAt > shellyCommandWindow(pending).lower)
+  : (field.measuredAt >= pending.dispatchedAt
   // Integer native timestamps locate an update within a whole second. A
   // correlated read after acknowledgement can confirm that setting without
   // rounding the source clock forward or accepting an older second/cache.
-  || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending));
+  || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending)));
 
-const laterCurrentInstruction = (field, pending) => currentInstructionAt(field) > pending.acceptedAt
-  && !(field.commandSource === 'sys' && field.value === pending.value)
+const laterCurrentInstruction = (field, pending) => !(field.commandSource === 'sys' && field.value === pending.value)
+  && (pending.nativeClock
+    ? shellyCommandWindow(pending) === null || currentInstructionAt(field) >= shellyCommandWindow(pending).upper
+    : currentInstructionAt(field) > pending.acceptedAt
   // The device can publish the changed value's partial notification after its
   // ACK. Its event clock is not a second current selection. A matching query
   // made after both the ACK and notification confirms the write in that native
@@ -1501,17 +1518,17 @@ const laterCurrentInstruction = (field, pending) => currentInstructionAt(field) 
   && !(field.commandSource === 'rpc' && field.value === pending.value
     && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
     && Math.floor(currentInstructionAt(field) / 1000) * 1000 === field.measuredAt
-    && acceptedReadback(field, { ...pending, stage: 'accepted' }));
+    && acceptedReadback(field, { ...pending, stage: 'accepted' })));
 
 // Attribution is shared with the runtime because individual adapter fields can
 // update before the controller finishes and persists its refresh result.
-export function shellyCurrentCommandReadback(field, pending) {
+export function shellyCurrentCommandReadback(field, pending, nativeEpoch) {
   return Boolean(field && field.invalidatedAt === undefined && pending && time(pending.acceptedAt) && field.value === pending.value
-    && commandReadback(field, { ...pending, stage: 'accepted' })
+    && commandReadback(field, { ...pending, stage: 'accepted' }, nativeEpoch)
     && !laterCurrentInstruction(field, pending));
 }
 
-function validIdentificationPause(value) {
+function validIdentificationPause(value, command = null) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).length === identificationKeys.length && Object.keys(value).every(key => identificationKeys.includes(key))
     && value.purpose === 'identification' && token(value.identificationId) && value.identificationId.length <= 128
@@ -1521,7 +1538,10 @@ function validIdentificationPause(value) {
     && (value.confirmedAt === null || time(value.confirmedAt) && value.confirmedAt >= value.requestedAt)
     && (value.permissionAt === null ? value.confirmedAt === null
       : time(value.permissionAt) && (value.permissionAt >= value.requestedAt
-          || value.permissionAt === Math.floor(value.requestedAt / 1000) * 1000)
+          || value.permissionAt === Math.floor(value.requestedAt / 1000) * 1000
+          || command?.value === false && command.sessionId === value.sessionId
+            && command.dispatchedAt >= value.requestedAt && command.acceptedAt <= value.confirmedAt
+            && shellyCommandSettingTime(value.permissionAt, command))
         && time(value.confirmedAt) && value.permissionAt <= value.confirmedAt)
     && typeof value.witnessedCharging === 'boolean';
 }
@@ -1549,6 +1569,9 @@ export function validateShellyOwnershipState(initialState, association = initial
     || Object.hasOwn(initialState, 'startup')
     || initialState.bootEpoch !== undefined && !validShellyBootEpoch(initialState.bootEpoch)
     || initialState.pending?.bootEpoch !== undefined && !validShellyBootEpoch(initialState.pending.bootEpoch)
+    || initialState.pending?.nativeClock !== undefined && (!validShellyCommandClock(initialState.pending.nativeClock,
+      initialState.pending.dispatchedAt, initialState.pending.bootEpoch)
+      || !['start_charging', 'current_limit'].includes(initialState.pending.role) || !time(initialState.pending.dispatchedAt))
     || !validShellyCompatibility(initialState.compatibility)
     || !validShellyExecution(initialState.execution) || !validCurrentTest(initialState.currentTest) || !validShellyDeviceHold(initialState.deviceHold)
     || initialState.automaticPermission != null && (typeof initialState.automaticPermission !== 'object'
@@ -1569,13 +1592,15 @@ export function validateShellyOwnershipState(initialState, association = initial
     || initialState.permissionEventCursor !== undefined && (!Number.isSafeInteger(initialState.permissionEventCursor) || initialState.permissionEventCursor < 0)
     || initialState.lastCurrentInstructionAt !== undefined && !time(initialState.lastCurrentInstructionAt)
     || initialState.permissionCommand != null && (!token(initialState.permissionCommand.sessionId)
-      || Object.keys(initialState.permissionCommand).filter(key => key !== 'bootEpoch').sort().join(',') !== 'acceptedAt,dispatchedAt,sessionId,value'
+      || Object.keys(initialState.permissionCommand).filter(key => !['bootEpoch', 'nativeClock'].includes(key)).sort().join(',') !== 'acceptedAt,dispatchedAt,sessionId,value'
       || initialState.permissionCommand.bootEpoch !== undefined && !validShellyBootEpoch(initialState.permissionCommand.bootEpoch)
+      || initialState.permissionCommand.nativeClock !== undefined && !validShellyCommandClock(initialState.permissionCommand.nativeClock,
+        initialState.permissionCommand.dispatchedAt, initialState.permissionCommand.bootEpoch)
       || typeof initialState.permissionCommand.value !== 'boolean' || !time(initialState.permissionCommand.dispatchedAt)
       || !time(initialState.permissionCommand.acceptedAt) || initialState.permissionCommand.acceptedAt < initialState.permissionCommand.dispatchedAt)
     || initialState.provisional !== undefined && typeof initialState.provisional !== 'boolean'
-    || initialState.owned != null && !validIdentificationPause(initialState.owned)
-    || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
+    || initialState.owned != null && !validIdentificationPause(initialState.owned, initialState.permissionCommand)
+    || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned, initialState.permissionCommand)
       || initialState.pending.role !== 'start_charging' || initialState.pending.value !== false))) throw fail('unsupported-shelly-ownership');
 }
 
@@ -1633,7 +1658,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
       scope: { generation: snapshot.generation,
         sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt } };
   };
-  const settingReadback = (field, pending) => commandReadback(field, pending)
+  const scopedCommandReadback = (field, pending) => commandReadback(field, pending, adapter.commandClock?.()?.epoch);
+  const settingReadback = (field, pending) => scopedCommandReadback(field, pending)
     // Numeric current recovery can compare two observations on the device's
     // own clock. A fresh post-ACK read of a changed setting verifies the result
     // even when that clock trails ours. Do not apply this to Start/Stop ownership,
@@ -1669,22 +1695,70 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && field.receivedAt >= pending.dispatchedAt
       && Math.floor(field.measuredAt / 1000) === Math.floor(pending.dispatchedAt / 1000)
       && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || field.measuredAt < pending.dispatchedAt);
+    const unresolvedClockEcho = pending?.nativeClock && pending.role === 'start_charging'
+      && pending.sessionId === state.sessionId && pending.value === field.value && field.commandSource === 'rpc'
+      && pending.stage !== 'accepted' && field.receivedAt >= pending.dispatchedAt
+      && (field.readback ? shellyCommandSettingTime : shellyCommandEventTime)(field.measuredAt,
+        { ...pending, acceptedAt: field.receivedAt });
     return { kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
-      origin: unresolvedEcho ? 'unknown' : field.commandSource === 'sys' ? 'device' : field.commandSource ? 'external-command' : 'unknown',
+      origin: unresolvedEcho || unresolvedClockEcho ? 'unknown' : field.commandSource === 'sys' ? 'device' : field.commandSource ? 'external-command' : 'unknown',
       commandSource: field.commandSource ?? null };
   };
   const rememberPermissionCommand = pending => {
     if (pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt))
       state.permissionCommand = { value: pending.value, dispatchedAt: pending.dispatchedAt,
         acceptedAt: pending.acceptedAt, sessionId: pending.sessionId,
+        ...(pending.nativeClock ? { nativeClock: copy(pending.nativeClock) } : {}),
         ...(pending.bootEpoch === undefined ? {} : { bootEpoch: pending.bootEpoch }) };
   };
+  const captureCommandClock = pending => {
+    const nativeClock = adapter.commandClock?.();
+    if (nativeClock) pending.nativeClock = nativeClock;
+    else delete pending.nativeClock;
+  };
+  const commandReceiptTimes = (pending, receipt) => {
+    if (!receipt || !time(receipt.requestedAt) || !time(receipt.receivedAt)
+      || receipt.requestedAt < pending.dispatchedAt || receipt.receivedAt < receipt.requestedAt
+      || receipt.receivedAt > clock()) throw fail('evse-command-unconfirmed');
+    return { dispatchedAt: receipt.requestedAt, acceptedAt: receipt.receivedAt };
+  };
+  const afterPermissionDispatch = (field, pending) => {
+    const window = shellyCommandWindow(pending);
+    return window ? adapter.commandClock?.()?.epoch === pending.nativeClock.epoch && field.measuredAt > window.lower
+      : field.measuredAt > pending.dispatchedAt;
+  };
+  const laterPermissionInstruction = (field, pending) => {
+    const window = shellyCommandWindow(pending);
+    return window ? field.measuredAt >= window.upper : field.measuredAt > pending.acceptedAt;
+  };
+  const permissionClockEcho = (event, command, field) => time(event.valueUpdatedAt)
+    ? shellyCommandSettingTime(event.valueUpdatedAt, command)
+    : shellyCommandEventTime(event.eventAt, command)
+      || field?.commandSource === 'rpc' && field.value === command.value
+        && event.eventAt >= field.measuredAt && shellyCommandSettingTime(field.measuredAt, command);
+  const permissionEventReadback = (event, command, field) => fresh(field)
+    && field.readback?.measuredAt === field.measuredAt
+    && field.readback.requestedAt >= Math.max(command.acceptedAt, event.receivedAt)
+    && field.readback.receivedAt >= field.readback.requestedAt;
   // Runtime authority itself reads status. This pure preview cannot call it.
   const devicePermission = snapshot => shellyDevicePermission({ hold: state.deviceHold,
     sessionId: state.sessionId, ownedPause: state.ownedPause, lastStart: state.lastStart,
     pending: state.pending, cursor: state.permissionEventCursor, snapshot, now: clock(), maxAgeMs: adapter.config.maxAgeMs });
   async function reconcilePermissionEvents(snapshot, pending = state.pending) {
     const events = (snapshot.permissionEvents ?? []).filter(event => event.sequence > (state.permissionEventCursor ?? 0));
+    const command = pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt)
+      ? pending : state.permissionCommand;
+    const currentPermission = snapshot.fields.start_charging;
+    const possibleClockEcho = event => command?.nativeClock && event.sessionId === command.sessionId
+      && event.value === command.value && event.commandSource === 'rpc'
+      && event.receivedAt >= command.dispatchedAt && permissionClockEcho(event, command, currentPermission);
+    // Losing the current clock check cannot turn a queued own echo into a
+    // permanent manual instruction. Retain it for rechecking, while an opposite
+    // or independently dated instruction still proceeds through normal priority.
+    if (command?.nativeClock && snapshot.reboot?.epoch === command.nativeClock.epoch && events.some(possibleClockEcho)
+      && (adapter.commandClock?.()?.epoch !== command.nativeClock.epoch
+        || events.some(event => possibleClockEcho(event) && !permissionEventReadback(event, command, currentPermission)))
+      && events.every(event => event.commandSource === 'sys' || possibleClockEcho(event))) return false;
     const projected = devicePermission(snapshot);
     const before = copy(state);
     state.deviceHold = projected.hold;
@@ -1704,8 +1778,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
         await adapter.acknowledgePermissionEvents(state.permissionEventCursor);
       return false;
     }
-    const command = pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt)
-      ? pending : state.permissionCommand;
     let external = false, previousPermission = before.lastStart;
     for (const event of events) {
       state.permissionEventCursor = event.sequence;
@@ -1717,25 +1789,24 @@ export function createShellyController({ adapter, initialState, saveState = () =
         compatibilityPermission(state.compatibility, event, clock(), adapter.deviceInfo?.());
       previousPermission = event.value;
       const field = snapshot.fields.start_charging;
-      // A value-only notification has the device's event clock, while dispatch
-      // and acknowledgement use our receipt clock. An earlier fractional time
-      // in the same native setting second can still be our confirmed command.
-      // Require a correlated query after both ACK and this notification; never
-      // round the event forward, absorb an opposite event, or use cached readback.
-      // Completion may retire pending before this notification is admitted.
-      // Its retained ACK has the same authority as that accepted pending write;
-      // the late event still requires fresh readback after ACK and receipt.
+      // A notification clock dates publication, not necessarily a new setting.
+      // Its own update timestamp, or a fresh query of the matching setting,
+      // retains that distinction even after the pending command completed.
       const confirmedCommandEcho = typeof command?.value === 'boolean' && event.value === command.value
         && event.commandSource === 'rpc' && field?.commandSource === 'rpc'
-        && event.eventAt < command.dispatchedAt && event.receivedAt >= command.dispatchedAt
-        && Math.floor(event.eventAt / 1000) === Math.floor(command.dispatchedAt / 1000)
-        && fresh(field) && field.value === command.value && field.measuredAt === Math.floor(event.eventAt / 1000) * 1000
-        && field.readback?.measuredAt === field.measuredAt
-        && field.readback.requestedAt >= Math.max(command.acceptedAt, event.receivedAt)
-        && field.readback.receivedAt >= field.readback.requestedAt
-        && commandReadback(field, { ...command, stage: 'accepted' });
+        && event.receivedAt >= command.dispatchedAt
+        && (time(event.valueUpdatedAt) ? event.valueUpdatedAt === field.measuredAt : event.eventAt >= field.measuredAt)
+        && fresh(field) && field.value === command.value && field.measuredAt === Math.floor(command.dispatchedAt / 1000) * 1000
+        && permissionEventReadback(event, command, field)
+        && scopedCommandReadback(field, { ...command, stage: 'accepted' });
       const own = !external && command?.sessionId === event.sessionId && command.value === event.value
-        && (event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt || confirmedCommandEcho);
+        && event.commandSource === 'rpc'
+        && (command.nativeClock ?
+          adapter.commandClock?.()?.epoch === command.nativeClock.epoch
+          && event.receivedAt >= command.dispatchedAt && permissionClockEcho(event, command, field)
+          && permissionEventReadback(event, command, field)
+          : (event.valueUpdatedAt ?? event.eventAt) >= command.dispatchedAt
+            && (event.valueUpdatedAt ?? event.eventAt) <= command.acceptedAt || confirmedCommandEcho);
       const systemPermission = event.value !== null && event.commandSource === 'sys';
       if (own || systemPermission) continue;
       external = true;
@@ -1778,7 +1849,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     return state.ownedPause && !devicePermission(snapshot).held && state.lastStart === false && fresh(permission) && permission.value === false
       && permission.measuredAt === state.lastStartAt && command?.value === false
       && command.sessionId === state.sessionId && time(command.acceptedAt)
-      && commandReadback(permission, { ...command, stage: 'accepted' });
+      && scopedCommandReadback(permission, { ...command, stage: 'accepted' });
   };
   const ownsDueStop = () => dueStopPass && canControl()
     && acceptedGap(adapter.snapshot(), dueStopPass.input, dueStopPass.revision) === dueStopPass.execution
@@ -1966,7 +2037,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     if (terminal() || !usable()) return;
     if (test.pending) {
       const pending = test.pending;
-      const confirmed = shellyCurrentCommandReadback(current, pending);
+      const confirmed = shellyCurrentCommandReadback(current, pending, adapter.commandClock?.()?.epoch);
       if (confirmed) {
         test.permissionAt = current.measuredAt; test.pending = null;
         test.phase = test.restoreCurrentA === null ? 'active' : 'restored';
@@ -2060,13 +2131,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
       test.phase = restoring ? 'restoring' : 'applying';
       test.pending = { value: target, dispatchedAt: clock(), acceptedAt: null,
         ...(snapshot.reboot?.incident ? { bootEpoch: snapshot.reboot.epoch } : {}) };
+      captureCommandClock(test.pending);
       await persist();
-      await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
-        { mutation: true, identificationCurrent: copy(test), guard, attempt });
-      test.pending.acceptedAt = clock(); await persist();
+      const receipt = await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
+        { mutation: true, captureReceipt: true, identificationCurrent: copy(test), guard, attempt });
+      Object.assign(test.pending, commandReceiptTimes(test.pending, receipt)); await persist();
       await refreshCommandReadback('current_limit', snapshot);
       const confirmedSnapshot = adapter.snapshot(), actual = confirmedSnapshot.fields.current_limit;
-      if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
+      if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending, adapter.commandClock?.()?.epoch)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; rememberCurrent(actual);
       await persist();
@@ -2316,23 +2388,26 @@ export function createShellyController({ adapter, initialState, saveState = () =
                 const attempt = adapter.controlAttempt?.() ?? createControlAttempt();
                 try {
                 await persist();
-                await adapter.rpc('Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role: 'start_charging', value: false },
-                  { mutation: true, attempt, guard: pauseGuard, beforePublish: async () => {
+                const receipt = await adapter.rpc('Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role: 'start_charging', value: false },
+                  { mutation: true, captureReceipt: true, attempt, guard: pauseGuard, beforePublish: async () => {
                     if (!pauseGuard()) throw fail('evse-takeover-changed');
                     const prior = copy(state.pending);
                     state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
+                    captureCommandClock(state.pending);
                     try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
                   } });
+                Object.assign(state.pending, { stage: 'accepted', ...commandReceiptTimes(state.pending, receipt) });
+                state.commandAt = state.pending.dispatchedAt;
                 } catch (cause) { attempt.fail(cause); throw cause; }
                 finally { attempt.finish(); }
-                state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
+                await persist();
                 await refreshCommandReadback('start_charging', snapshot);
                 snapshot = adapter.snapshot();
                 const externalPermission = await reconcilePermissionEvents(snapshot, state.pending);
                 const readback = snapshot.fields.start_charging;
                 if (externalPermission || !takeoverContextCurrent() || !snapshot.controlReady || !fresh(readback) || readback.value !== false
-                  || !commandReadback(readback, state.pending)
-                  || readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, false)
+                  || !scopedCommandReadback(readback, state.pending)
+                  || laterPermissionInstruction(readback, state.pending) && !systemEcho(readback, false)
                   || scheduleToken(snapshot) !== expectedSchedule || snapshot.nativeScheduleRevision !== expectedScheduleRevision)
                   throw fail('evse-command-unconfirmed');
                 start = copy(readback); expectedStart = copy(readback);
@@ -2388,7 +2463,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
           }
           else if (pending.role === 'start_charging' && pending.value === false && fresh(readback) && readback.value === false
-            && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt > pending.acceptedAt && !systemEcho(readback, false))) {
+            && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || laterPermissionInstruction(readback, pending) && !systemEcho(readback, false))) {
             // A lost reply cannot attribute an arbitrary later false event to
             // this application: it could be an explicit native Stop instead.
             if (pending.owned) state.owned ??= copy(pending.owned);
@@ -2406,7 +2481,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           }
           else if (pending.role === 'start_charging' && pending.value === true && fresh(readback) && readback.commandSource === 'sys'
             && !compatibilityAcknowledgedStart({ pending, field: readback, held: devicePermission(snapshot).held,
-              correlated: acceptedReadback(readback, pending) && commandReadback(readback, pending) })) {
+              afterDispatch: afterPermissionDispatch(readback, pending),
+              correlated: acceptedReadback(readback, pending) && (scopedCommandReadback(readback, pending)
+                || pending.nativeClock && afterPermissionDispatch(readback, pending)) })) {
             // SYS alone cannot replace a missing ACK or command readback. An
             // acknowledged Start can, however, finish reconciliation through a
             // fresh correlated native query. A later SYS Stop supersedes it
@@ -2436,7 +2513,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // A known later device transition may supersede an acknowledged
             // instruction. A missing ACK remains uncertain; SYS is never an
             // external actor or permission to retry the original write.
-            if (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt <= pending.dispatchedAt) {
+            if (pending.stage !== 'accepted' || !time(pending.acceptedAt) || !afterPermissionDispatch(readback, pending)) {
               state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
             }
             rememberPermissionCommand(pending);
@@ -2714,12 +2791,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (!owned) {
             const prior = copy(state.pending);
             state.pending.stage = 'dispatched'; state.pending.dispatchedAt = clock();
+            captureCommandClock(state.pending);
             if (role === 'current_limit') state.currentCommandAt = clock();
             else state.commandAt = clock();
             try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
           }
-          await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
-            { mutation: true, attempt, guard: () => guard() && clock() < expiresAt
+          const receipt = await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
+            { mutation: true, captureReceipt: true, attempt, guard: () => guard() && clock() < expiresAt
               && sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
               && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
               && scheduleToken(adapter.snapshot()) === nativeSchedule
@@ -2749,6 +2827,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                 const prior = copy(state.pending), priorCommandAt = state.commandAt;
                 state.pending.owned = witnessed; state.pending.stage = 'dispatched';
                 state.pending.dispatchedAt = state.commandAt = clock();
+                captureCommandClock(state.pending);
                 try { await persist(); } catch (cause) {
                   state.pending = prior;
                   if (priorCommandAt === undefined) delete state.commandAt;
@@ -2759,7 +2838,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // Revoking an intent cannot erase a reply to an already sent command.
           // Save its acknowledgement before stopping work; the next reconcile
           // still requires native readback and must not replay the command.
-          state.pending.stage = 'accepted'; state.pending.acceptedAt = clock();
+          Object.assign(state.pending, { stage: 'accepted', ...commandReceiptTimes(state.pending, receipt) });
+          if (role === 'start_charging') state.commandAt = state.pending.dispatchedAt;
+          else state.currentCommandAt = state.pending.dispatchedAt;
           if (role === 'start_charging' && value === true && !identification && reason === 'economic-window') {
             compatibilityStart(state.compatibility, { at: state.pending.dispatchedAt, acceptedAt: state.pending.acceptedAt,
               origin, requestAt, currentA: adapter.snapshot().fields.current_limit.value });
@@ -2778,7 +2859,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             expectedStart = copy(readback); expectedNotificationRevision = after.notificationRevision;
             await persist(); return false;
           }
-          if (role === 'start_charging' && value === false && readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, value)) {
+          if (role === 'start_charging' && value === false && laterPermissionInstruction(readback, state.pending) && !systemEcho(readback, value)) {
             if (state.pending.owned) state.owned ??= copy(state.pending.owned);
             state.manual = manualEvent(readback);
             throw fail(state.pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed');
