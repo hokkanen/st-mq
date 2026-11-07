@@ -65,7 +65,7 @@ export function homePolicyValues(status = {}) {
   const strategy = HEATING_STRATEGIES.find(option => option.id === settings.savingsStrategy);
   const parameters = status.learning?.parameters ?? {};
   const amount = value => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(value);
-  const money = value => `€${amount(value / 100)}`;
+  const money = value => `${value < 0 ? '−' : ''}€${amount(Math.abs(value) / 100)}`;
   const trialBudget = parameters.learningTrials === false ? 'Learning trials are disabled in configuration.'
     : parameters.learningTrials === true && Number.isFinite(parameters.trialBudgetCentsPerDay) && Number.isFinite(parameters.maxTrialCostCents)
       ? `Learning trials are enabled, seeking ${Number.isFinite(parameters.learningTrialTargetPerDay) ? `${parameters.learningTrialTargetPerDay} priority opportunities per day` : 'the configured daily target'}, with further useful learning allowed within incremental cost exposure capped at ${money(parameters.maxTrialCostCents)} per trial and ${money(parameters.trialBudgetCentsPerDay)} per day. Duration follows heating demand within configured ceilings; current inputs, comfort, completed recovery and remaining budget still determine whether a trial can run. Initial exposure is a reservation that may grow inside those limits. Completed recovery permits another trial without a fixed learning cooldown.`
@@ -74,15 +74,21 @@ export function homePolicyValues(status = {}) {
   const benefit = status.decision?.plan?.trial === true
     ? 'This is a bounded learning trial, not a cycle admitted for predicted savings.'
     : Number.isFinite(economics?.lowerBenefitCents) && Number.isFinite(economics?.hurdleCents)
-      ? `Latest cycle comparison: ${money(economics.lowerBenefitCents)} conservative space-heating benefit against a ${money(economics.hurdleCents)} required benefit. Both are estimates; the current checks still determine execution.` : '';
+      ? `Latest available cycle comparison: ${money(economics.lowerBenefitCents)} conservative space-heating benefit against a ${money(economics.hurdleCents)} required benefit. Both are estimates and may be retained from an earlier calculation; current checks still determine execution.` : '';
   const durations = ['maxPreheatHours', 'maxReductionHours', 'maxAwayReductionHours', 'maxUnobservedReductionHours']
     .every(key => Number.isFinite(parameters[key]))
     ? `Configured ceilings: preheat ${amount(parameters.maxPreheatHours)} h; reduction ${amount(parameters.maxReductionHours)} h at home or ${amount(parameters.maxAwayReductionHours)} h away. Without fresh native setting observations and enabled native writes, reduction is additionally capped at ${amount(parameters.maxUnobservedReductionHours)} h. Comfort, equipment and forecast coverage can shorten these limits. Demonstrated durations describe independent validation coverage.`
     : 'Configured duration limits are unavailable.';
+  const weights = Object.entries(status.observations?.indoor?.weights ?? {}).filter(([, weight]) => Number.isFinite(weight) && weight > 0);
+  const totalWeight = weights.reduce((total, [, weight]) => total + weight, 0);
+  const sensorNames = { indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs', bedroom_temperature: 'Bedroom' };
   return {
     strategy: strategy ? `${strategy.label} (${strategy.retainedBenefitFraction * 100}%)` : 'Unavailable', strategyId: strategy?.id ?? null,
     preheat: Number.isFinite(settings.preheatRoomBoostC) ? `${amount(settings.preheatRoomBoostC)} °C` : 'Unavailable',
     maximumRise: Number.isFinite(comfort.maxRiseC) ? `${amount(comfort.maxRiseC)} °C` : 'Unavailable',
+    maximumDrop: Number.isFinite(comfort.maxDropC) ? `${amount(comfort.maxDropC)} °C` : 'Unavailable',
+    indoorAverage: totalWeight > 0 ? `Configured indoor average: ${weights.map(([key, weight]) => `${sensorNames[key] ?? 'Sensor'} ${amount(100 * weight / totalWeight)}%`).join(' · ')}. Missing sensors keep their weights; a bounded control estimate adds uncertainty and does not train the model.`
+      : 'Comfort limits use the configured indoor sensor weights. Current weights are unavailable.',
     limits: Number.isFinite(comfort.maxDropC) && Number.isFinite(comfort.maxRiseC)
       ? `−${amount(comfort.maxDropC)} / +${amount(comfort.maxRiseC)} °C` : 'Limits unavailable',
     trialBudget, benefit, durations,
@@ -95,6 +101,7 @@ export function renderHomePolicy(document, status) {
   for (const [id, value] of Object.entries({
     'home-savings-strategy': policy.strategy, 'home-preheat-setting': policy.preheat,
     'home-maximum-rise': policy.maximumRise, 'home-policy-trials': policy.trialBudget,
+    'drop': policy.maximumDrop, 'home-policy-indoor-average': policy.indoorAverage,
     'home-policy-durations': policy.durations, 'home-policy-economics': policy.benefit,
     'home-comfort-limits': status.decision?.comfort?.maxDropApplies === false ? 'Away · limits inactive' : policy.limits,
   })) {

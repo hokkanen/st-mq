@@ -252,6 +252,7 @@ try {
       ['actual-calculations', 'model-fitting', 'model-fitting'],
       ['actual-policy', 'Preheat and comfort policy', 'preheat-policy'],
       ['actual-policy', 'Recovery hold', 'recovery-hold'],
+      ['actual-policy', 'Accepted cycle continuation', 'accepted-continuation'],
     ]) {
       await evaluate(`document.querySelectorAll('#actual > section').forEach(section => { section.hidden = section.id !== '${panel}'; });
         document.querySelectorAll('#${panel} .learning-entry').forEach(row => { row.hidden = row.dataset.learningKey !== '${key}'; row.open = true; });

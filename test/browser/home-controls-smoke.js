@@ -175,6 +175,19 @@ try {
         readings: Object.fromEntries(Object.entries({ '2201': 1, '0203': 20, '0212': 45,
           '0208': 55, '1A01': 1, '1A07': 0, '3104': 0, '1A20': 0 })
           .map(([key, value]) => [key, { value, available: true, observedAt: status.now }])) };
+      if (homeFixture.modelStatus) {
+        const modelStatus = homeFixture.modelStatus;
+        status.learning = modelStatus === 'unavailable' ? {} : { ...status.learning, status: modelStatus, adaptive: null,
+          reconstruction: { status: modelStatus, reason: 'Synthetic reconstruction status.' },
+          readiness: { reasons: ['model-rebuilding'] } };
+      }
+      if (homeFixture.reviewedCycle) {
+        status.heatingScenario = {id:'synthetic-approved-cycle',status:'running'};
+        status.automation.home.enabled = false;
+        status.decision.manualHold = null;
+        status.decision.reasons = ['continuing-with-retained-estimates'];
+      }
+      if (homeFixture.sensorWeights) status.observations.indoor.weights = homeFixture.sensorWeights;
       return new Response(JSON.stringify(status), { status: response.status, headers: response.headers });
     };
     const nativeInterval = globalThis.setInterval;
@@ -186,6 +199,26 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1100, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until(`globalThis.homeFixture?.poll && document.getElementById('home-savings-strategy')?.textContent === 'Balanced (80%)'`);
+  await evaluate(`document.getElementById('home-heat-pump-details').open=true`);
+  for (const [state, title] of [['rebuilding','Rebuilding the heating model'],['reconstruction-failed','Heating model rebuild needs attention'],['unavailable','Awaiting model status']]) {
+    await evaluate(`homeFixture.modelStatus='${state}';await homeFixture.poll();document.getElementById('learning-panel-details').open=true`);
+    assert.equal(await evaluate(`document.getElementById('learning-title').textContent`), title);
+    assert.equal(await evaluate(`document.getElementById('learning-title').checkVisibility()`), true);
+    assert.doesNotMatch(await evaluate(`document.getElementById('learning-progress').textContent`), /0 usable|0 accepted/);
+    assert.equal(await evaluate(`document.querySelectorAll('#model-coefficients-content .learning-entry-unavailable').length`), 1);
+    for (const width of [390,1280]) {
+      await send('Emulation.setDeviceMetricsOverride',{width,height:1100,deviceScaleFactor:1,mobile:false});
+      await screenshot(`${width}-model-${state}`, 'learning-panel-details');
+    }
+  }
+  await evaluate(`delete homeFixture.modelStatus;homeFixture.reviewedCycle=true;homeFixture.sensorWeights={bedroom_temperature:1,indoor_temperature:2,downstairs_temperature:0};await homeFixture.poll();document.getElementById('home-preferences-details').open=true`);
+  assert.match(await evaluate(`document.getElementById('home-policy-current-detail').textContent`), /One cycle approved.*saved automatic control paused or disabled.*accepted schedule/);
+  assert.equal(await evaluate(`document.getElementById('home-policy-current-detail').checkVisibility()`), true);
+  assert.doesNotMatch(await evaluate(`document.getElementById('home-policy-current-detail').textContent`), /no automatic heating commands/);
+  assert.match(await evaluate(`document.getElementById('home-policy-indoor-average').textContent`), /Bedroom 33.33%.*Upstairs 66.67%/);
+  assert.match(await evaluate(`document.getElementById('home-preferences-details').textContent`), /Accepted cycles retain their schedule and last valid estimates/);
+  assert.doesNotMatch(await evaluate(`document.getElementById('home-preferences-details').textContent`), /lost forecast coverage.*end an action/);
+  await evaluate(`delete homeFixture.reviewedCycle;delete homeFixture.sensorWeights;await homeFixture.poll();document.getElementById('learning-panel-details').open=false;document.getElementById('home-preferences-details').open=false`);
   await evaluate(`document.getElementById('home-heat-pump-details').open = true`);
   await evaluate(`homeFixture.planningReference = true; await homeFixture.poll()`);
   await until(`document.getElementById('reference').textContent === '21.4 °C'`);

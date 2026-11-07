@@ -8,6 +8,10 @@ one-cycle application.
 
 ## Read the plan
 
+The first capture shows one loading status. If it fails, **Retry loading** starts
+a new read. Later refreshes keep the captured plan and edited limits visible;
+a failed refresh leaves that comparison stale and unavailable for approval.
+
 The plan describes the selected preheat, reduction and recovery phases. Times
 use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. The predicted recovery period includes checking indoor and stored heat
@@ -54,6 +58,14 @@ cover reduction and preheat duration, permitted indoor-average drop and rise,
 savings strategy and the native ROOM increase used for preheat. The ceiling is
 the maximum permitted duration; it does not force the planner to choose that
 duration. Several limits can be changed together.
+
+An approved cycle appears below the current plan. Its status, approval and
+execution times, authorization deadline and outcome assessment are separate.
+**Approved limits** expands the original authorized values without changing them.
+A future authorization deadline does not mean an interrupted or completed cycle
+is still active. Missing recovery evidence leaves savings unassessed; restoration
+remains independent. Recorded cost differences still use an estimated Normal
+heating reference and do not establish measured savings or model validation.
 
 The main controls remain visible on narrow and wide screens. Less frequently
 changed budget and economic controls are under **Advanced settings**, initially

@@ -1,3 +1,4 @@
+import { heatingReasonText } from './heating-reasons.js';
 import { createAutomationControls } from './automation-controls.js';
 import { createReadOnlyControls, assertDashboardWrite } from './dashboard-access.js';
 import { dashboardConnectionView, observeDashboardHealth, observeDashboardStatus, retainDashboardHealth,
@@ -135,32 +136,6 @@ const decimal = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB',
 const label = value => String(value ?? '').replaceAll(/[_-]/g, ' ');
 const tariffNames = { 'day-night': 'Day / night', seasonal: 'Seasonal' };
 const weatherStatuses = { simulated: 'Synthetic weather', available: 'Forecast available', 'partial-forecast-coverage': 'Forecast has missing intervals', 'missing-forecast': 'Waiting for a forecast', 'stale-forecast': 'Forecast is stale' };
-const reasons = {
-  'accepted-cycle-scheduled': 'Waiting for the accepted cycle to start at its scheduled time',
-  'complete-cycle-in-progress': 'The selected heating cycle is in progress',
-  'continuing-with-retained-estimates': 'Keeping the accepted schedule while current planning data is unavailable',
-  'continuing-during-model-rebuild': 'Keeping the accepted schedule while the heating model rebuilds',
-  'delivered-heat-upper-limit': 'Preheat ended at the upper temperature limit; reduction retained',
-  'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit',
-  'configured-preheat-limit-reached': 'Preheat ended at its duration limit; reduction retained',
-  'configured-reduction-limit-changed': 'The reduction was shortened to match the changed duration limit',
-  'recovery-start-established': 'The executed reduction end follows the recorded start of recovery',
-  'remaining-preheat-rescheduled': 'The remaining preheat was adjusted while preserving the reduction schedule',
-  'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery',
-  'unvalidated-thermal-model': 'Learning how the house holds and recovers heat',
-  'unvalidated-heating-energy-model': 'Heating electricity use is not yet reliable enough to optimize',
-  'thermal-state-reconciliation': 'Checking thermal reserve after startup',
-  'reconciling-thermal-reserve': 'Allowing time to establish the current heat reserve',
-  'learning-normal-comfort-reference': 'Learning the temperature achieved with normal heating',
-  'awaiting-tariff-response-evidence': 'Learning how the heat pump responds to tariff control',
-  'timed-normal-override': 'Price control is paused',
-  'missing-or-stale-observations': 'Waiting for fresh temperature observations',
-  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
-  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
-  'indoor-comfort-limit': 'The indoor average has reached its permitted temperature limit',
-  'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
-  'continuous-normal-preferred': 'Continuous normal operation is preferred',
-};
 function lockScreen({ authenticationFailed = false } = {}) {
   eventLog.clear();
   heatingExplorer.clear();
@@ -951,9 +926,11 @@ function render(s) {
   const manualConfirmed = manualHold && heatingModeSelection(s).confirmed && heatingModeSelection(s).phase === manualHold.phase;
   const requested = label(manualHold?.phase ?? s.observations?.actual?.requestedPhase ?? s.decision.phase ?? (s.decision.action === 'normal' ? 'Normal' : 'Reduction')).replace(/^./, value => value.toUpperCase())
     + (manualHold ? manualConfirmed ? ' · held' : ' · requested' : '');
+  const reviewedCycle = ['pending', 'running'].includes(s.heatingScenario?.status);
   const controlMode = replica ? 'Recorded controller decision · current control state unavailable'
-    : s.input === 'simulated' ? `Simulation · ${s.automation?.home?.enabled ? 'applying this plan' : 'paused'}`
-      : manualHold ? 'Holding manual heating settings'
+    : manualHold ? 'Holding manual heating settings'
+      : reviewedCycle ? `${s.input === 'simulated' ? 'Simulation · ' : ''}One cycle approved · saved automatic control ${s.automation?.home?.enabled ? 'enabled' : 'paused or disabled'}. Current device readiness still governs execution`
+      : s.input === 'simulated' ? `Simulation · ${s.automation?.home?.enabled ? 'applying this plan' : 'paused'}`
         : s.automation?.home?.available === false ? s.automation.home.reason || 'Automatic heating is unavailable'
           : s.automation?.home?.activity === 'paused' ? 'Automatic heating is paused'
         : s.automation?.home?.enabled ? 'Automatic · applying the heating plan'
@@ -964,8 +941,7 @@ function render(s) {
   const heldMode = ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   const decisionReasons = manualHold
     ? `${heldMode} is ${manualConfirmed ? 'held' : 'requested'} ${manualHold.until == null ? 'until you select another mode or Automatic' : `until ${time(manualHold.until)}`}. ${manualHold.phase === 'preheat' ? 'ROOM is restored at the original lease deadline; Normal or Reduced ends Preheat sooner.' : 'Selecting Automatic restores normal settings and reassesses the heating plan.'} Heat-pump parameter edits remain in effect.`
-    : (s.decision.reasons ?? []).map(r => (reasons[r] ?? label(typeof r === 'string' ? r : r.message ?? r.code))
-      .trim().replace(/^./, value => value.toUpperCase())).join('. ');
+    : (s.decision.reasons ?? []).map(r => heatingReasonText(r).trim().replace(/\.+$/, '').replace(/^./, value => value.toUpperCase())).join('. ');
   const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
     ? `${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.` : '';
   setHeatingStatusDetail($('requested'), { key: 'home-heating-request', label: requested, title: 'Home heating request',
@@ -991,7 +967,6 @@ function render(s) {
   renderHomePolicy(document, s);
   $('home-policy-current-title').textContent = `${replica ? 'Recorded plan' : manualHold ? 'Held request' : 'Current plan'} · ${heatingCommandLabel(manualHold?.phase ?? s.decision.phase ?? s.decision.action ?? 'Unavailable')}`;
   $('home-policy-current-detail').textContent = [controlMode, decisionReasons, recoveryDetail].filter(Boolean).join(' · ');
-  $('drop').textContent = `${s.settings?.comfort?.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   $('rise-note').textContent = $('drop-note').textContent;
   renderLearning(s);

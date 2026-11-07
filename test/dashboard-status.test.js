@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { learningOverview, settingsReloadScope } from '../chart/dashboard-status.js';
 
+test('model overview distinguishes rebuilding and failed reconstruction from absent status', () => {
+  const rebuilding = learningOverview({ status: 'rebuilding', adaptive: null });
+  assert.equal(rebuilding.title, 'Rebuilding the heating model');
+  assert.match(rebuilding.summary, /Accepted schedules retain their original windows/);
+  assert.equal(rebuilding.usableSamples, null);
+  const failed = learningOverview({ status: 'reconstruction-failed', adaptive: null });
+  assert.equal(failed.title, 'Heating model rebuild needs attention');
+  assert.match(failed.summary, /could not finish/);
+  assert.doesNotMatch(failed.summary, /passed|ready|zero/i);
+});
+
 test('replica overviews identify saved evidence without presenting live control readiness', () => {
   const home = learningOverview({ reconstruction: 'snapshot', adaptive: { health: {
     status: 'learning', usableSamples: 120, acceptedFits: 3 } } });

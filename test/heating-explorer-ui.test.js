@@ -1,8 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText } from '../chart/heating-explorer.js';
+import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands, heatingEvidenceText, heatingApprovalText, heatingTrialDetails } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
+test('one-cycle details separate authorization, execution and missing recovery evidence', () => {
+  const details = heatingTrialDetails({ controls: [
+    { key: 'maxReductionHours', label: 'Maximum reduction', unit: 'h' },
+    { key: 'minimumHomeBenefitCents', label: 'Minimum estimated saving', unit: 'cents' },
+    { key: 'learningTrials', label: 'Enable learning trials' },
+  ], activeTrial: { status: 'interrupted', approvedAt: now, endedAt: now + 60_000, expiresAt: now + 12 * 3_600_000,
+    reason: 'recovery-evidence-unavailable', learningTrials: false,
+    limits: { maxReductionHours: .25, minimumHomeBenefitCents: -150 } } });
+  assert.equal(details.status, 'Interrupted');
+  assert.deepEqual(details.dates.map(([label]) => label), ['Approved', 'Ended', 'Authorization deadline']);
+  assert.match(details.reason, /missing evidence prevented recovery confirmation/);
+  assert.doesNotMatch(details.reason, /recovery-evidence-unavailable/);
+  assert.match(details.assessment, /Savings remain unassessed/);
+  assert.deepEqual(details.metrics, []);
+  assert.deepEqual(details.limits, [['Maximum reduction', '0.25 h'], ['Minimum estimated saving', '-150 cents'], ['Enable learning trials', 'Off']]);
+});
+test('one-cycle assessments retain unavailable values, valid zero and estimated extra cost', () => {
+  for (const status of ['pending', 'running']) {
+    const detail = heatingTrialDetails({ activeTrial: { status, approvedAt: now, latestStartAt: now, expiresAt: now + 60_000 } });
+    assert.match(detail.assessment, /if recorded evidence is sufficient/);
+    assert.equal(detail.dates.some(([label]) => label === 'Latest start'), status === 'pending');
+  }
+  for (const profitCents of [-42, 0, null]) {
+    const detail = heatingTrialDetails({ activeTrial: { status: 'completed',
+      outcome: { profitCents, recoveryErrorCents: 0, uncertaintyCents: null } } });
+    assert.match(detail.assessment, profitCents === null ? /savings assessment is unavailable/ : /estimated Normal heating reference/);
+    assert.deepEqual(detail.metrics, [
+      [profitCents < 0 ? 'Estimated extra cost' : 'Estimated space-heating saving', profitCents === null ? 'Unavailable' : profitCents === 0 ? '€0.00' : '€0.42'],
+      ['Recovery cost forecast error', '€0.00'], ['Cost uncertainty', 'Unavailable'],
+    ]);
+  }
+  assert.equal(heatingTrialDetails({}), null);
+});
 test('a stale controller snapshot directs the user to recording health without exposing raw errors', async () => {
   const state = createHeatingExplorerState({ request: async () => {
     throw Object.assign(new Error('sensitive household diagnostic'), { status: 503, code: 'heating_snapshot_unavailable' });

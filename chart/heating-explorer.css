@@ -21,8 +21,12 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-dialog .heating-explorer-message { margin: 0; padding: 14px var(--ui-surface-inset); color: var(--muted); }
 .heating-explorer-message:empty { display: none; }
 .heating-explorer-message[data-error="true"] { color: var(--error-text); background: var(--error-bg); }
+.heating-explorer-dialog .heating-explorer-message[data-loading="true"] { display: flex; justify-content: center; align-items: center; gap: 12px; min-height: 140px; box-sizing: border-box; }
+.heating-explorer-message[data-loading="true"]::before { content: ''; flex: none; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: heating-explorer-loading 1s linear infinite; }
+@keyframes heating-explorer-loading { to { transform: rotate(360deg); } }
 .heating-explorer-section { margin: 0 var(--ui-surface-inset); padding: 22px 0; border-bottom: 1px solid var(--border); }
 #heating-explorer-comparison-section, #heating-explorer-form, #heating-simulator-title { scroll-margin-top: 155px; }
+#heating-explorer-trial { scroll-margin-top: var(--heating-explorer-control-scroll-margin, 155px); }
 .heating-explorer-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .heating-explorer-section-heading > .muted { font-size: 10px; }
 .heating-explorer-tag { display: inline-block; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 10px; white-space: nowrap; }
@@ -110,9 +114,23 @@ label.heating-explorer-learning-toggle { display: flex; flex-direction: row; ali
 .heating-explorer-table thead th { color: var(--muted); font-size: 10px; font-weight: 500; }
 .heating-explorer-application { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
 .heating-explorer-application button { margin-top: 5px; font-size: 11px; }
+.heating-explorer-facts { margin: 12px 0; font-size: 11px; line-height: 1.6; }
+.heating-explorer-facts > div { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 8px 16px; padding-block: 7px; border-bottom: 1px solid var(--border); }
+.heating-explorer-facts > div:last-child { border-bottom: 0; }
+.heating-explorer-facts dt { color: var(--muted); overflow-wrap: anywhere; }
+.heating-explorer-facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.heating-explorer-trial-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 16px; }
+.heating-explorer-trial-dates > div { display: block; padding: 0; border: 0; }
+.heating-explorer-trial-dates dd { margin-top: 3px; text-align: start; }
+.heating-explorer-trial-outcome { margin-block: 16px; padding: 12px var(--ui-inset); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; }
+.heating-explorer-trial-outcome > p:last-child { margin-bottom: 0; }
+.heating-explorer-trial-outcome .heating-explorer-facts { margin-bottom: 0; }
+.heating-explorer-trial > .muted { font-size: 11px; margin-block: 14px; }
+.heating-explorer-trial > button { font-size: 11px; }
 .heating-explorer-footnotes { padding: 18px var(--ui-surface-inset) 24px; }
 .heating-explorer-footnotes ul { padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .heating-explorer-footnotes p { font-size: 11px; color: var(--muted); }
+.heating-explorer-footnotes h4 { margin-top: 16px; }
 @media (max-width: 650px) {
   .heating-explorer-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: 10px; }
   .heating-explorer-header { padding: 20px var(--ui-surface-inset) 16px; gap: 10px; }
@@ -135,5 +153,8 @@ label.heating-explorer-learning-toggle { display: flex; flex-direction: row; ali
   #heating-explorer-context { margin-inline: var(--ui-surface-inset); }
   .home-plan-open { font-size: 0; gap: 0; }
 }
-@media (prefers-reduced-motion: reduce) { .heating-explorer-dialog * { scroll-behavior: auto; } }
+@media (prefers-reduced-motion: reduce) {
+  .heating-explorer-dialog * { scroll-behavior: auto; }
+  .heating-explorer-message[data-loading="true"]::before { animation: none; }
+}
 .heating-explorer-dialog .heating-explorer-jump { margin-top: 14px; min-height: 36px; font-size: 11px; }

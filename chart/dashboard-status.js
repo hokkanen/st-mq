@@ -10,7 +10,13 @@ export function learningOverview(learning = {}) {
   const usableSamples = count(health.usableSamples), acceptedFits = count(health.acceptedFits);
   let status = 'unavailable', title = 'Awaiting model status';
   let summary = 'Learning status is not available yet.';
-  if (reported === 'prior-estimates') {
+  if (reported === 'rebuilding') {
+    status = 'rebuilding'; title = 'Rebuilding the heating model';
+    summary = 'Recorded inputs are being replayed. Accepted schedules retain their original windows; new plans wait for the model.';
+  } else if (reported === 'reconstruction-failed') {
+    status = 'reconstruction-failed'; title = 'Heating model rebuild needs attention';
+    summary = 'Model reconstruction could not finish. Check the learning evidence for details; equipment readiness and restoration remain separate.';
+  } else if (reported === 'prior-estimates') {
     status = 'initial'; title = 'Initial estimates';
     summary = 'The house model is collecting evidence before replacing its starting estimates.';
   } else if (reported === 'retained-previous') {

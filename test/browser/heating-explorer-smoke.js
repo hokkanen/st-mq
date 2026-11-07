@@ -256,8 +256,29 @@ try {
   await evaluate(`delete explorerFixture.planner; await explorerFixture.poll()`);
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(`document.getElementById('home-planned-change').focus(); globalThis.initialHomeFold = document.getElementById('home-heat-pump-details').open`);
-  await evaluate('explorerFixture.delayReadMs = 21_000');
+  await evaluate('explorerFixture.refreshFailure = true');
   await keyPress('Enter');
+  await until(`document.getElementById('heating-explorer-message').dataset.error === 'true'`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-content').hidden`), true);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-refresh').textContent`), 'Retry loading');
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-refresh').checkVisibility()`), true);
+  assert.doesNotMatch(await evaluate(`document.getElementById('heating-explorer-message').textContent`), /Synthetic private/);
+  await screenshot('initial-loading-failure');
+  await evaluate(`explorerFixture.refreshFailure = false; explorerFixture.delayReadMs = 21_000; document.getElementById('heating-explorer-refresh').click()`);
+  await until(`document.getElementById('heating-explorer-message').dataset.loading === 'true'`);
+  for (const width of [320, 1280]) for (const theme of ['light', 'dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    assert.equal(await evaluate(`document.getElementById('heating-explorer-snapshot-bar').checkVisibility()`), false,
+      'Initial loading has one status and no duplicate snapshot toolbar');
+    assert.equal(await evaluate(`document.getElementById('heating-explorer-message').textContent`), 'Loading current conditions…');
+    assert.equal(await evaluate(`document.getElementById('heating-explorer-close').disabled`), false);
+    assert(await evaluate(`(() => {const d=document.getElementById('heating-explorer-dialog');return d.scrollWidth<=d.clientWidth+1;})()`));
+    await screenshot(`${width}-${theme}-initial-loading`);
+  }
+  await send('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  assert.equal(await evaluate(`getComputedStyle(document.getElementById('heating-explorer-message'),'::before').animationName`), 'none');
+  await send('Emulation.setEmulatedMedia', {features:[]});
   await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`, 28_000);
   assert.equal(await evaluate(`document.getElementById('home-heat-pump-details').open === initialHomeFold`), true, 'Opening explorer does not toggle Home disclosure');
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true');
@@ -514,6 +535,10 @@ try {
   await until(`document.getElementById('heating-explorer-chart-uncertainty').textContent.includes('gaps are unknown')`);
   assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart polygon').length`), 2,
     'The allowance preserves an unsupported interval between independently supported segments');
+  await evaluate(`explorerFixture.value.scenario.trajectory[10].indoorC=null;document.getElementById('heating-explorer-form').requestSubmit()`);
+  await until(`!document.getElementById('heating-explorer-calculate').disabled`);
+  assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart path')[1].getAttribute('d').split('M').length-1`), 2,
+    'The indoor forecast line does not bridge an unavailable interval');
   assert.match(await evaluate(`document.querySelector('#heating-explorer-constraints [data-status="limiting"]').textContent`), /Limits this search/);
   await evaluate(`explorerFixture.value.scenario.trajectory = originalHeatingTrajectory;
     document.getElementById('heating-explorer-form').requestSubmit()`);
@@ -553,13 +578,44 @@ try {
   await until(`document.getElementById('heating-explorer-receipt').textContent.includes('approved')`);
   assert.deepEqual(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).map(r=>r.body)`), [{previewId:'synthetic-reviewed-preview'}]);
   await evaluate(`explorerFixture.value.activeTrial.status='running';document.getElementById('heating-limit-maxDropC').value='1.75';document.getElementById('heating-limit-maxDropC').dispatchEvent(new Event('input',{bubbles:true}))`);
-  await until(`await explorerFixture.poll();return document.getElementById('heating-explorer-trial-description').textContent.startsWith('running')`);
+  await until(`await explorerFixture.poll();return document.getElementById('heating-explorer-trial-status').textContent === 'In progress'`);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxDropC').value`),'1.75','Actual cycle polling preserves the hypothetical draft');
+  assert.match(await evaluate(`document.getElementById('heating-explorer-application-help').textContent`), /Compare your edited limits/);
+  await evaluate(`document.getElementById('heating-explorer-trial-limits').open=true;await explorerFixture.poll();await new Promise(resolve=>setTimeout(resolve,1100))`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-trial-limits').open`), true, 'Cycle details preserve disclosure state during polling and ticks');
   await evaluate(`document.getElementById('heating-explorer-cancel').click()`);
   await until(`document.getElementById('heating-explorer-receipt').textContent.includes('cancelled')`);
-  await evaluate(`explorerFixture.value.activeTrial.status='completed';explorerFixture.value.activeTrial.outcome={profitCents:42,recoveryErrorCents:-7,uncertaintyCents:15}`);
-  await until(`await explorerFixture.poll();return document.getElementById('heating-explorer-trial-description').textContent.includes('€0.42')`);
-  assert.match(await evaluate(`document.getElementById('heating-explorer-trial-description').textContent`),/does not establish validation/);
+  await evaluate(`explorerFixture.value.activeTrial.status='completed';explorerFixture.value.activeTrial.outcome={profitCents:42,recoveryErrorCents:7,uncertaintyCents:15}`);
+  await until(`await explorerFixture.poll();return document.getElementById('heating-explorer-trial-outcome').textContent.includes('€0.42')`);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-trial').textContent`),/does not establish model validation/);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-cancel').hidden`), true);
+  for (const status of ['pending', 'running', 'interrupted', 'completed', 'cancelled', 'expired', 'rejected']) {
+    await evaluate(`Object.assign(explorerFixture.value.activeTrial,{status:'${status}',reason:${status === 'interrupted' ? "'recovery-evidence-unavailable'" : 'null'},
+      outcome:${status === 'completed' ? '{profitCents:-42,recoveryErrorCents:0,uncertaintyCents:null}' : 'null'},
+      limits:{maxReductionHours:.25,maxPreheatHours:.25,preheatRoomBoostC:1,minimumHomeBenefitCents:-150,economicUncertaintyFloorCents:10,savingsStrategy:'gentle'}});
+      await explorerFixture.poll()`);
+    assert.equal(await evaluate(`document.getElementById('heating-explorer-cancel').hidden`), !['pending','running'].includes(status));
+    if (status === 'interrupted') {
+      assert.match(await evaluate(`document.getElementById('heating-explorer-trial-description').textContent`), /missing evidence prevented recovery confirmation/);
+      assert.match(await evaluate(`document.getElementById('heating-explorer-trial-outcome-summary').textContent`), /Savings remain unassessed/);
+    }
+    if (status === 'completed') assert.match(await evaluate(`document.getElementById('heating-explorer-trial-outcome').textContent`), /Estimated extra cost€0.42.*forecast error€0.00.*uncertaintyUnavailable/);
+    for (const width of [280,390,1280]) for (const theme of ['light','dark']) {
+      await send('Emulation.setDeviceMetricsOverride', {width,height:900,deviceScaleFactor:1,mobile:false});
+      await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-trial-limits').open=true;document.getElementById('heating-explorer-trial').scrollIntoView({block:'start'})`);
+      await evaluate(`await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame)`);
+      const geometry = await evaluate(`(() => {const d=document.getElementById('heating-explorer-dialog');return {fits:d.scrollWidth<=d.clientWidth+1,
+        rows:[...document.querySelectorAll('#heating-explorer-trial .heating-explorer-facts > div')].map(row=>({fits:row.scrollWidth<=row.clientWidth+1}))};})()`);
+      assert(geometry.fits && geometry.rows.every(row=>row.fits), `${width}/${theme}/${status}: cycle dates, limits and outcome fit`);
+      assert.deepEqual(await evaluate(`(${uiSpacingFailures.toString()})()`), [], 'Cycle details use shared spacing');
+      if (['interrupted','completed'].includes(status)) {
+        await screenshot(`${width}-${theme}-cycle-${status}-expanded`);
+        await evaluate(`document.getElementById('heating-explorer-trial-limits').open=false;document.getElementById('heating-explorer-trial').scrollIntoView({block:'start'})`);
+        assert(await evaluate(`document.getElementById('heating-explorer-trial-title').getBoundingClientRect().top>=document.querySelector('.heating-explorer-header').getBoundingClientRect().bottom`), 'Cycle heading stays below the sticky window header');
+        await screenshot(`${width}-${theme}-cycle-${status}`);
+      }
+    }
+  }
   await evaluate(`document.getElementById('heating-explorer-refresh').click()`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxDropC').value`),'1.75','Refreshing conditions preserves the edited draft');

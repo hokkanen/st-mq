@@ -3,6 +3,45 @@ import assert from 'node:assert/strict';
 import { learningDisplay, modelCoefficientDescriptions, h66Control, h66ReadingValue, h66ReadingStatus, h66HomeSummary, h66EquipmentSummary } from '../chart/learning-status.js';
 import { initialAdaptiveModel, thermalEvidenceReady } from '../src/control/adaptive-learning.js';
 
+test('learning disclosures describe accepted continuation and unfunded exposure without revoking intent', () => {
+  const display = learningDisplay({ parameters: { learningTrials: true, maxTrialCostCents: 150 } },
+    { settings: { savingsStrategy: 'gentle', comfort: { maxDropC: 1, maxRiseC: 1 } } });
+  const continuation = display.policyRows.find(row => row.key === 'Accepted cycle continuation');
+  assert.match(continuation.detail, /last valid estimates.*unavailable planning data or model rebuilding/);
+  assert.match(JSON.stringify(continuation.calculation), /no forecast-uncertainty padding.*budget overrun alone retain.*timeout cannot extend/);
+  const budget = display.policyRows.find(row => row.key === 'Learning trial budget');
+  assert.match(JSON.stringify(budget), /existing trial retains its accepted schedule.*overrun alone does not establish/);
+  assert.doesNotMatch(JSON.stringify(budget), /Unknown exposure does not grant continuation/);
+});
+
+test('unreported model evidence is not presented as zero assessments or failed checks', () => {
+  const display = learningDisplay({ adaptive: { health: { usableSamples: 12 } }, readiness: {} });
+  assert.match(display.message, /current model is unavailable/);
+  assert.match(display.metrics[0].evidence, /Assessment count is unavailable/);
+  assert.doesNotMatch(display.metrics[0].evidence, /0 assessed/);
+  const readiness = display.evidenceRows.find(row => row.key === 'Action readiness');
+  assert.equal(readiness.value, 'Readiness not reported');
+  assert.match(readiness.detail, /Temperature prediction: not reported.*input prerequisites: not reported/);
+  assert.doesNotMatch(readiness.detail, /prerequisites: not met/);
+  assert.match(display.evidenceRows.find(row => row.key === 'Retained observations').detail, /— accepted model updates/);
+});
+
+test('pending floor release stays visible when floor control is disabled', () => {
+  const display = learningDisplay({}, { preheatValves: { enabled: false, active: true, restorationPending: true } });
+  const row = display.policyRows.find(row => row.key === 'Valve override lease');
+  assert.equal(row.value, 'Release pending');
+  assert.match(JSON.stringify(row.calculation), /fresh GPIO readback is still needed to confirm OFF/);
+});
+
+test('readiness and planner decisions share authored explanations instead of raw codes', () => {
+  const display = learningDisplay({ readiness: { reasons: ['awaiting-held-out-thermal-trajectories', 'model-rebuilding'] },
+    trials: { blockingReason: 'normal-operation-preferred' } });
+  const readiness = display.evidenceRows.find(row => row.key === 'Readiness conditions');
+  assert.match(readiness.detail, /Temperature response needs independent checks.*Accepted schedules retain/);
+  assert.doesNotMatch(readiness.detail, /awaiting-held|model-rebuilding/);
+  assert.match(display.evidenceRows.find(row => row.key === 'Daily learning trials').detail, /Normal heating is preferred/);
+});
+
 test('every thermal parameter and additional numeric initial assumption has a coefficient disclosure', () => {
   const model = initialAdaptiveModel({ homeModel: { internalCPerHour: .0275, dutyPerDegree: .0123456,
     balanceTemperatureC: 16.75, reductionRatio: .3, preheatRatio: 1.2, trajectoryErrorC: .45 },

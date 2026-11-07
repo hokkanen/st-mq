@@ -213,7 +213,8 @@
                         <div><dt>Maximum drop</dt><dd><strong id="drop">—</strong><small id="drop-note">When you are home</small></dd></div>
                         <div><dt>Maximum rise</dt><dd><strong id="home-maximum-rise">—</strong><small id="rise-note">When you are home</small></dd></div>
                       </dl>
-                      <p>Comfort limits apply to the configured indoor average. Bedroom has half the default weight; Upstairs and Downstairs each have a quarter. Individual room temperatures remain visible, but do not impose separate limits.</p>
+                      <p id="home-policy-indoor-average">Comfort limits use the configured indoor sensor weights.</p>
+                      <p>Individual room temperatures remain visible, but do not impose separate limits.</p>
                       <p class="heating-policy-note">Both limits constrain the occupied indoor-average forecast, including temperature uncertainty and any missing-sensor allowance. Away mode lifts these occupied limits until your return; the plan includes reheating costs and checks the limits again from the return time.</p>
                       <p class="heating-policy-note">Configured comfort limits apply from startup, including while the normal-temperature reference is still being learned. The initial planning reference and a supported learned Normal reference remain distinct.</p>
                     </section>
@@ -221,16 +222,17 @@
                       <h5 id="home-decision-process-title">How decisions are made</h5>
                       <ol class="heating-policy-steps">
                         <li><strong>Compare complete heating cycles.</strong> Forecast normal heating alongside possible reductions, with optional preheating. Use current temperatures, stored heat, weather and all-in electricity prices; include recovery, auxiliary heat and the estimated cost of any heat still owed at the end.</li>
-                        <li><strong>Check comfort and available control.</strong> Reject forecasts outside average-temperature limits, supported equipment capabilities or configured duration limits. Recheck the chosen plan before it starts and while it runs. Missing required readings, lost forecast coverage or exceeded limits prevent or end an action.</li>
+                        <li><strong>Check comfort and available control.</strong> New plans need usable readings, forecast coverage, equipment capability and temperature and duration limits. Accepted cycles retain their schedule and last valid estimates while planning data is unavailable. Current device readiness and native protection still govern commands.</li>
                         <li><strong>Screen economic changes.</strong> Deduct uncertainty from estimated savings, then require the result to exceed the configured minimum saving plus any cycle start, temperature deviation and duration penalties. Among eligible plans, compare the temperature deviation penalty first, then combined preheat and reduction duration, while retaining the strategy’s share of the best benefit. An explicitly reviewed manual minimum below zero can permit estimated extra cost.</li>
                         <li><strong>Consider additional learning.</strong> Enabled trials can prioritize a useful experiment within their cost allowance, including a trial with lower estimated savings than an economic alternative. The price threshold is a learning priority, not a price ceiling or a guarantee that savings periods are unaffected. When no action qualifies, normal heating remains in charge.</li>
                       </ol>
+                      <p class="heating-policy-note">An accepted cycle keeps its original window across restart or model rebuilding. Active temperature protection uses the predicted effect of heat or cooling already delivered, without adding forecast uncertainty to the stop threshold. Ending preheat can preserve the scheduled reduction. An economic exit needs a complete comparison including restoration and recovery; unavailable data or a budget overrun alone does not justify cancellation.</p>
                       <p class="heating-policy-note">The <a class="heating-policy-link" href="#learning-panel-details" data-policy-model-link="learning-panel-details">Home heat model</a> supplies temperature, heat-reserve and equipment-response estimates. The initialized model supports plans while independent validation accumulates. Current measurements, forecasts, equipment capability and configured limits determine which actions can run; automatic permission or explicit one-cycle approval authorizes execution.</p>
                       <p class="heating-policy-note">Savings estimates cover space heating, including recovery. They compare modelled alternatives; changes in hot-water service prevent a whole-house savings claim.</p>
                       <details class="equipment-fold heating-policy-details">
                         <summary>Learning trials &amp; forecast limits</summary>
                         <p id="home-policy-trials" class="heating-policy-note">Learning-trial settings are unavailable.</p>
-                        <p class="heating-policy-note">Enabled learning trials supplement economic planning during initialization and later operation, with separate cost-exposure, cold and delayed-overheating checks. An initial exposure estimate reserves allowance; an active trial may reserve more within its per-cycle and daily limits. A trial gathers evidence and may cost money. An attempt or completed trial does not by itself establish accepted learning or a validated savings forecast.</p>
+                        <p class="heating-policy-note">Enabled learning trials supplement economic planning during initialization and later operation, with separate cost-exposure, cold and delayed-overheating checks. An initial estimate reserves allowance; an active trial can reserve more within its funding limits. An unfunded overrun is reported and reduces later automatic allowance; it does not by itself end the accepted cycle. A trial may cost money, and missing evidence can leave its outcome unassessed.</p>
                         <p class="heating-policy-note">The forecast and comfort limits use the same configured indoor average. A bounded estimate can bridge one unavailable room, with an extra uncertainty allowance. No new learning trial starts with an estimated room, and inferred readings never train the model or fill measured history.</p>
                       </details>
                     </section>
@@ -1670,7 +1672,7 @@ G_warming = G / 2</code>
       <div><p class="heating-explorer-eyebrow">Home · Heating</p><h2 id="heating-explorer-title">Plan &amp; possibilities</h2><p id="heating-explorer-intro" class="muted">Understand the plan. Explore what different limits could change.</p></div>
       <button id="heating-explorer-close" type="button" class="secondary-button heating-explorer-close" aria-label="Close heating plan">×</button>
     </header>
-    <div class="heating-explorer-snapshot"><span id="heating-explorer-snapshot">Loading current conditions…</span><button id="heating-explorer-refresh" class="secondary-button" type="button">Refresh conditions</button></div>
+    <div id="heating-explorer-snapshot-bar" class="heating-explorer-snapshot" hidden><span id="heating-explorer-snapshot"></span><button id="heating-explorer-refresh" class="secondary-button" type="button">Refresh conditions</button></div>
     <p id="heating-explorer-message" class="heating-explorer-message" role="status" aria-live="polite"></p>
     <p id="heating-explorer-receipt" class="heating-explorer-message" role="status" aria-live="polite"></p>
     <div id="heating-explorer-content" aria-busy="false" hidden>
@@ -1680,6 +1682,22 @@ G_warming = G / 2</code>
         <p id="heating-explorer-reason" class="muted"></p>
         <ol id="heating-explorer-timeline" class="heating-explorer-timeline" aria-label="Current planned heating phases"></ol>
         <button id="heating-explorer-jump" type="button" class="secondary-button heating-explorer-jump">Explore different limits ↓</button>
+      </section>
+      <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-trial" aria-labelledby="heating-explorer-trial-title" hidden>
+        <div class="heating-explorer-section-heading"><h3 id="heating-explorer-trial-title">One-cycle limits</h3><span id="heating-explorer-trial-status" class="heating-explorer-tag"></span></div>
+        <dl id="heating-explorer-trial-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
+        <p id="heating-explorer-trial-description"></p>
+        <div class="heating-explorer-trial-outcome">
+          <h4>Outcome assessment</h4>
+          <p id="heating-explorer-trial-outcome-summary"></p>
+          <dl id="heating-explorer-trial-outcome" class="heating-explorer-facts"></dl>
+        </div>
+        <details id="heating-explorer-trial-limits" class="heating-explorer-advanced">
+          <summary>Approved limits</summary>
+          <dl id="heating-explorer-trial-values" class="heating-explorer-facts"></dl>
+        </details>
+        <p class="muted">Recovery and equipment restoration remain the controller’s responsibility. Check Home learning outcomes for recorded evidence; a single cycle does not establish model validation.</p>
+        <button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel one-cycle limits</button>
       </section>
       <section id="heating-explorer-opportunities-section" class="heating-explorer-section" aria-labelledby="heating-opportunities-title" hidden>
         <h3 id="heating-opportunities-title">Opportunity to review</h3><div id="heating-explorer-opportunities"></div>
@@ -1691,7 +1709,7 @@ G_warming = G / 2</code>
       </section>
       <section class="heating-explorer-section heating-explorer-workbench" aria-labelledby="heating-simulator-title">
         <div class="heating-explorer-section-heading"><h3 id="heating-simulator-title">Explore different limits</h3><span class="heating-explorer-tag">Preview only</span></div>
-        <p class="muted">Adjust temperature and timing limits, then compare a preview. The planner chooses the duration. Nothing changes in live control until you approve one cycle.</p>
+        <p class="muted">Adjust temperature and timing limits, then compare a preview. The planner chooses the duration. Exploring leaves live settings unchanged; automatic control continues under its existing permissions.</p>
         <form id="heating-explorer-form">
           <div id="heating-explorer-controls" class="heating-explorer-controls"></div>
           <details id="heating-explorer-advanced" class="heating-explorer-advanced">
@@ -1717,10 +1735,20 @@ G_warming = G / 2</code>
         <p id="heating-explorer-scenario-evidence" class="heating-explorer-note"></p>
         <details class="heating-explorer-breakdown"><summary>Energy, recovery &amp; indoor average</summary><div id="heating-explorer-breakdown" class="heating-explorer-table-wrap"></div></details>
         <div id="heating-explorer-illustrative" class="heating-explorer-note" hidden></div>
-        <div id="heating-explorer-application" class="heating-explorer-application"><h4>Use this for one cycle</h4><p id="heating-explorer-application-help" class="muted"></p><button id="heating-explorer-apply" data-admin-only data-write-control type="button" disabled>Use these limits for one cycle</button></div>
+        <div id="heating-explorer-application" class="heating-explorer-application">
+          <h4>Use this for one cycle</h4>
+          <p id="heating-explorer-application-help" class="muted"></p>
+          <dl id="heating-explorer-application-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
+          <p class="muted">Approval authorizes one cycle, including while Home automatic control is paused or disabled. Saved choices and configured defaults stay unchanged. Current equipment readiness, native protection and independent manual actions still apply.</p>
+          <button id="heating-explorer-apply" data-admin-only data-write-control type="button" disabled>Use these limits for one cycle</button>
+        </div>
       </section>
-      <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-note" hidden><h3>One-cycle limits</h3><p id="heating-explorer-trial-description"></p><button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel one-cycle limits</button></section>
-      <details class="heating-explorer-footnotes"><summary>How to read these estimates</summary><ul id="heating-explorer-limitations"></ul><p>Recovery compares indoor temperature and stored heat with Normal heating, even without a visible temperature drop. Its predicted period can include ordinary heating and a settling check; it does not mean extra heating runs throughout.</p><p>Exploring does not train the model. Only recorded observations from real operation can add learning evidence. Forecasts are estimates; a stress case is not a statistical confidence interval.</p></details>
+      <details class="heating-explorer-footnotes">
+        <summary>How to read these estimates</summary>
+        <ul id="heating-explorer-limitations"></ul>
+        <h4>Recovery</h4><p>Recovery compares indoor temperature and stored heat with Normal heating, even without a visible temperature drop. Its predicted period can include ordinary heating and a settling check; it does not mean extra heating runs throughout.</p>
+        <h4>Learning and uncertainty</h4><p>Exploring does not train the model. Only recorded observations from real operation can add learning evidence. Forecasts are estimates; a stress case is not a statistical confidence interval.</p>
+      </details>
     </div>
   </dialog>
 

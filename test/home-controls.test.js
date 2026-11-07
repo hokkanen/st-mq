@@ -2,6 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activeRates, finnishDateTime, homePolicyValues, homeIndoorEstimate, homeReferenceValue, homeReferenceSummary, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
 
+test('comfort summaries use actual configured weights and keep absent limits unavailable', () => {
+  const values = homePolicyValues({ settings: { comfort: { maxDropC: 0 } }, observations: {
+    indoor: { weights: { bedroom_temperature: 1, indoor_temperature: 2, downstairs_temperature: 0 } },
+  } });
+  assert.equal(values.maximumDrop, '0 °C');
+  assert.match(values.indoorAverage, /Bedroom 33.33%.*Upstairs 66.67%/);
+  assert.doesNotMatch(values.indoorAverage, /Downstairs/);
+  assert.match(values.indoorAverage, /Missing sensors keep their weights/);
+  const missing = homePolicyValues({});
+  assert.equal(missing.maximumDrop, 'Unavailable');
+  assert.match(missing.indoorAverage, /weights are unavailable/);
+});
+
 test('a planning reference remains distinct from a learned Normal reference at startup', () => {
   const status = { settings: { comfort: { targetC: null } }, decision: { comfort: { targetC: 21.3 } },
     learning: { adaptive: { comfortReference: null } } };

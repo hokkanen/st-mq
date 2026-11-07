@@ -1,3 +1,4 @@
+import { heatingReasonText } from './heating-reasons.js';
 import { homePlannedChange } from './heating-plan.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { confirmAction } from './confirmation.js';
@@ -22,47 +23,7 @@ const signed = (value, unit) => Number.isFinite(value) ? `${value > 0 && decimal
 const atTime = value => Number.isFinite(value) ? timeFormat.format(value) : 'Time unavailable';
 const phaseName = phase => ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduction', recovery: 'Recovery', hold: 'Normal heating' })[phase] ?? 'Heating';
 const humanize = value => String(value ?? '').replace(/[-_]/g, ' ');
-const reasonLabels = {
-  'accepted-cycle-scheduled': 'Waiting for the accepted cycle to start at its scheduled time.',
-  'complete-cycle-in-progress': 'The selected heating cycle is in progress.',
-  'continuing-with-retained-estimates': 'The accepted schedule remains in force using its last available estimates while current planning data is unavailable.',
-  'continuing-during-model-rebuild': 'The accepted schedule remains in force while the heating model rebuilds. Current device readiness still governs execution.',
-  'delivered-heat-upper-limit': 'Preheat ended to protect the upper temperature limit. The reduction remains scheduled.',
-  'delivered-cooling-lower-limit': 'Reduction ended to protect the lower temperature limit. Recovery is requested.',
-  'configured-preheat-limit-reached': 'Preheat ended at its configured duration limit. The reduction remains scheduled.',
-  'configured-reduction-limit-changed': 'The remaining reduction was shortened to match the changed duration limit.',
-  'recovery-start-established': 'The executed reduction end follows the recorded start of recovery. Its original plan remains unchanged.',
-  'remaining-preheat-rescheduled': 'The remaining preheat window was adjusted while preserving the reduction schedule.',
-  'ending-cycle-costs-less': 'A complete comparison found ending the treatment cheaper, including restoration and recovery.',
-  'normal-operation-preferred': 'Normal heating is preferred among the evaluated alternatives.',
-  'continuous-normal-preferred': 'Normal heating is preferred among the evaluated alternatives.',
-  'unvalidated-thermal-model': 'The model is still learning how the house holds and recovers heat.',
-  'unvalidated-heating-energy-model': 'Heating electricity estimates are not yet sufficiently validated.',
-  'flat-prices-preserve-normal-warmth': 'The price difference does not justify changing normal heating.',
-  'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
-  'heating-planning-in-progress': 'The next heating plan is being calculated. Normal heating is requested; device feedback confirms the actual state.',
-  'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating is the fallback request; device feedback confirms the actual state.',
-  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast.',
-  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures.',
-  'trial-cost-estimate-unavailable': 'The complete trial cost estimate lacks required cost or stored-heat evidence. Recovery and restoration continue.',
-  'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
-  'missing-or-stale-observations': 'Fresh temperature observations are needed.',
-  'currently-selected-cycle': 'This is the cycle currently selected by the controller.',
-  'normal-operation': 'Normal heating is selected. No change is scheduled.',
-  'continuous-normal-heating': 'Normal heating throughout the evaluated period.',
-  'bounded-learning-trial': 'A learning cycle is scheduled within its experiment budget and temperature limits.',
-  'predicted-full-cycle-benefit': 'The complete cycle is expected to cost less than Normal heating.',
-  'reviewed-experimental-cycle': 'This reviewed cycle permits estimated extra cost under your chosen limits.',
-  'missing-or-stale-indoor': 'Current indoor temperature readings are needed before scheduling a cycle.',
-  'awaiting-normal-temperature-reference': 'The normal temperature reference is unavailable. Occupied Normal heating observations are needed to establish it.',
-  'missing-or-incomplete-price-weather-horizon': 'Price and weather coverage is too short or incomplete to assess a full cycle.',
-  'awaiting-tariff-response-evidence': 'The requested heating response cannot currently be assessed.',
-  'no-useful-space-heating-window': 'No immediate trial offers useful space-heating evidence under these conditions.',
-  'trial-comfort-or-forecast-limited': 'The evaluated trials do not fit the temperature limits or available forecast.',
-  'trial-incremental-cost-exceeds-allowance': 'The evaluated trials exceed the available experiment budget.',
-
-};
-const reasonsText = reasons => (reasons ?? []).map(reason => reasonLabels[reason] ?? humanize(reason)).join(' · ');
+const reasonsText = reasons => (reasons ?? []).map(heatingReasonText).join(' · ');
 export function heatingEvidenceText(evidence = {}) {
   const validationNames = {
     'awaiting-held-out-thermal-trajectories': 'thermal response',
@@ -107,7 +68,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     const draft = preserveDraft ? new Map([...edited].map(key => [key, limits[key]])) : null;
     const ownGeneration = ++generation;
     const capturedFreshnessRevision = freshnessRevision, capturedTrialRevision = trialRevision;
-    busy = true; error = false; message = mutation ? 'Saving one-cycle limits…' : reset ? 'Reading current conditions…' : 'Comparing the same conditions…'; notify();
+    busy = true; error = false; message = mutation ? 'Saving one-cycle limits…' : reset ? 'Loading current conditions…' : 'Comparing your scenario…'; notify();
     try {
       const next = await request(path, body);
       if (generation !== ownGeneration) return false;
@@ -216,9 +177,49 @@ export function heatingComparisonMetrics(result) {
     { label: 'Maximum drop below Normal', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
       detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
-      ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
+      ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : scenario.schedule ? 'Unavailable' : 'No reduction',
       detail: scenario.trial ? 'Learning trial within the scenario budget and temperature limits.' : 'A maximum is permission, not a requested duration.' },
   ];
+}
+
+export function heatingTrialDetails(result) {
+  const trial = result.activeTrial;
+  if (!trial) return null;
+  const active = validTrial(trial), outcome = trial.outcome;
+  const values = { ...trial.limits, ...(typeof trial.learningTrials === 'boolean' ? { learningTrials: trial.learningTrials } : {}) };
+  return {
+    status: ({ pending: 'Awaiting start', running: 'In progress', completed: 'Completed', cancelled: 'Cancelled',
+      expired: 'Expired', interrupted: 'Interrupted', rejected: 'Rejected' })[trial.status] ?? 'Status unavailable',
+    dates: [
+      ['Approved', atTime(trial.approvedAt)],
+      ...(trial.status === 'pending' ? [['Latest start', atTime(trial.latestStartAt)]] : []),
+      ...(Number.isFinite(trial.startedAt) ? [['Started', atTime(trial.startedAt)]] : []),
+      ...(Number.isFinite(trial.endedAt) ? [['Ended', atTime(trial.endedAt)]] : []),
+      ['Authorization deadline', atTime(trial.expiresAt)],
+    ],
+    reason: trial.reason ? heatingReasonText(trial.reason)
+      : trial.status === 'pending' ? 'Approved for one cycle. The controller will recheck conditions before starting.'
+        : trial.status === 'running' ? 'The approved cycle is in progress. Current readiness and temperature limits still apply.' : '',
+    limits: Object.entries(values).map(([key, value]) => {
+      const control = result.controls?.find(control => control.key === key);
+      const shown = control?.options?.find(option => option.value === value)?.label
+        ?? (typeof value === 'boolean' ? value ? 'On' : 'Off' : typeof value === 'number' ? decimal(value) : humanize(value));
+      return [control?.label ?? humanize(key), `${shown}${control?.unit ? ` ${control.unit}` : ''}`];
+    }),
+    assessment: outcome ? Number.isFinite(outcome.profitCents)
+      ? 'Based on recorded operation and an estimated Normal heating reference.'
+      : outcome.basis === 'unassessed-indoor-observation-gap'
+        ? 'The cycle ended using conservative control estimates. Gaps in indoor observations prevent assessment of savings and physical recovery.'
+        : 'A savings assessment is unavailable. Recorded operation alone does not establish savings.'
+      : active ? 'Available after the cycle and recovery, if recorded evidence is sufficient.'
+        : 'No complete outcome assessment is available. Savings remain unassessed.',
+    metrics: outcome ? [
+      [outcome.profitCents < 0 ? 'Estimated extra cost' : 'Estimated space-heating saving',
+        money(Number.isFinite(outcome.profitCents) ? Math.abs(outcome.profitCents) : null)],
+      ['Recovery cost forecast error', money(outcome.recoveryErrorCents)],
+      ['Cost uncertainty', money(outcome.uncertaintyCents)],
+    ] : [],
+  };
 }
 
 /** Unknown uncertainty interrupts the allowance; it is never a zero-width band. */
@@ -246,6 +247,27 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     if (className) node.className = className;
     return node;
   };
+  function facts(id, rows) {
+    const list = $(id);
+    list.replaceChildren(...rows.map(([label, value]) => {
+      const row = element('div'); row.append(element('dt', label), element('dd', value)); return row;
+    }));
+    list.hidden = !rows.length;
+  }
+  function renderTrial(result) {
+    const trial = heatingTrialDetails(result);
+    $('heating-explorer-trial').hidden = !trial;
+    if (!trial) return;
+    $('heating-explorer-trial-status').textContent = trial.status;
+    $('heating-explorer-trial').dataset.status = result.activeTrial.status;
+    facts('heating-explorer-trial-dates', trial.dates);
+    $('heating-explorer-trial-description').textContent = trial.reason;
+    $('heating-explorer-trial-description').hidden = !trial.reason;
+    $('heating-explorer-trial-outcome-summary').textContent = trial.assessment;
+    facts('heating-explorer-trial-outcome', trial.metrics);
+    facts('heating-explorer-trial-values', trial.limits);
+    $('heating-explorer-trial-limits').hidden = !trial.limits.length;
+  }
   function scrollToLimits(focus) {
     const heading = $('heating-simulator-title');
     const header = dialog.querySelector('.heating-explorer-header');
@@ -416,7 +438,15 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         ...[...points].reverse().map(point => `${x(point.at)},${y(point.indoorC - point.uncertaintyC)}`)];
       part('polygon', { points: band.join(' '), fill: 'var(--chart-indoor)', opacity: '.12' });
     }
-    series.forEach((points, index) => part('path', { d: points.map((point, i) => `${i ? 'L' : 'M'}${x(point.at).toFixed(1)},${y(point.indoorC).toFixed(1)}`).join(' '), fill: 'none', stroke: index ? 'var(--chart-indoor)' : 'var(--muted)', 'stroke-width': index ? 2.5 : 2, 'stroke-dasharray': index ? 'none' : '5 4', 'vector-effect': 'non-scaling-stroke' }));
+    [result.current?.trajectory ?? [], result.scenario?.trajectory ?? []].forEach((points, index) => {
+      let connected = false;
+      const path = points.map(point => {
+        if (!Number.isFinite(point.at) || !Number.isFinite(point.indoorC)) { connected = false; return ''; }
+        const command = connected ? 'L' : 'M'; connected = true;
+        return `${command}${x(point.at).toFixed(1)},${y(point.indoorC).toFixed(1)}`;
+      }).filter(Boolean).join(' ');
+      part('path', { d: path, fill: 'none', stroke: index ? 'var(--chart-indoor)' : 'var(--muted)', 'stroke-width': index ? 2.5 : 2, 'stroke-dasharray': index ? 'none' : '5 4', 'vector-effect': 'non-scaling-stroke' });
+    });
     for (let tick = 0; tick <= 4; tick++) {
       const at = start + (end - start) * tick / 4;
       part('text', { x: x(at), y: 187, fill: 'var(--muted)', 'text-anchor': tick === 4 ? 'end' : 'middle', 'font-size': 10 }, clockFormat.format(at));
@@ -455,6 +485,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     table.append(body); $('heating-explorer-breakdown').replaceChildren(table);
   }
   function renderResult(result) {
+    renderTrial(result);
     $('heating-constraints-title').textContent = result.previewId ? 'Limits in this comparison' : 'What shapes this plan';
     $('heating-explorer-phase').textContent = phaseName(result.current?.phase ?? result.current?.action);
     $('heating-explorer-reason').textContent = reasonsText(result.current?.reasons) || 'The controller rechecks this plan as conditions change.';
@@ -484,6 +515,10 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const { result, busy } = state;
     $('heating-explorer-message').textContent = state.message;
     $('heating-explorer-message').dataset.error = String(state.error);
+    $('heating-explorer-message').dataset.loading = String(busy && !result);
+    $('heating-explorer-snapshot-bar').hidden = !result && !state.error;
+    $('heating-explorer-snapshot').hidden = !result;
+    $('heating-explorer-refresh').textContent = result ? 'Refresh conditions' : 'Retry loading';
     $('heating-explorer-receipt').textContent = state.receipt?.message ?? '';
     $('heating-explorer-receipt').dataset.error = String(state.receipt?.error === true);
     $('heating-explorer-content').hidden = !result;
@@ -527,25 +562,13 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-apply').disabled = !canApply;
     $('heating-explorer-apply').hidden = !admin;
     $('heating-explorer-application-help').textContent = [!admin ? 'Family can explore. Admin sign-in is required to apply a scenario.' : '',
-      result.application?.reason ?? '', result.application?.latestStartAt ? `Latest start: ${atTime(result.application.latestStartAt)}.` : '',
-      result.application?.expiresAt ? `Expires: ${atTime(result.application.expiresAt)}.` : '',
-      'Applies only to the reviewed cycle. Configured defaults remain unchanged; the controller can shorten or cancel the plan as conditions change.'].filter(Boolean).join(' ');
+      state.stale ? 'Refresh conditions and compare again before approval.'
+        : state.dirty ? 'Compare your edited limits before approval.' : result.application?.reason ?? ''].filter(Boolean).join(' ');
+    facts('heating-explorer-application-dates', [
+      ...(Number.isFinite(result.application?.latestStartAt) ? [['Latest start', atTime(result.application.latestStartAt)]] : []),
+      ...(Number.isFinite(result.application?.expiresAt) ? [['Authorization deadline', atTime(result.application.expiresAt)]] : []),
+    ]);
     const trial = result.activeTrial;
-    $('heating-explorer-trial').hidden = !trial;
-    const authorizedValues = { ...trial?.limits, ...(typeof trial?.learningTrials === 'boolean' ? { learningTrials: trial.learningTrials } : {}) };
-    const authorized = Object.entries(authorizedValues).map(([key, value]) => {
-      const control = result.controls.find(control => control.key === key);
-      return `${control?.label ?? humanize(key)}: ${control?.options?.find(option => option.value === value)?.label ?? (typeof value === 'boolean' ? value ? 'On' : 'Off' : typeof value === 'number' ? decimal(value) : humanize(value))}${control?.unit ? ` ${control.unit}` : ''}`;
-    }).join(' · ');
-    const outcome = trial?.outcome;
-    $('heating-explorer-trial-description').textContent = trial ? [
-      `${humanize(trial.status)} · approved ${atTime(trial.approvedAt)}${trial.status === 'pending' ? ` · latest start ${atTime(trial.latestStartAt)}` : ''} · expires ${atTime(trial.expiresAt)}.`,
-      authorized ? `Authorized limits: ${authorized}.` : '', trial.reason ?? '',
-      outcome ? `Recorded assessment: estimated space-heating benefit ${money(outcome.profitCents)}; recovery cost forecast error ${money(outcome.recoveryErrorCents)}${Number.isFinite(outcome.uncertaintyCents) ? `; cost uncertainty ${money(outcome.uncertaintyCents)}` : ''}. The normal-heating reference remains an estimate.`
-        : !validTrial(trial) ? 'A completed outcome assessment is unavailable for this cycle.' : '',
-      !validTrial(trial) ? 'Review Home learning outcomes for the recorded evidence. One completed cycle alone does not establish validation.' : '',
-      'Recovery and equipment restoration remain the controller’s responsibility.',
-    ].filter(Boolean).join(' ') : '';
     $('heating-explorer-cancel').hidden = !admin || !validTrial(trial);
     $('heating-explorer-cancel').disabled = busy;
     if (state.stale && !wasStale) $('heating-explorer-context').setAttribute('role', 'status');
@@ -554,11 +577,15 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   function renderRecorded() {
       const display = homePlannedChange(status);
       $('heating-explorer-content').hidden = true;
+      $('heating-explorer-snapshot-bar').hidden = false;
+      $('heating-explorer-snapshot').hidden = false;
       $('heating-explorer-snapshot').textContent = 'Recorded view';
       $('heating-explorer-message').textContent = `${display.value}. ${display.detail} Live plan exploration is unavailable in this view.`;
       $('heating-explorer-message').dataset.error = 'false';
+      $('heating-explorer-message').dataset.loading = 'false';
       $('heating-explorer-receipt').textContent = '';
       $('heating-explorer-refresh').disabled = true;
+      $('heating-explorer-refresh').textContent = 'Refresh conditions';
   }
   async function open() {
     if (dialog.open) return;

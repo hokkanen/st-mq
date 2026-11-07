@@ -1695,6 +1695,13 @@ It checks disabled value preservation, sparse edit intent, local Reset versus
 explicit Refresh, touch and keyboard selection, invalid inputs, busy/error retry behavior, and section-start
 jumps with Advanced settings open or closed. It also checks absent and partial uncertainty bands,
 provisional comfort limits and the provenance of a captured indoor estimate.
+Initial loading and retry have one visible loading status, including reduced
+motion. Pending, running and terminal one-cycle panels separate dates, approved
+limits and assessed or unavailable outcomes. Unsupported forecast intervals remain
+gaps in both the line and its uncertainty allowance. Home controls and learning
+calculation sweeps also cover rebuild/failure/unknown model states, configured
+sensor weights, approved-cycle authority while Automatic is paused, and accepted
+continuation explanations alongside the existing responsive disclosure checks.
 It builds an isolated temporary UI unless `STMQ_UI_DIST` selects an existing
 build. It uses synthetic response fixtures and captures a
 temporary screenshot gallery; it never commands household equipment. The Node
