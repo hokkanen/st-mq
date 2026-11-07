@@ -278,6 +278,30 @@ function constraints(input, decision, evidence, selected) {
   return result;
 }
 
+/** Describe the selected plan's effective policy without attributing a fresh
+ * alternative search's rejections or opportunities to that retained schedule. */
+function selectedPlanConstraints(input, selected) {
+  const readiness = learningReadiness(input.checkpoint, input.config, input.equipment);
+  const evidence = { ...readiness, validatedReductionHours: validatedReductionHours(input.checkpoint?.model, selected.schedule) };
+  return constraints(input, { reasons: [] }, evidence, selected)
+    .filter(row => !['economicAdmission', 'trialReadiness'].includes(row.key))
+    .map(row => {
+      if (row.key === 'normalReference' && finite(input.settings.comfort.targetC)) return { ...row, status: 'specified',
+        detail: 'The explicit normal-temperature reference used for this plan. The allowed occupied drop and rise remain separate.' };
+      if (row.kind === 'policy') return { ...row, status: 'configured',
+        label: row.label.replace('Configured ', 'Selected '),
+        detail: ['maxDropC', 'maxRiseC'].includes(row.key)
+          ? 'The selected plan’s occupied indoor-average limit. Away lifts occupied limits until the declared return; native protection remains independent.'
+          : 'The selected plan’s effective duration ceiling. A ceiling permits a duration; it does not request that duration.' };
+      if (row.key === 'forecastCoverage') return { ...row,
+        detail: row.status === 'available' ? 'At least four contiguous hours of price and weather evidence are available at capture. This is not a new validation of the selected cycle’s recovery.'
+          : 'Current forecast coverage is incomplete. An accepted schedule retains its intent and last valid estimates; current device readiness still governs commands.' };
+      if (row.kind === 'safety') return { ...row, status: row.key === 'unobservedEquipment' ? 'limited' : 'unavailable',
+        detail: `${row.detail} A readiness limit does not by itself cancel an accepted schedule.` };
+      return row;
+    });
+}
+
 function illustrate(input, changes, current, scenario, args, normal) {
   const key = input.settings.occupancy.mode === 'away' ? 'maxAwayReductionHours' : 'maxReductionHours';
   if (!Object.hasOwn(changes, key) || !args) return null;
@@ -336,6 +360,8 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
     currentArgs, currentBaseline, { origin: 'selected' })
     : frozen.currentDecision
       ? summary({ ...frozen.currentDecision, plan: null }, args, baseline, { origin: 'selected' }) : refreshedCurrent;
+  current.approvalId = selectedPlan?.userTrial?.id ?? null;
+  current.constraints = selectedPlanConstraints({ ...frozen, config: currentConfig, settings: currentSettings }, current);
   const scenario = summary(scenarioDecision, scenarioArgs, scenarioBaseline);
   const normal = summary({ action: 'normal', phase: 'normal', reasons: ['continuous-normal-heating'], plan: null },
     args, baseline, { origin: 'normal' });

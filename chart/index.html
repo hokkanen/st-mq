@@ -1669,7 +1669,7 @@ G_warming = G / 2</code>
   </dialog>
   <dialog id="heating-explorer-dialog" class="control-dialog heating-explorer-dialog" aria-labelledby="heating-explorer-title" aria-describedby="heating-explorer-intro">
     <header class="heating-explorer-header">
-      <div><p class="heating-explorer-eyebrow">Home · Heating</p><h2 id="heating-explorer-title">Plan &amp; possibilities</h2><p id="heating-explorer-intro" class="muted">Understand the plan. Explore what different limits could change.</p></div>
+      <div><p class="heating-explorer-eyebrow">Home · Heating</p><h2 id="heating-explorer-title">Plan &amp; possibilities</h2><p id="heating-explorer-intro" class="muted">Review the selected plan. Compare alternatives before approving a cycle.</p></div>
       <button id="heating-explorer-close" type="button" class="secondary-button heating-explorer-close" aria-label="Close heating plan">×</button>
     </header>
     <div id="heating-explorer-snapshot-bar" class="heating-explorer-snapshot" hidden><span id="heating-explorer-snapshot"></span><button id="heating-explorer-refresh" class="secondary-button" type="button">Refresh conditions</button></div>
@@ -1677,39 +1677,25 @@ G_warming = G / 2</code>
     <p id="heating-explorer-receipt" class="heating-explorer-message" role="status" aria-live="polite"></p>
     <div id="heating-explorer-content" aria-busy="false" hidden>
       <div id="heating-explorer-context" class="heating-explorer-note" hidden></div>
-      <section class="heating-explorer-section" aria-labelledby="heating-current-title">
-        <div class="heating-explorer-section-heading"><h3 id="heating-current-title">Currently selected plan</h3><span id="heating-explorer-phase" class="heating-explorer-tag"></span></div>
+      <section id="heating-explorer-current-section" class="heating-explorer-section" aria-labelledby="heating-current-title">
+        <div class="heating-explorer-section-heading"><h3 id="heating-current-title">Selected heating plan</h3><span id="heating-explorer-phase" class="heating-explorer-tag"></span></div>
+        <p id="heating-explorer-current-source" class="muted"></p>
+        <button id="heating-explorer-view-approval" class="secondary-button" type="button" hidden>View approved cycle</button>
         <p id="heating-explorer-reason" class="muted"></p>
         <ol id="heating-explorer-timeline" class="heating-explorer-timeline" aria-label="Current planned heating phases"></ol>
+        <details id="heating-explorer-current-context" class="heating-explorer-advanced heating-explorer-plan-context">
+          <summary id="heating-constraints-title">What shapes this plan</summary>
+          <p class="muted">Effective limits and available evidence for the selected plan at capture. Scenario edits below leave this plan unchanged.</p>
+          <ul id="heating-explorer-constraints" class="heating-explorer-constraints"></ul>
+        </details>
         <button id="heating-explorer-jump" type="button" class="secondary-button heating-explorer-jump">Explore different limits ↓</button>
       </section>
-      <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-trial" aria-labelledby="heating-explorer-trial-title" hidden>
-        <div class="heating-explorer-section-heading"><h3 id="heating-explorer-trial-title">One-cycle limits</h3><span id="heating-explorer-trial-status" class="heating-explorer-tag"></span></div>
-        <dl id="heating-explorer-trial-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
-        <p id="heating-explorer-trial-description"></p>
-        <div class="heating-explorer-trial-outcome">
-          <h4>Outcome assessment</h4>
-          <p id="heating-explorer-trial-outcome-summary"></p>
-          <dl id="heating-explorer-trial-outcome" class="heating-explorer-facts"></dl>
-        </div>
-        <details id="heating-explorer-trial-limits" class="heating-explorer-advanced">
-          <summary>Approved limits</summary>
-          <dl id="heating-explorer-trial-values" class="heating-explorer-facts"></dl>
-        </details>
-        <p class="muted">Recovery and equipment restoration remain the controller’s responsibility. Check Home learning outcomes for recorded evidence; a single cycle does not establish model validation.</p>
-        <button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel one-cycle limits</button>
-      </section>
-      <section id="heating-explorer-opportunities-section" class="heating-explorer-section" aria-labelledby="heating-opportunities-title" hidden>
-        <h3 id="heating-opportunities-title">Opportunity to review</h3><div id="heating-explorer-opportunities"></div>
-      </section>
-      <section class="heating-explorer-section" aria-labelledby="heating-constraints-title">
-        <div class="heating-explorer-section-heading"><h3 id="heating-constraints-title">What shapes this plan</h3><span class="muted">Limits &amp; evidence</span></div>
-        <p class="muted heating-explorer-section-help">Reaching a limit alone does not show that changing it would improve the plan.</p>
-        <ul id="heating-explorer-constraints" class="heating-explorer-constraints"></ul>
-      </section>
-      <section class="heating-explorer-section heating-explorer-workbench" aria-labelledby="heating-simulator-title">
+      <section id="heating-explorer-workbench" class="heating-explorer-section heating-explorer-workbench" aria-labelledby="heating-simulator-title">
         <div class="heating-explorer-section-heading"><h3 id="heating-simulator-title">Explore different limits</h3><span class="heating-explorer-tag">Preview only</span></div>
-        <p class="muted">Adjust temperature and timing limits, then compare a preview. The planner chooses the duration. Exploring leaves live settings unchanged; automatic control continues under its existing permissions.</p>
+        <p class="muted">Adjust limits and compare a preview. The planner chooses the duration. Your saved settings and existing control permissions stay unchanged.</p>
+        <div id="heating-explorer-opportunities-section" class="heating-explorer-suggestions" aria-labelledby="heating-opportunities-title" hidden>
+          <h4 id="heating-opportunities-title">Suggestions to explore</h4><div id="heating-explorer-opportunities"></div>
+        </div>
         <form id="heating-explorer-form">
           <div id="heating-explorer-controls" class="heating-explorer-controls"></div>
           <details id="heating-explorer-advanced" class="heating-explorer-advanced">
@@ -1725,23 +1711,55 @@ G_warming = G / 2</code>
           <div class="heating-explorer-actions"><button id="heating-explorer-calculate" type="submit">Compare scenario</button><button id="heating-explorer-reset" type="button" class="secondary-button">Reset to configured limits</button></div>
         </form>
         <p id="heating-explorer-dirty" class="muted" role="status" hidden>Limits changed. Compare again to update the estimates.</p>
-      </section>
-      <section id="heating-explorer-comparison-section" class="heating-explorer-section" aria-labelledby="heating-comparison-title" hidden>
-        <div class="heating-explorer-section-heading"><h3 id="heating-comparison-title">Your scenario compared</h3><span class="heating-explorer-tag">Model estimates</span></div>
-        <p id="heating-explorer-comparison-summary" role="status" aria-live="polite"></p>
-        <div id="heating-explorer-metrics" class="heating-explorer-metrics"></div>
-        <ol id="heating-explorer-scenario-timeline" class="heating-explorer-timeline" aria-label="Hypothetical heating phases"></ol>
-        <figure id="heating-explorer-chart" class="heating-explorer-chart" hidden><div id="heating-explorer-chart-plot"></div><figcaption><span class="heating-chart-key heating-chart-current">Current plan</span><span class="heating-chart-key heating-chart-scenario">Your scenario</span><span id="heating-explorer-chart-uncertainty">Shaded: model uncertainty allowance</span><span>Predicted indoor average · Finnish local time</span></figcaption></figure>
-        <p id="heating-explorer-scenario-evidence" class="heating-explorer-note"></p>
-        <details class="heating-explorer-breakdown"><summary>Energy, recovery &amp; indoor average</summary><div id="heating-explorer-breakdown" class="heating-explorer-table-wrap"></div></details>
-        <div id="heating-explorer-illustrative" class="heating-explorer-note" hidden></div>
-        <div id="heating-explorer-application" class="heating-explorer-application">
-          <h4>Use this for one cycle</h4>
-          <p id="heating-explorer-application-help" class="muted"></p>
-          <dl id="heating-explorer-application-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
-          <p class="muted">Approval authorizes one cycle, including while Home automatic control is paused or disabled. Saved choices and configured defaults stay unchanged. Current equipment readiness, native protection and independent manual actions still apply.</p>
-          <button id="heating-explorer-apply" data-admin-only data-write-control type="button" disabled>Use these limits for one cycle</button>
+        <div id="heating-explorer-comparison-section" class="heating-explorer-comparison" aria-labelledby="heating-comparison-title" hidden>
+          <div class="heating-explorer-section-heading"><h4 id="heating-comparison-title">Review your scenario</h4><span class="heating-explorer-tag">Model estimates</span></div>
+          <p id="heating-explorer-comparison-summary" role="status" aria-live="polite"></p>
+          <div id="heating-explorer-metrics" class="heating-explorer-metrics"></div>
+          <ol id="heating-explorer-scenario-timeline" class="heating-explorer-timeline" aria-label="Hypothetical heating phases"></ol>
+          <figure id="heating-explorer-chart" class="heating-explorer-chart" hidden><div id="heating-explorer-chart-plot"></div><figcaption><span class="heating-chart-key heating-chart-current">Current plan</span><span class="heating-chart-key heating-chart-scenario">Your scenario</span><span id="heating-explorer-chart-uncertainty">Shaded: model uncertainty allowance</span><span>Predicted indoor average · Finnish local time</span></figcaption></figure>
+          <p id="heating-explorer-scenario-evidence" class="heating-explorer-note"></p>
+          <details id="heating-explorer-scenario-context" class="heating-explorer-advanced heating-explorer-plan-context">
+            <summary>Limits &amp; evidence for this scenario</summary>
+            <p class="muted">These diagnostics describe the scenario search. A reached limit alone does not establish that changing it would improve the plan.</p>
+            <ul id="heating-explorer-scenario-constraints" class="heating-explorer-constraints"></ul>
+          </details>
+          <details class="heating-explorer-breakdown"><summary>Energy, recovery &amp; indoor average</summary><div id="heating-explorer-breakdown" class="heating-explorer-table-wrap"></div></details>
+          <details id="heating-explorer-illustrative" class="heating-explorer-advanced heating-explorer-plan-context" hidden>
+            <summary>Illustration only: using the full duration limit</summary>
+            <p id="heating-explorer-illustrative-description"></p>
+            <p class="muted">This illustration is separate from the scenario above and cannot be approved.</p>
+          </details>
+          <div id="heating-explorer-application" class="heating-explorer-application">
+            <h4>Approve this cycle</h4>
+            <p id="heating-explorer-application-summary"></p>
+            <p id="heating-explorer-application-help" class="muted"></p>
+            <dl id="heating-explorer-application-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
+            <p class="muted">Approval authorizes one cycle, including while Home automatic control is paused or disabled. Saved choices and configured defaults stay unchanged. Current equipment readiness, native protection and independent manual actions still apply.</p>
+            <button id="heating-explorer-apply" data-admin-only data-write-control type="button" disabled>Approve one heating cycle</button>
+          </div>
         </div>
+      </section>
+      <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-trial" aria-labelledby="heating-explorer-trial-title" hidden>
+        <div class="heating-explorer-section-heading"><h3 id="heating-explorer-trial-title">Approved cycle</h3><span id="heating-explorer-trial-status" class="heating-explorer-tag"></span></div>
+        <p id="heating-explorer-trial-caption" class="muted"></p>
+        <details id="heating-explorer-trial-record" class="heating-explorer-advanced">
+          <summary>Approval details &amp; outcome</summary>
+          <div class="heating-explorer-approved-body">
+            <dl id="heating-explorer-trial-dates" class="heating-explorer-facts heating-explorer-trial-dates"></dl>
+            <p id="heating-explorer-trial-description"></p>
+            <div class="heating-explorer-trial-outcome">
+              <h4>Outcome assessment</h4>
+              <p id="heating-explorer-trial-outcome-summary"></p>
+              <dl id="heating-explorer-trial-outcome" class="heating-explorer-facts"></dl>
+            </div>
+            <details id="heating-explorer-trial-limits" class="heating-explorer-advanced">
+              <summary>Approved limits</summary>
+              <dl id="heating-explorer-trial-values" class="heating-explorer-facts"></dl>
+            </details>
+            <p class="muted">Recovery and equipment restoration remain the controller’s responsibility. Check Home learning outcomes for recorded evidence; a single cycle does not establish model validation.</p>
+            <button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel approved cycle</button>
+          </div>
+        </details>
       </section>
       <details class="heating-explorer-footnotes">
         <summary>How to read these estimates</summary>

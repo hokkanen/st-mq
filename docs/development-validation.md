@@ -1698,7 +1698,12 @@ provisional comfort limits and the provenance of a captured indoor estimate.
 Initial loading and retry have one visible loading status, including reduced
 motion. Pending, running and terminal one-cycle panels separate dates, approved
 limits and assessed or unavailable outcomes. Unsupported forecast intervals remain
-gaps in both the line and its uncertainty allowance. Home controls and learning
+gaps in both the line and its uncertainty allowance. The planner's complete reading
+order keeps selected context with the selected plan, scenario diagnostics and
+approval with exploration, and dated approval records afterward. Regressions cover
+exact approval identity, historical default collapse, selected-policy stability
+across comparisons, illustration versus approval scope, and approval focus transfer.
+Home controls and learning
 calculation sweeps also cover rebuild/failure/unknown model states, configured
 sensor weights, approved-cycle authority while Automatic is paused, and accepted
 continuation explanations alongside the existing responsive disclosure checks.

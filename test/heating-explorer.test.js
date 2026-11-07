@@ -8,6 +8,29 @@ import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 const HOUR = 3_600_000;
 const options = { includePlan: true, includeOpportunities: false };
 
+test('selected-plan context and approval identity remain separate from every scenario search', () => {
+  const input = heatingExplorerFixture();
+  input.currentPlan = chooseCycle(input).plan;
+  input.currentPlan.userTrial = { id: 'synthetic-selected-approval' };
+  input.currentConfig = { ...input.config, maxReductionHours: 1 };
+  input.currentSettings = { ...input.settings, comfort: { ...input.settings.comfort, maxDropC: .3 } };
+  input.currentDecision = { action: 'normal', phase: 'normal', reasons: ['currently-selected-cycle'] };
+  const original = structuredClone(input);
+  const baseline = exploreHeatingPlan(input, {}, options);
+  const preview = exploreHeatingPlan(input, { maxReductionHours: 8, maxDropC: 2.5 }, options);
+  assert.deepEqual(preview.current, baseline.current, 'A scenario cannot relabel or rewrite the selected plan');
+  assert.equal(preview.current.approvalId, 'synthetic-selected-approval');
+  const current = new Map(preview.current.constraints.map(row => [row.key, row]));
+  assert.equal(current.get('maxReductionHours').value, 1);
+  assert.equal(current.get('maxDropC').value, .3);
+  assert.equal(current.get('maxReductionHours').status, 'configured');
+  assert(!current.has('economicAdmission'), 'Scenario shortlist rejections do not explain a retained schedule');
+  assert(preview.current.constraints.every(row => !row.diagnostics?.length));
+  assert.equal(preview.constraints.find(row => row.key === 'maxReductionHours').value, 8);
+  assert.equal(preview.constraints.find(row => row.key === 'maxDropC').value, 2.5);
+  assert.deepEqual(input, original);
+});
+
 test('normal reference reports its actual temperature separately from the allowed drop',()=>{
   const input=heatingExplorerFixture();input.equipment.comfortReferenceProvisional=true;
   input.settings.comfort.targetC=21.25;input.settings.comfort.maxDropC=1.5;

@@ -12,6 +12,9 @@ test('one-cycle details separate authorization, execution and missing recovery e
     reason: 'recovery-evidence-unavailable', learningTrials: false,
     limits: { maxReductionHours: .25, minimumHomeBenefitCents: -150 } } });
   assert.equal(details.status, 'Interrupted');
+  assert.equal(details.title, 'Last approved heating cycle');
+  assert.match(details.caption, /Historical approval record.*do not describe the selected plan/);
+  assert.equal(details.matchesCurrent, false);
   assert.deepEqual(details.dates.map(([label]) => label), ['Approved', 'Ended', 'Authorization deadline']);
   assert.match(details.reason, /missing evidence prevented recovery confirmation/);
   assert.doesNotMatch(details.reason, /recovery-evidence-unavailable/);
@@ -35,6 +38,34 @@ test('one-cycle assessments retain unavailable values, valid zero and estimated 
     ]);
   }
   assert.equal(heatingTrialDetails({}), null);
+});
+test('approval relationship requires exact identity and distinguishes ended captured plans from earlier records', () => {
+  const trial = { id: 'synthetic-approval', status: 'running', approvedAt: now };
+  const related = heatingTrialDetails({ current: { approvalId: trial.id }, activeTrial: trial });
+  assert.equal(related.matchesCurrent, true);
+  assert.match(related.caption, /belongs to the selected plan captured above/);
+  assert.equal(related.title, 'Approved heating cycle');
+  const separate = heatingTrialDetails({ current: { approvalId: 'different-approval' }, activeTrial: trial });
+  assert.equal(separate.matchesCurrent, false);
+  assert.match(separate.caption, /separate from the selected plan in this capture/);
+  const ended = heatingTrialDetails({ snapshotAt: now, current: { approvalId: trial.id }, activeTrial: { ...trial, status: 'completed', endedAt: now + 60_000 } });
+  assert.match(ended.caption, /ended after the plan above was captured/);
+  const recovery = heatingTrialDetails({ snapshotAt: now + 120_000, current: { approvalId: trial.id }, activeTrial: { ...trial, status: 'cancelled', endedAt: now + 60_000 } });
+  assert.match(recovery.caption, /no longer active.*recovery and restoration remain independent/);
+  assert.doesNotMatch(recovery.caption, /ended after/);
+  assert.equal(heatingTrialDetails({ current: {}, activeTrial: {} }).matchesCurrent, false);
+});
+
+test('ending the captured approved cycle withdraws comparison freshness while retaining its original plan and edits', async () => {
+  const selected = { approvalId: 'synthetic-approval', schedule: { reductionStart: now, reductionEnd: now + 60_000 } };
+  const state = createHeatingExplorerState({ clock: () => now, request: async () => makeResult({ current: selected,
+    activeTrial: { id: selected.approvalId, status: 'running' } }) });
+  await state.load(); state.edit('maxReductionHours', 8);
+  state.updateTrial({ id: selected.approvalId, status: 'completed' });
+  assert.equal(state.snapshot().stale, true);
+  assert.deepEqual(state.snapshot().result.current, selected);
+  assert.equal(state.snapshot().limits.maxReductionHours, 8);
+  assert.equal(await state.compare(), false);
 });
 test('a stale controller snapshot directs the user to recording health without exposing raw errors', async () => {
   const state = createHeatingExplorerState({ request: async () => {

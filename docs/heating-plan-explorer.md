@@ -12,6 +12,24 @@ The first capture shows one loading status. If it fails, **Retry loading** start
 a new read. Later refreshes keep the captured plan and edited limits visible;
 a failed refresh leaves that comparison stale and unavailable for approval.
 
+The window follows one reading order:
+
+- **Selected heating plan** shows the captured controller selection and its
+  timeline. **What shapes this plan** belongs to this section and shows that
+  plan's effective limits and evidence, including any approved overrides.
+- **Explore different limits** contains suggestions, editable limits, the scenario
+  comparison and its approval action. **Limits & evidence for this scenario**
+  describes that search; its rejections never replace the selected plan's context.
+- **Approved heating cycle** identifies an active approval. **Last approved
+  heating cycle** identifies an earlier record, with its approval time and status.
+  It follows exploration and is collapsed initially when no longer active.
+
+The selected plan and its context stay fixed across comparisons. An approval
+record explicitly says whether it belongs to that captured plan, using the actual
+approval identity. A newer record or an ended approval does not silently relabel
+the capture. Refresh after approval, cancellation or an ended captured cycle
+before comparing again. Expanding a record or switching to it preserves drafts.
+
 The plan describes the selected preheat, reduction and recovery phases. Times
 use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. The predicted recovery period includes checking indoor and stored heat
@@ -59,13 +77,19 @@ savings strategy and the native ROOM increase used for preheat. The ceiling is
 the maximum permitted duration; it does not force the planner to choose that
 duration. Several limits can be changed together.
 
-An approved cycle appears below the current plan. Its status, approval and
+The separate approval record follows exploration and review. Its status, approval and
 execution times, authorization deadline and outcome assessment are separate.
 **Approved limits** expands the original authorized values without changing them.
 A future authorization deadline does not mean an interrupted or completed cycle
 is still active. Missing recovery evidence leaves savings unassessed; restoration
 remains independent. Recorded cost differences still use an estimated Normal
 heating reference and do not establish measured savings or model validation.
+
+The approval summary names the scenario's actual reduction duration and window.
+An illustration of using the full duration limit has its own disclosure and cannot
+be approved. After a successful approval, the window opens and focuses the newly
+approved cycle's record. Active and historical record contents use the same layout;
+polling preserves the reader's chosen disclosure state for that approval.
 
 The main controls remain visible on narrow and wide screens. Less frequently
 changed budget and economic controls are under **Advanced settings**, initially
@@ -249,6 +273,11 @@ journal records retain their provenance and reconstruction meaning; see
 policy fields are accepted. Admin-only `POST /api/heating/explorer/apply` accepts
 the server's `previewId`, and `POST /api/heating/explorer/cancel` accepts an empty
 object. A client-supplied schedule or model cannot authorize control.
+
+`current.constraints` describes the captured selected plan's effective policy and
+evidence, independently of scenario `constraints`. `current.approvalId` identifies
+its actual one-cycle approval, or is null. A match with `activeTrial.id` establishes
+the record relationship; status text, similar dates or similar limits do not.
 
 Snapshots expire after five minutes and require a planning input no more than two
 minutes old. The service keeps at most eight snapshots and sixteen approval

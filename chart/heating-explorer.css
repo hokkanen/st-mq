@@ -25,6 +25,10 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-message[data-loading="true"]::before { content: ''; flex: none; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: heating-explorer-loading 1s linear infinite; }
 @keyframes heating-explorer-loading { to { transform: rotate(360deg); } }
 .heating-explorer-section { margin: 0 var(--ui-surface-inset); padding: 22px 0; border-bottom: 1px solid var(--border); }
+.heating-explorer-plan-context, .heating-explorer-suggestions { margin-top: 18px; }
+.heating-explorer-comparison { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--border); }
+.heating-explorer-comparison h4#heating-comparison-title { font-size: 14px; }
+.heating-explorer-approved-body { padding-top: 4px; }
 #heating-explorer-comparison-section, #heating-explorer-form, #heating-simulator-title { scroll-margin-top: 155px; }
 #heating-explorer-trial { scroll-margin-top: var(--heating-explorer-control-scroll-margin, 155px); }
 .heating-explorer-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -62,7 +66,7 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-control-label label { margin: 0; }
 .heating-explorer-control-help { flex: none; color: var(--muted); }
 .heating-explorer-control-help button.status-detail-trigger { display: grid; place-items: center; width: 28px; min-height: 28px; font-size: 16px; text-decoration: none; }
-.heating-explorer-advanced { border: 1px solid var(--border); border-radius: 7px; padding: 8px var(--ui-inset); }
+.heating-explorer-advanced { margin-inline-start: 0; border: 1px solid var(--border); border-radius: 7px; padding: 8px var(--ui-inset); }
 .heating-explorer-advanced > summary { color: var(--text); font-size: 12px; }
 .heating-explorer-advanced > p { font-size: 11px; }
 .heating-explorer-advanced .heating-explorer-controls { margin-bottom: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -125,8 +129,8 @@ label.heating-explorer-learning-toggle { display: flex; flex-direction: row; ali
 .heating-explorer-trial-outcome { margin-block: 16px; padding: 12px var(--ui-inset); background: var(--surface-soft); border: 1px solid var(--border); border-radius: 7px; }
 .heating-explorer-trial-outcome > p:last-child { margin-bottom: 0; }
 .heating-explorer-trial-outcome .heating-explorer-facts { margin-bottom: 0; }
-.heating-explorer-trial > .muted { font-size: 11px; margin-block: 14px; }
-.heating-explorer-trial > button { font-size: 11px; }
+.heating-explorer-trial > .muted, .heating-explorer-approved-body > .muted { font-size: 11px; margin-block: 14px; }
+.heating-explorer-approved-body > button, #heating-explorer-view-approval { font-size: 11px; }
 .heating-explorer-footnotes { padding: 18px var(--ui-surface-inset) 24px; }
 .heating-explorer-footnotes ul { padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .heating-explorer-footnotes p { font-size: 11px; color: var(--muted); }

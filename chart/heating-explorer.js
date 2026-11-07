@@ -68,16 +68,17 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     const draft = preserveDraft ? new Map([...edited].map(key => [key, limits[key]])) : null;
     const ownGeneration = ++generation;
     const capturedFreshnessRevision = freshnessRevision, capturedTrialRevision = trialRevision;
-    busy = true; error = false; message = mutation ? 'Saving one-cycle limits…' : reset ? 'Loading current conditions…' : 'Comparing your scenario…'; notify();
+    busy = true; error = false; message = mutation ? path.endsWith('/cancel') ? 'Cancelling cycle approval…' : 'Approving heating cycle…'
+      : reset ? 'Loading current conditions…' : 'Comparing your scenario…'; notify();
     try {
       const next = await request(path, body);
       if (generation !== ownGeneration) return false;
       if (mutation) {
-        result = { ...result, activeTrial: next.activeTrial, application: { allowed: false, reason: 'Refresh conditions to review another cycle.' } };
-        message = path.endsWith('/cancel') ? 'One-cycle limits cancelled. Any required recovery and restoration still continue.'
-          : 'One-cycle limits approved. The controller will recheck conditions before and during the cycle.';
+        result = { ...result, activeTrial: next.activeTrial, application: { allowed: false, reason: 'Refresh conditions to see the selected plan after this change.' } };
+        message = path.endsWith('/cancel') ? 'Cycle approval cancelled. Any required recovery and restoration still continue.'
+          : 'Heating cycle approved. Its reviewed limits apply only to that cycle. The controller rechecks current conditions before execution.';
         receipt = { at: clock(), message }; message = '';
-        dirty = true;
+        dirty = true; stale = true;
       } else {
         const activeTrial = result?.activeTrial;
         result = capturedTrialRevision === trialRevision ? next : { ...next, activeTrial };
@@ -140,6 +141,7 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     updateTrial(trial) {
       if (result && JSON.stringify(trial) !== JSON.stringify(result.activeTrial)) {
         ++trialRevision;
+        if (trial?.id && trial.id === result.current?.approvalId && !validTrial(trial)) { ++freshnessRevision; stale = true; }
         result = { ...result, activeTrial: trial }; notify();
       }
     },
@@ -186,8 +188,18 @@ export function heatingTrialDetails(result) {
   const trial = result.activeTrial;
   if (!trial) return null;
   const active = validTrial(trial), outcome = trial.outcome;
+  const matchesCurrent = !!trial.id && trial.id === result.current?.approvalId;
+  const endedAfterCapture = Number.isFinite(trial.endedAt) && Number.isFinite(result.snapshotAt) && trial.endedAt > result.snapshotAt;
   const values = { ...trial.limits, ...(typeof trial.learningTrials === 'boolean' ? { learningTrials: trial.learningTrials } : {}) };
   return {
+    active, matchesCurrent,
+    title: active ? 'Approved heating cycle' : 'Last approved heating cycle',
+    caption: `Approved ${atTime(trial.approvedAt)}. ${matchesCurrent
+      ? active ? 'This approval belongs to the selected plan captured above.'
+        : endedAfterCapture ? 'This approval ended after the plan above was captured. Refresh conditions to update that plan.'
+          : 'This approval is no longer active. The captured plan belongs to that cycle; recovery and restoration remain independent.'
+      : active ? 'This approval is separate from the selected plan in this capture. Refresh conditions to update that plan.'
+        : 'Historical approval record. Its limits and outcome do not describe the selected plan above.'}`,
     status: ({ pending: 'Awaiting start', running: 'In progress', completed: 'Completed', cancelled: 'Cancelled',
       expired: 'Expired', interrupted: 'Interrupted', rejected: 'Rejected' })[trial.status] ?? 'Status unavailable',
     dates: [
@@ -237,7 +249,7 @@ export function heatingUncertaintyBands(points = []) {
 export function createHeatingExplorerPanel({ document, request, afterMutation = () => {}, confirm = confirmAction }) {
   const $ = id => document.getElementById(id);
   const dialog = $('heating-explorer-dialog'), opener = $('home-planned-change');
-  let status, receivedAt = Date.now(), renderedResult, controlsSnapshot, wasStale = false, approving = false;
+  let status, receivedAt = Date.now(), renderedResult, controlsSnapshot, renderedTrialId, wasStale = false, approving = false;
   const controls = new Map();
   const now = () => Number.isFinite(status?.now) ? status.now + Math.max(0, Date.now() - receivedAt) : Date.now();
   const actions = createHeatingExplorerState({ request, clock: now, onChange: render });
@@ -257,7 +269,13 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   function renderTrial(result) {
     const trial = heatingTrialDetails(result);
     $('heating-explorer-trial').hidden = !trial;
-    if (!trial) return;
+    if (!trial) { renderedTrialId = undefined; return; }
+    if (renderedTrialId !== result.activeTrial.id) {
+      $('heating-explorer-trial-record').open = trial.active;
+      renderedTrialId = result.activeTrial.id;
+    }
+    $('heating-explorer-trial-title').textContent = trial.title;
+    $('heating-explorer-trial-caption').textContent = trial.caption;
     $('heating-explorer-trial-status').textContent = trial.status;
     $('heating-explorer-trial').dataset.status = result.activeTrial.status;
     facts('heating-explorer-trial-dates', trial.dates);
@@ -267,6 +285,11 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     facts('heating-explorer-trial-outcome', trial.metrics);
     facts('heating-explorer-trial-values', trial.limits);
     $('heating-explorer-trial-limits').hidden = !trial.limits.length;
+  }
+  function viewApproval() {
+    $('heating-explorer-trial-record').open = true;
+    $('heating-explorer-trial').scrollIntoView({ block: 'start' });
+    $('heating-explorer-trial-record').querySelector('summary').focus({ preventScroll: true });
   }
   function scrollToLimits(focus) {
     const heading = $('heating-simulator-title');
@@ -352,7 +375,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const current = control.options?.find(option => option.value === control.value)?.label ?? decimal(control.value);
       const effectiveDiffers = control.effectiveValue != null && control.effectiveValue !== control.value;
       const effective = control.options?.find(option => option.value === control.effectiveValue)?.label ?? decimal(control.effectiveValue);
-      const help = element('small', `Configured: ${current}${control.unit ? ` ${control.unit}` : ''}${effectiveDiffers ? ` · Active cycle: ${effective}${control.unit ? ` ${control.unit}` : ''}` : ''}`); help.id = `${id}-current`;
+      const help = element('small', `Configured: ${current}${control.unit ? ` ${control.unit}` : ''}${effectiveDiffers ? ` · Selected plan: ${effective}${control.unit ? ` ${control.unit}` : ''}` : ''}`); help.id = `${id}-current`;
       row.append(heading, wrapper, help);
       $(['maxTrialCostCents', 'learningPriorityPriceCents'].includes(control.key) ? 'heating-explorer-learning-controls'
         : control.advanced ? 'heating-explorer-advanced-controls' : 'heating-explorer-controls').append(row);
@@ -360,11 +383,12 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     }
     $('heating-explorer-reset').textContent = 'Reset to captured baseline';
   }
-  function renderConstraints(result) {
-    const list = $('heating-explorer-constraints'); list.replaceChildren();
+  function renderConstraints(id, constraints, { selected = false } = {}) {
+    const list = $(id); list.replaceChildren();
     const labels = { blocking: 'Limits this search', limiting: 'Limits this search', reached: 'Reached',
-      initial: 'Initial estimate', learning: 'Learning', unknown: 'Not assessable' };
-    for (const constraint of result.constraints ?? []) {
+      initial: 'Initial estimate', learning: 'Learning', unknown: 'Not assessable', configured: 'Selected limit',
+      specified: 'Configured reference', limited: 'Limited telemetry', unavailable: 'Not ready' };
+    for (const constraint of constraints ?? []) {
       const item = element('li', null, 'heating-explorer-constraint'); item.dataset.status = constraint.status;
       const head = element('div', null, 'heating-explorer-constraint-head');
       const value = Number.isFinite(constraint.value) ? ` · ${decimal(constraint.value)}${constraint.unit ? ` ${constraint.unit}` : ''}`
@@ -372,7 +396,8 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const availableLabel = constraint.kind === 'policy' ? 'Within limit'
         : constraint.kind === 'evidence' ? 'Observed support' : 'Available';
       head.append(element('strong', `${constraint.label}${value}`), element('span',
-        constraint.status === 'available' ? availableLabel : labels[constraint.status] ?? 'Not assessable', 'heating-explorer-constraint-status'));
+        selected && ['blocking', 'limiting'].includes(constraint.status) ? 'Evidence incomplete'
+          : constraint.status === 'available' ? availableLabel : labels[constraint.status] ?? 'Not assessable', 'heating-explorer-constraint-status'));
       item.append(head, element('p', constraint.detail));
       for (const diagnostic of constraint.diagnostics ?? []) {
         if (!Number.isFinite(diagnostic.value)) continue;
@@ -381,6 +406,8 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       list.append(item);
     }
     if (!list.children.length) list.append(element('li', 'Constraint diagnostics are not available for these conditions.', 'muted'));
+  }
+  function renderOpportunities(result) {
     const opportunities = $('heating-explorer-opportunities'); opportunities.replaceChildren();
     for (const opportunity of result.opportunities ?? []) {
       const card = element('div', null, 'heating-explorer-opportunity');
@@ -486,15 +513,21 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderResult(result) {
     renderTrial(result);
-    $('heating-constraints-title').textContent = result.previewId ? 'Limits in this comparison' : 'What shapes this plan';
+    const matchingApproval = result.current?.approvalId && result.current.approvalId === result.activeTrial?.id;
+    $('heating-explorer-current-source').textContent = matchingApproval
+      ? `Captured from the cycle approved ${atTime(result.activeTrial.approvedAt)}. The approval record below has its latest status.`
+      : result.current?.approvalId ? 'This captured plan belongs to a different approval than the record below.' : '';
+    $('heating-explorer-current-source').hidden = !result.current?.approvalId;
+    $('heating-explorer-view-approval').hidden = !matchingApproval;
     $('heating-explorer-phase').textContent = phaseName(result.current?.phase ?? result.current?.action);
     $('heating-explorer-reason').textContent = reasonsText(result.current?.reasons) || 'The controller rechecks this plan as conditions change.';
     timeline('heating-explorer-timeline', result.current);
-    renderConstraints(result);
+    renderConstraints('heating-explorer-constraints', result.current?.constraints, { selected: true });
     const limitations = $('heating-explorer-limitations'); limitations.replaceChildren();
     for (const limitation of result.limitations ?? []) limitations.append(element('li', limitation));
     $('heating-explorer-comparison-section').hidden = !result.previewId;
     if (!result.previewId) return;
+    renderConstraints('heating-explorer-scenario-constraints', result.constraints);
     $('heating-explorer-comparison-summary').textContent = result.comparison?.changed
       ? 'This calculation selects a different cycle from the current plan. Compare the benefit, indoor average and recovery together.'
       : 'These limits do not change the selected plan in this comparison. Other constraints, evidence or the economic trade-off may still determine the choice.';
@@ -508,7 +541,11 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     renderChart(result); renderBreakdown(result);
     const illustrative = result.illustrative;
     $('heating-explorer-illustrative').hidden = !illustrative;
-    $('heating-explorer-illustrative').textContent = illustrative ? `Illustrative ${illustrative.schedule ? `${decimal((illustrative.schedule.reductionEnd - illustrative.schedule.reductionStart) / hour)} h reduction` : 'prediction'} only · ${illustrative.extrapolated ? 'Outside demonstrated coverage. ' : ''}${Number.isFinite(illustrative.outcomes?.maxIndoorDropC) ? `Largest predicted average drop ${decimal(illustrative.outcomes.maxIndoorDropC)} °C. ` : ''}${Number.isFinite(illustrative.estimatedBenefitCents) ? `Estimated saving vs normal heating ${money(illustrative.estimatedBenefitCents)}. ` : ''}${reasonsText(illustrative.reasons)}. This prediction cannot be applied as an automatic plan.` : '';
+    $('heating-explorer-illustrative-description').textContent = illustrative ? `Illustrative ${illustrative.schedule ? `${decimal((illustrative.schedule.reductionEnd - illustrative.schedule.reductionStart) / hour)} h reduction` : 'prediction'} only · ${illustrative.extrapolated ? 'Outside demonstrated coverage. ' : ''}${Number.isFinite(illustrative.outcomes?.maxIndoorDropC) ? `Largest predicted average drop ${decimal(illustrative.outcomes.maxIndoorDropC)} °C. ` : ''}${Number.isFinite(illustrative.estimatedBenefitCents) ? `Estimated saving vs normal heating ${money(illustrative.estimatedBenefitCents)}. ` : ''}${reasonsText(illustrative.reasons)}` : '';
+    const schedule = result.scenario?.schedule;
+    $('heating-explorer-application-summary').textContent = Number.isFinite(schedule?.reductionStart) && Number.isFinite(schedule?.reductionEnd)
+      ? `Approval is for the scenario above: ${decimal((schedule.reductionEnd - schedule.reductionStart) / hour)} h of reduction, from ${atTime(schedule.reductionStart)} to ${atTime(schedule.reductionEnd)}. The whole cycle shown above is included.`
+      : 'This scenario has no cycle available for approval.';
   }
   function render(state) {
     if (!dialog.open) return;
@@ -525,7 +562,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-content').setAttribute('aria-busy', String(busy));
     $('heating-explorer-refresh').disabled = busy || !status || isReadOnlyReplica(status) || status.input === 'offline';
     if (!result) return;
-    if (controlsSnapshot !== result.snapshotId) { renderControls(result); controlsSnapshot = result.snapshotId; }
+    if (controlsSnapshot !== result.snapshotId) { renderControls(result); renderOpportunities(result); controlsSnapshot = result.snapshotId; }
     if (renderedResult !== result) { renderResult(result); renderedResult = result; }
     for (const [key, row] of controls) {
       const value = state.limits[key];
@@ -546,7 +583,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       state.limits.learningTrials !== true ? 'These values are retained but are not used while trials are disabled.'
         : budgetEdited ? 'The edited budget supplies a separate allowance for this reviewed cycle.' : 'An unchanged budget retains the captured automatic allowance.',
     ].filter(Boolean).join(' ');
-    $('heating-explorer-snapshot').textContent = `${state.stale ? 'Comparison needs refreshing' : 'Conditions pinned'} · ${atTime(result.snapshotAt)} · Europe/Helsinki`;
+    $('heating-explorer-snapshot').textContent = `${state.stale ? 'Plan capture needs refreshing' : 'Plan captured'} · ${atTime(result.snapshotAt)} · Europe/Helsinki`;
     $('heating-explorer-calculate').disabled = busy || state.stale;
     $('heating-explorer-calculate').textContent = busy ? 'Working' : 'Compare scenario';
     $('heating-explorer-reset').disabled = busy;
@@ -608,6 +645,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   });
   $('heating-explorer-refresh').addEventListener('click', () => { void actions.load({ preserveDraft: true }); });
   $('heating-explorer-reset').addEventListener('click', () => actions.reset());
+  $('heating-explorer-view-approval').addEventListener('click', viewApproval);
   $('heating-explorer-jump').addEventListener('click', () => {
     const first = controls.values().next().value;
     scrollToLimits(first?.row.querySelector('.app-select-trigger') ?? first?.input);
@@ -621,10 +659,13 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     approving = true;
     closeStatusDetails(document);
     try {
-      const accepted = await confirm({ document, title: 'Use these limits for one cycle?',
+      const accepted = await confirm({ document, title: 'Approve this heating cycle?',
         message: heatingApprovalText(state.result), action: 'Approve one cycle' });
       if (accepted && dialog.open && status?.webAccess?.role === 'admin'
-        && actions.snapshot().result?.previewId === previewId && await actions.apply()) await afterMutation();
+        && actions.snapshot().result?.previewId === previewId && await actions.apply()) {
+        await afterMutation();
+        if (dialog.open) viewApproval();
+      }
     } finally { approving = false; }
   });
   $('heating-explorer-cancel').addEventListener('click', async () => {
@@ -667,6 +708,6 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       if (!status || isReadOnlyReplica(status) || status.input === 'offline') renderRecorded();
       else actions.tick();
     },
-    clear() { close(); actions.clear(); controlsSnapshot = undefined; renderedResult = undefined; },
+    clear() { close(); actions.clear(); controlsSnapshot = undefined; renderedResult = undefined; renderedTrialId = undefined; },
   };
 }
