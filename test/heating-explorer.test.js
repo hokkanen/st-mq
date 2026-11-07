@@ -72,6 +72,49 @@ test('retained actual pending plan stays the main reference when fresh optimizat
   assert.equal(result.comparison.additionalBenefitCents, result.current.outcomes.costCents - result.scenario.outcomes.costCents);
 });
 
+test('an executed reduction never acquires a rolling one-hour recovery deadline from a fresh forecast', () => {
+  const input = heatingExplorerFixture({ hours: 24 });
+  input.currentPlan = chooseCycle(input).plan;
+  assert.ok(input.currentPlan);
+  const start = input.now - 10 * HOUR;
+  input.currentPlan.schedule = { preheatStart: start, preheatEnd: start,
+    reductionStart: start, reductionEnd: start + HOUR / 4, roomBoostC: 0 };
+  input.currentDecision = { action: 'normal', phase: 'recovery', reasons: ['complete-cycle-in-progress'] };
+  const original = structuredClone(input.currentPlan);
+  for (const offset of [0, HOUR / 2]) {
+    input.now += offset;
+    input.observations.indoor.observedAt = input.now;
+    const result = exploreHeatingPlan(input, {}, options);
+    assert.equal(result.current.phases.at(-1).start, start + HOUR / 4);
+    assert.equal(result.current.phases.at(-1).end, null);
+    assert.equal(result.current.outcomes.recoveredAt, null);
+    assert.equal(result.current.outcomes.completeRecoveryPredicted, null);
+    assert.equal(result.current.outcomes.recoveryCostCents, null);
+    assert.equal(result.current.outcomes.recoveryEnergyKwh, null);
+    assert.equal(result.current.outcomes.recoveryAuxKwh, null);
+    assert.ok(result.current.trajectory.length > 4);
+    assert.ok(result.current.trajectory.every(row => row.phase === 'recovery'));
+    assert.deepEqual(input.currentPlan, original, 'The original forecast remains immutable');
+  }
+});
+
+test('pending selected treatment still forecasts recovery before execution begins', () => {
+  const input = heatingExplorerFixture();
+  input.currentPlan = chooseCycle(input).plan;
+  assert.ok(input.currentPlan.schedule.reductionStart >= input.now);
+  const start = input.now + HOUR;
+  input.currentPlan.schedule = { preheatStart: start, preheatEnd: start,
+    reductionStart: start, reductionEnd: start + HOUR / 4, roomBoostC: 0 };
+  input.forecast.forEach(row => { row.outdoorC = 21; });
+  input.thermalState = { indoorC: 21, reserveC: 21, slabC: 21 };
+  input.equipment.compressorOn = 0;
+  const result = exploreHeatingPlan(input, {}, options);
+  const expected = result.current.outcomes.recoveredAt;
+  assert.ok(Number.isFinite(expected));
+  assert.equal(result.current.phases.at(-1).end, expected);
+  assert.equal(result.current.outcomes.completeRecoveryPredicted, true);
+});
+
 test('hypothetical settings map to the same planner without changing evidence or defaults', () => {
   const input = heatingExplorerFixture(), before = structuredClone(input);
   const changes = { maxReductionHours: 8, maxDropC: 1.5, maxRiseC: 1.75, maxPreheatHours: 3,

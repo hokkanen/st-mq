@@ -190,6 +190,86 @@ test('terminal header, pointer and working-cache removal publish atomically',t=>
   assert(store.getState(tracker.workingKey(before)),'The previous valid cache remains selected');
 });
 
+test('irrecoverable recovery evidence ends an attempt only after treatment and the fixed hold, including rebuild',t=>{
+  for (const gap of [
+    {powerKw:null,compressorDuty:null,thermalCompressorDuty:null},
+    {thermalAuxKw:null},
+    {outdoorC:null},
+    {floorOverrideMode:'unknown'},
+  ]) {
+    const {store,tracker}=fixture(t,{reductionHours:.25});
+    const original=structuredClone(tracker.active().plan),id=tracker.active().id;
+    // The durable native hold can outlive the schedule's default hold.
+    const cycle=tracker.active();cycle.recoveryHoldUntil=START+2*HOUR;tracker.save(cycle);
+    tracker.record(sample(START+5*60000,gap),START+5*60000);
+    assert.equal(tracker.active().status,'active','Missing evidence cannot cancel accepted treatment');
+    assert.equal(tracker.active().observerState,null);
+    const before=[...store.cycleEvidence(id)];
+    store.setState(tracker.workingKey(tracker.active()),null);
+    const job=tracker.workingJob();assert.ok(job);
+    tracker.adoptWorking(rebuildCycleWorking(store,job));
+    const resumed=new CycleTracker({store,input:'synthetic',config:{recoveryTimeoutHours:8}});
+    for (const minute of [15,30,60,90,119]) resumed.record(sample(START+minute*60000),START+minute*60000);
+    assert.equal(resumed.active().status,'active','The native recovery hold retains its original authority');
+    assert.equal(resumed.active().observerState,null,'Later readings cannot fabricate stored heat across the gap');
+    resumed.record(sample(START+2*HOUR),START+2*HOUR);
+    assert.equal(resumed.active(),null);
+    const ended=store.cycleById({id});
+    assert.equal(ended.status,'incomplete');
+    assert.equal(ended.incompleteReason,'recovery-evidence-unavailable');
+    assert.equal(ended.endedAt,START+2*HOUR);
+    assert.equal(ended.assessment,undefined);
+    assert.deepEqual(ended.plan,original);
+    assert.deepEqual([...store.cycleEvidence(id)].slice(0,before.length),before);
+    assert.equal(store.getState(resumed.workingKey(ended)),null);
+    assert.equal(resumed.outcomes().assessed,0);
+  }
+});
+
+test('an evidence gap survives a file restart and ends unassessed when its hold expires',async t=>{
+  const {store,tracker}=fixture(t,{file:true,reductionHours:.25});
+  const id=tracker.active().id,path=store.path;
+  tracker.record(sample(START+5*60000,{powerKw:null}),START+5*60000);
+  await store.close();
+  const reopened=new Store(path);
+  try {
+    const resumed=new CycleTracker({store:reopened,input:'synthetic'});
+    reopened.setState(resumed.workingKey(resumed.active()),null);
+    resumed.adoptWorking(rebuildCycleWorking(reopened,resumed.workingJob()));
+    assert.equal(resumed.active().observerState,null);
+    for (const minute of [15,30,45,60,75]) resumed.record(sample(START+minute*60000),START+minute*60000);
+    assert.equal(resumed.active(),null);
+    const ended=reopened.cycleById({id});
+    assert.equal(ended.incompleteReason,'recovery-evidence-unavailable');
+    assert.equal(ended.assessment,undefined);
+    assert.ok(ended.actual.missingHours>0);
+  } finally {await reopened.close();}
+});
+
+test('failed incomplete-outcome publication rolls back the final sample, pointer and evidence',t=>{
+  const {store,tracker}=fixture(t,{reductionHours:.25});
+  tracker.record(sample(START+5*60000,{powerKw:null}),START+5*60000);
+  for (const minute of [15,30,45,60]) tracker.record(sample(START+minute*60000),START+minute*60000);
+  const before=tracker.active(),checkpoint=store.checkpoint(),rows=[...store.cycleEvidence(before.id)],event=store.event;
+  store.event=function(type,...args){if(type==='cycle-incomplete')throw Error('Synthetic incomplete publication failure');return event.call(this,type,...args);};
+  try {assert.throws(()=>tracker.record(sample(START+75*60000),START+75*60000),/Synthetic incomplete publication failure/);}
+  finally {store.event=event;}
+  assert.deepEqual(tracker.active(),before);
+  assert.deepEqual(store.checkpoint(),checkpoint);
+  assert.deepEqual([...store.cycleEvidence(before.id)],rows);
+  tracker.record(sample(START+75*60000),START+75*60000);
+  assert.equal(tracker.active(),null);
+  assert.equal(store.cycleById({id:before.id}).incompleteReason,'recovery-evidence-unavailable');
+});
+
+test('a known unresolved heat deficit keeps recovery active after the hold',t=>{
+  const {tracker}=fixture(t,{reductionHours:.25});
+  for (let minute=15;minute<=120;minute+=15) tracker.record(sample(START+minute*60000,{indoorC:19}),START+minute*60000);
+  assert.equal(tracker.active().status,'active');
+  assert.ok(Number.isFinite(tracker.active().observerState.reserveC));
+  assert.equal(tracker.active().stableSince,null);
+});
+
 test('a failed final hold update rolls back its complete sample rather than retaining stale recovery proof',t=>{
   const {store,tracker}=fixture(t,{reductionHours:0.5});tracker.record(sample(START+HOUR/2),START+HOUR/2);
   const before=tracker.active(),checkpoint=store.checkpoint(),save=store.cycle;

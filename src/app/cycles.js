@@ -387,6 +387,15 @@ export class CycleTracker {
     if (now - schedule.reductionEnd > this.config.recoveryTimeoutHours * HOUR) {
       this.cancel(now,'recovery-not-established-before-timeout'); return null;
     }
+    const recoveryHoldUntil = cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil
+      ?? schedule.reductionEnd + this.config.recoveryHoldMinutes * 60_000;
+    if (now >= schedule.reductionEnd && now >= recoveryHoldUntil
+      && (!cycle.observerState || referenceState.unavailable)) {
+      // An irreversible evidence gap cannot regain a stored-heat state through
+      // later samples. Finish the attempt without inventing recovery/savings,
+      // after all accepted treatment and fixed native restrictions have ended.
+      this.cancel(now,'recovery-evidence-unavailable'); return null;
+    }
     if (now < schedule.reductionEnd || referenceState.unavailable) return null;
     const reference = { endState: referenceState.continuation.state };
     const reserve = cycle.observerState?.reserveC;

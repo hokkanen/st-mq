@@ -267,6 +267,10 @@ try {
   assert.match(await evaluate(`document.getElementById('heating-explorer-opportunities').textContent`), /€0.55.*6 h/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-context').textContent`), /estimate for one unavailable room.*±0.2 °C.*no learning evidence/);
   assert.match(await evaluate(`document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent`), /stored heat.*does not mean continuous extra heating.*estimate/);
+  await evaluate(`explorerFixture.value.current.phases.at(-1).end=null;Object.assign(explorerFixture.value.current.outcomes,{recoveredAt:null,completeRecoveryPredicted:null,recoveryCostCents:null,recoveryEnergyKwh:null,recoveryAuxKwh:null});document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled&&document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent.includes('completion unconfirmed')`);
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent`), /completion unconfirmed.*reliable completion estimate is unavailable/);
+  assert.doesNotMatch(await evaluate(`document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent`), /Completion time is an estimate/);
   await keyPress('Escape');
   await until(`!document.getElementById('heating-explorer-dialog').open`);
   assert.equal(await evaluate(`document.activeElement.id`), 'home-planned-change');
@@ -491,6 +495,8 @@ try {
     await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:false});
     await evaluate(`document.querySelector('.heating-explorer-breakdown > summary').click()`);
     assert(await evaluate(`document.querySelector('.heating-explorer-breakdown').open&&document.querySelectorAll('#heating-explorer-breakdown tbody tr').length>=3`),'Energy and recovery breakdown opens');
+    for (const label of ['Predicted recovery completion','Recovery cost','Recovery electricity','Recovery auxiliary electricity'])
+      assert.match(await evaluate(`(() => {const row=[...document.querySelectorAll('#heating-explorer-breakdown tr')].find(row=>row.querySelector('th')?.textContent===${JSON.stringify(label)});return row?.querySelector('td')?.textContent;})()`),/unavailable/i,`${label}: an unavailable prefix cannot become a fresh recovery estimate or a beyond-horizon claim`);
     assert(await evaluate(`(()=>{const d=document.getElementById('heating-explorer-dialog');return d.scrollWidth<=d.clientWidth+1;})()`),'Expanded breakdown fits the window');
     await evaluate(`document.querySelector('.heating-explorer-breakdown > summary').click()`);
     assert.equal(await evaluate(`document.querySelector('.heating-explorer-breakdown').open`),false);

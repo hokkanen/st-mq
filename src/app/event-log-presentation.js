@@ -12,6 +12,7 @@ const register = value => lookup({ '0203': 'ROOM temperature', '0208': 'Hot-wate
 const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heating control was unavailable.', 'restart-with-automation-disabled': 'Restoration was checked after restart while automatic heating control was unavailable.',
   'model-rebuilding': 'The learning model was being rebuilt.', 'execution-not-established': 'Command execution was not established.',
   'insufficient-cycle-energy-coverage': 'Recorded energy coverage was incomplete.', 'sensor-measurement-changed': 'A sensor change interrupted this cycle.',
+  'recovery-evidence-unavailable': 'Treatment and the fixed recovery hold ended, but missing evidence prevented recovery confirmation. Savings remain unassessed.',
   'native-room-setting-changed': 'A native ROOM setting change invalidated the applicable response evidence.', 'source-expired': 'Source evidence expired.',
   'missing-report': 'An expected source report was missing.', 'command-failed': 'Command confirmation was unavailable.',
   'heating-paused': 'Automatic heating was paused.', 'manual-heating-override': 'An explicit manual heating choice was active.',

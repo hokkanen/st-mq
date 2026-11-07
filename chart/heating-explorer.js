@@ -270,9 +270,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const title = element('strong', phaseName(phase.phase));
       const sameDate = Number.isFinite(phase.start) && Number.isFinite(phase.end)
         && atTime(phase.start).split(',')[0] === atTime(phase.end).split(',')[0];
-      const timing = element('time', Number.isFinite(phase.start) ? `${atTime(phase.start)}${Number.isFinite(phase.end) ? ` – ${sameDate ? clockFormat.format(phase.end) : atTime(phase.end)}` : ' onward'}` : 'No scheduled change');
+      const timing = element('time', Number.isFinite(phase.start) ? `${atTime(phase.start)}${Number.isFinite(phase.end) ? ` – ${sameDate ? clockFormat.format(phase.end) : atTime(phase.end)}` : phase.phase === 'recovery' ? ' – completion unconfirmed' : ' onward'}` : 'No scheduled change');
       if (Number.isFinite(phase.start)) timing.dateTime = new Date(phase.start).toISOString();
-      const description = phase.phase === 'recovery' ? 'Includes checking indoor and stored heat against Normal heating. It does not mean continuous extra heating. Completion time is an estimate.'
+      const description = phase.phase === 'recovery' ? `Includes checking indoor and stored heat against Normal heating. It does not mean continuous extra heating. ${Number.isFinite(phase.end) ? 'Completion time is an estimate.' : 'A reliable completion estimate is unavailable.'}`
         : phase.phase === 'reduction' ? 'Reduced space-heating demand; protection and required services remain.'
           : phase.phase === 'preheat' ? 'Builds warmth ahead of the reduction, within average limits.'
             : 'Normal heating demand.';

@@ -160,6 +160,21 @@ function outcomes(prediction, args) {
 function summary(decision, args, baseline, { origin = 'recalculated', plan = decision?.plan } = {}) {
   const schedule = plan?.schedule ?? null;
   const prediction = args ? schedule ? evaluateCycle({ ...args, schedule }) : baseline : null;
+  // A forecast starting after treatment began has no observed cycle prefix or
+  // original Normal reference. Starting both paths at today's state cannot
+  // predict when yesterday's treatment has recovered.
+  const treatmentStart = schedule && (schedule.preheatEnd > schedule.preheatStart
+    ? schedule.preheatStart : schedule.reductionStart);
+  const recoveryUnconfirmed = origin === 'selected' && schedule
+    && (!args || args.intervals[0].start > treatmentStart);
+  if (prediction && recoveryUnconfirmed) {
+    prediction.recoveredAt = null;
+    prediction.completeRecoveryPredicted = null;
+    prediction.recoveryCostCents = null;
+    prediction.recoveryEnergyKwh = null;
+    prediction.recoveryAuxKwh = null;
+    for (const row of prediction.trajectory) if (row.requestedPhase === 'recovery') row.phase = 'recovery';
+  }
   const phases = schedule ? [
     ...(schedule.preheatEnd > schedule.preheatStart ? [{ phase: 'preheat', start: schedule.preheatStart, end: schedule.preheatEnd, estimated: false }] : []),
     ...(schedule.reductionEnd > schedule.reductionStart

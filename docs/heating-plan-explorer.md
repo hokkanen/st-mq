@@ -13,6 +13,10 @@ use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. The predicted recovery period includes checking indoor and stored heat
 against Normal heating and a settling interval; it can include ordinary heating
 and does not mean continuous extra heating, even without a visible indoor drop.
+Once treatment has begun, the explorer shows **completion unconfirmed** rather
+than restarting the settling forecast from the current time. A fresh simulation
+without the executed prefix cannot establish recovery of the original cycle.
+Its recovery cost and electricity estimates also remain unavailable.
 Reduced heating changes native heat demand; it does not promise that
 the compressor will stop. The normal recovery hold and restoration duties still
 apply; see [planning and recovery](learning-and-control.md#planning-and-recovery).

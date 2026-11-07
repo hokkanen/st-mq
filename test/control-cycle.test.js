@@ -171,13 +171,20 @@ test('completed-cycle profit uses the same elapsed period and keeps DHW auxiliar
 });
 
 test('unknown auxiliary evidence cannot establish a recovered reserve or calibrate itself', t => {
-  const { tracker, plan } = fixture(t);
+  const { tracker, plan, store } = fixture(t);
   const changes = { auxiliaryObserved: false, auxiliaryRouteKnown: false, compressorActivityObserved: false,
     auxKw: null, auxRoute: null,thermalCompressorDuty:null,thermalAuxKw:null };
-  tracker.start(plan, sample(start, changes), start);
+  const original=tracker.start(plan, sample(start, changes), start);
   const episode = finish(tracker, changes);
   assert.equal(episode,undefined);
-  assert.equal(tracker.active().stableSince,null);
+  assert.equal(tracker.active(),null);
+  const cycle=store.cycleById({id:original.id});
+  assert.equal(cycle.status,'incomplete');
+  assert.equal(cycle.incompleteReason,'recovery-evidence-unavailable');
+  assert.equal(cycle.stableSince,null);
+  assert.equal(cycle.observerState,null);
+  assert.equal(cycle.assessment,undefined);
+  assert.equal(tracker.metrics(21).profit.count, 0);
   assert.equal(tracker.metrics(21).auxProfit.count, 0);
   const cp = updateAdaptiveEpisode(null, {complete:false});
   assert.equal(cp.model.energy.recoveryCalibrationEpisodes, 0);

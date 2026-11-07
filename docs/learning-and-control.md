@@ -452,6 +452,10 @@ Missing temperature, energy or routing evidence can leave an outcome unassessed
 without ending control. A long observation gap is recorded as missing coverage,
 not extrapolated measured consumption. Recovery assessment and its timeout never
 extend native setting restrictions.
+If an evidence gap makes the cycle's stored-heat state or Normal reference
+unrecoverable, the attempt ends as incomplete after treatment and the fixed
+recovery hold have ended. Later readings do not fill the gap or establish
+recovery or savings. The recorded evidence and original forecast remain intact.
 
 | Condition | Controller consequence |
 | --- | --- |

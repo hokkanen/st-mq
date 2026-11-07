@@ -15,6 +15,12 @@ import { Worker } from 'node:worker_threads';
 const NOW = Date.parse('2026-10-25T12:00:00Z');
 const query = search => eventLogQuery(new URL(`http://fixture/api/events${search ? `?${search}` : ''}`));
 const id = (kind, value) => `${kind}:${String(value).padStart(16, '0')}`;
+
+test('a recovery evidence gap explains an incomplete outcome without claiming recovery or savings', () => {
+  const shown=presentGeneral('cycle-incomplete',{reason:'recovery-evidence-unavailable'});
+  assert.match(shown.details.find(row=>row.label==='Reason').value,
+    /fixed recovery hold ended.*missing evidence prevented recovery confirmation.*Savings remain unassessed/);
+});
 function fixture(t, { disk = false } = {}) {
   const directory = disk ? mkdtempSync(join(tmpdir(), 'event-log-test-')) : null;
   const store = new Store(directory ? join(directory, 'history.sqlite') : ':memory:');
