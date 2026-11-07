@@ -1692,9 +1692,16 @@ It checks exact desktop/mobile field placement, Away replacement, equal visible
 input/selector widths, input alignment, the upper region ending with the telemetry
 limit, and the separate Learning trials box with its border-heading checkbox.
 It checks disabled value preservation, sparse edit intent, local Reset versus
-explicit Refresh, touch and keyboard selection, invalid inputs, busy/error retry behavior, and section-start
-jumps with Advanced settings open or closed. It also checks absent and partial uncertainty bands,
-provisional comfort limits and the provenance of a captured indoor estimate.
+explicit Refresh, touch and keyboard selection, invalid inputs, busy/error retry
+behavior, direct selected-plan-to-exploration flow and suggestion focus on the
+edited input. It also checks absent and partial uncertainty bands, provisional
+comfort limits and the provenance of a captured indoor estimate. Controller
+integration tests distinguish identical configured and learned reference values
+after resolving planning settings; browser checks cover every reference origin
+in both selected and scenario evidence. Routine ticks preserve focus and dated
+facts without repeating unchanged live announcements. Enlarged text checks at
+150% and 200% cover narrow and short landscape displays in both themes, including
+reachable compact headers and wrapping controls.
 Initial loading and retry have one visible loading status, including reduced
 motion. Pending, running and terminal one-cycle panels separate dates, approved
 limits and assessed or unavailable outcomes. Unsupported forecast intervals remain

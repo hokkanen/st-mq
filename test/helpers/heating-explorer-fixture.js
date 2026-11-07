@@ -15,7 +15,7 @@ export function heatingExplorerFixture({ hours = 12, validatedHours = 8, price =
   const intervals = Array.from({ length: hours * 4 }, (_, i) => ({ start: now + i * HOUR / 4,
     end: now + (i + 1) * HOUR / 4, outdoorC, solarRadiationWm2: 0,
     allInCentsPerKWh: i < 24 ? price : 1, issuedAt: now }));
-  return { now, snapshotId: 'synthetic-explorer', observations: { indoor: { value: 21, observedAt: now, stale: false } },
+  return { now, snapshotId: 'synthetic-explorer', normalReferenceSource: 'configured', observations: { indoor: { value: 21, observedAt: now, stale: false } },
     prices: intervals.map(row => ({ start: row.start, end: row.end, allInCentsPerKWh: row.allInCentsPerKWh })),
     forecast: intervals.map(row => ({ start: row.start, end: row.end, outdoorC: row.outdoorC,
       solarRadiationWm2: row.solarRadiationWm2, issuedAt: row.issuedAt })),

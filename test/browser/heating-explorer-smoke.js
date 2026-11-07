@@ -130,15 +130,17 @@ try {
     limitations: ['Space-heating cost includes recovery and remaining heat debt; electricity totals exclude that tail. Hot-water service and whole-house savings are not established.'],
     application: { allowed: true, latestStartAt: now + hour, expiresAt: now + 12 * hour },
   };
-  const capturedExplorer=exploreHeatingPlan(heatingExplorerFixture());
+  const referenceInput=heatingExplorerFixture();
+  referenceInput.normalReferenceSource='learned';
+  referenceInput.settings.comfort.targetC=20.93;referenceInput.checkpoint.baselineC=20.93;
+  const capturedExplorer=exploreHeatingPlan(referenceInput);
   const allControls=capturedExplorer.controls;
   fixture.learningContext=capturedExplorer.learningContext;fixture.limits=capturedExplorer.limits;
-  fixture.constraints.push({key:'normalReference',label:'Normal temperature reference',kind:'evidence',
-    status:'learning',value:21.25,unit:'°C',detail:'The normal reference is still learning; the allowed drop is shown separately.'});
+  fixture.constraints.push(capturedExplorer.constraints.find(row=>row.key==='normalReference'));
   fixture.controls=allControls.map(control=>({...control,
     value:fixture.controls.find(existing=>existing.key===control.key)?.value??control.value}));
   fixture.current.constraints = capturedExplorer.current.constraints.map(row => row.key === 'normalReference'
-    ? {...row,status:'learning',value:21.25} : {...row,value:fixture.controls.find(control=>control.key===row.key)?.value??row.value});
+    ? row : {...row,value:fixture.controls.find(control=>control.key===row.key)?.value??row.value});
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.explorerFixture = { value: ${JSON.stringify(fixture)}, requests: [], role: 'admin', generation: 0, stale: false };
     const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -298,10 +300,28 @@ try {
   assert.equal(await evaluate(`document.getElementById('heating-explorer-trial-title').textContent`), 'Last approved heating cycle');
   assert.match(await evaluate(`document.getElementById('heating-explorer-trial-caption').textContent`), /Historical approval record.*do not describe the selected plan/);
   assert.equal(await evaluate(`document.getElementById('heating-explorer-view-approval').hidden`), true);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-reset').disabled`), true, 'A pristine capture has nothing to reset');
+  const referenceLabels = { configured:'Configured reference', provisional:'Provisional learned reference', retained:'Retained cycle reference',
+    startup:'Initial planning reference', simulated:'Simulated reference', unknown:'Origin unavailable', learned:'Learned reference' };
+  for (const [source, label] of Object.entries(referenceLabels)) {
+    const row = exploreHeatingPlan({...referenceInput,normalReferenceSource:source},{},{includeOpportunities:false}).constraints.find(row=>row.key==='normalReference');
+    await evaluate(`for(const rows of [explorerFixture.value.current.constraints,explorerFixture.value.constraints]) rows.splice(rows.findIndex(row=>row.key==='normalReference'),1,${JSON.stringify(row)});
+      document.getElementById('heating-explorer-current-context').open=true;document.getElementById('heating-explorer-refresh').click()`);
+    await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+    const shown = await evaluate(`(() => {const row=[...document.querySelectorAll('#heating-explorer-constraints li')].find(row=>row.querySelector('strong')?.textContent.startsWith('Normal temperature reference'));return {text:row.textContent,label:row.querySelector('.heating-explorer-constraint-status').textContent};})()`);
+    assert.equal(shown.label, label, `${source}: resolved numbers never invent configuration ownership`);
+    assert.match(shown.text, /20.93 °C/);
+    if (source !== 'configured') assert.doesNotMatch(shown.text, /Configured reference|explicit.*saved configuration/i);
+    await evaluate(`document.getElementById('heating-explorer-form').requestSubmit()`);
+    await until(`!document.getElementById('heating-explorer-calculate').disabled`);
+    assert.match(await evaluate(`document.getElementById('heating-explorer-scenario-constraints').textContent`), new RegExp(label));
+  }
+  await evaluate(`document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   await evaluate(`globalThis.selectedContextText=document.getElementById('heating-explorer-constraints').textContent;document.getElementById('heating-explorer-current-context').open=true`);
   assert.match(await evaluate(`document.getElementById('heating-explorer-constraints').textContent`), /4 h/);
-  assert.match(await evaluate(`document.querySelector('#heating-explorer-constraints [data-status="learning"]').textContent`),
-    /Normal temperature reference · 21.25 °C.*Learning/);
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-constraints [data-status="reference-learned"]').textContent`),
+    /Normal temperature reference · 20.93 °C.*Learned reference/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-opportunities').textContent`), /€0.55.*6 h/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-context').textContent`), /estimate for one unavailable room.*±0.2 °C.*no learning evidence/);
   assert.match(await evaluate(`document.querySelector('#heating-explorer-timeline [data-phase="recovery"]').textContent`), /stored heat.*does not mean continuous extra heating.*estimate/);
@@ -330,7 +350,7 @@ try {
   assert.equal(await evaluate(`explorerFixture.requests.length`),reopenReads,'Reopening preserves the captured baseline without an implicit refresh');
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Reopening preserves the draft');
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
-  for (const [width, height] of [[280,740],[320,740],[390,420],[390,844],[650,900],[651,900],[768,1024],[844,390],[1024,768],[1280,1000],[1920,1080]]) {
+  for (const [width, height] of [[280,740],[320,740],[390,420],[390,844],[480,900],[481,900],[650,900],[651,900],[768,1024],[800,900],[801,900],[844,390],[1024,768],[1280,1000],[1920,1080]]) {
     await send('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
     for (const theme of ['light', 'dark']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
@@ -389,25 +409,32 @@ try {
         assert(await evaluate(`(() => {const box=document.getElementById('heating-explorer-learning'),r=box.getBoundingClientRect(),legend=box.querySelector('legend').getBoundingClientRect();return box.scrollWidth<=box.clientWidth+1&&legend.left>=r.left&&legend.right<=r.right+1;})()`),`${label}: the checkbox and legend fit their learning box`);
         await screenshot(`${width}-${height}-${theme}-learning-box`);
       }
-      for(const folded of [true,false]) {
-        for(const position of ['start','end']) {
-          await evaluate(`document.getElementById('heating-explorer-advanced').open=${!folded};
-            document.getElementById('heating-explorer-dialog').scrollTop=${position==='start'?'0':'99999'};
-            document.getElementById('heating-explorer-jump').click()`);
-          await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
-          const jump=await evaluate(`(() => {const heading=document.getElementById('heating-simulator-title').getBoundingClientRect(),header=document.querySelector('.heating-explorer-header').getBoundingClientRect();
-            return {top:heading.top,headerBottom:header.bottom,open:document.getElementById('heating-explorer-advanced').open,
-              focused:document.activeElement===document.querySelector('#heating-explorer-controls .app-select-trigger')};})()`);
-          assert.equal(jump.open,!folded,`${label}: jump preserves fold state`);
-          assert(jump.focused,`${label}: jump focuses the visible strategy selector`);
-          assert(Math.abs(jump.top-jump.headerBottom-24)<2,`${label}: jump aligns the section heading below the sticky header: ${JSON.stringify(jump)}`);
-        }
-      }
+      assert.equal(await evaluate(`document.getElementById('heating-explorer-jump')`), null, 'Adjacent exploration needs no duplicate jump action');
+      assert(await evaluate(`document.getElementById('heating-explorer-current-section').nextElementSibling===document.getElementById('heating-explorer-workbench')`), 'Exploration follows the selected plan directly');
     }
   }
+  for (const [width,height] of [[280,740],[390,420],[844,390],[1280,800]]) for (const scale of [1.5,2]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
+    await evaluate(`(() => {
+      document.documentElement.dataset.theme='${theme}';
+      const dialog=document.getElementById('heating-explorer-dialog');
+      const nodes=[...dialog.querySelectorAll('h2,h3,h4,p,summary,label,small,dt,dd,.heating-explorer-tag,input[type="number"],.heating-explorer-control-input > span,button:not(#heating-explorer-close):not(.status-detail-trigger)')];
+      nodes.forEach(node=>node.style.fontSize='');
+      const sizes=nodes.map(node=>parseFloat(getComputedStyle(node).fontSize));
+      nodes.forEach((node,index)=>node.style.fontSize=sizes[index]*${scale}+'px');
+      document.getElementById('heating-explorer-current-context').open=true;
+      document.getElementById('heating-explorer-advanced').open=true;
+      dialog.scrollTop=0;
+    })()`);
+    await evaluate(`await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame)`);
+    const layout=await evaluate(`(() => {const dialog=document.getElementById('heating-explorer-dialog'),header=dialog.querySelector('header').getBoundingClientRect(),close=document.getElementById('heating-explorer-close').getBoundingClientRect();return {fits:dialog.scrollWidth<=dialog.clientWidth+1,headerHeight:header.height,closeVisible:close.top>=0&&close.bottom<=innerHeight,overflow:[...dialog.querySelectorAll('.heating-explorer-control,.heating-explorer-constraint,.heating-explorer-learning')].filter(node=>node.checkVisibility()&&node.scrollWidth>node.clientWidth+1).map(node=>node.dataset.key??node.className)};})()`);
+    assert(layout.fits&&layout.closeVisible&&layout.headerHeight<height-60&&layout.overflow.length===0,`${width}×${height}/${theme}/${scale}: enlarged text and controls fit below a reachable header: ${JSON.stringify(layout)}`);
+    if(scale===2&&[280,844].includes(width)&&theme==='light')await screenshot(`${width}-${height}-${theme}-200-percent-text`);
+  }
+  await evaluate(`document.querySelectorAll('#heating-explorer-dialog [style]').forEach(node=>node.style.fontSize='');document.getElementById('heating-explorer-current-context').open=false`);
   for(const [width,height] of [[320,740],[1280,1000]]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
-    await evaluate(`document.getElementById('heating-explorer-jump').click()`);
+    await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
     const economics=await evaluate(`Object.fromEntries(['minimumHomeBenefitCents','homeDiscomfortCentsPerDegreeSquaredHour','cycleStartCostCents','cycleHourCostCents','economicUncertaintyFloorCents'].map(key=>[key,document.getElementById('heating-limit-'+key).value]))`);
     await evaluate(`document.querySelector('#heating-explorer-controls .app-select-trigger').focus()`);
     await keyPress('Enter');await keyPress('Home');await keyPress('Enter');
@@ -422,7 +449,7 @@ try {
     assert.equal(await evaluate(`explorerFixture.requests.length`),beforeReset,'Reset makes no optimization or request');
     await evaluate(`document.getElementById('heating-explorer-opportunities').querySelector('button').click()`);
     assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Opportunity button applies only the hypothetical draft');
-    assert.equal(await evaluate(`document.activeElement.id`),'heating-explorer-calculate','Opportunity focuses comparison');
+    assert.equal(await evaluate(`document.activeElement.id`),'heating-limit-maxReductionHours','A suggestion focuses its changed input for review');
     await evaluate(`document.getElementById('heating-explorer-reset').click()`);
     assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'4','Reset restores configured duration');
   }
@@ -440,7 +467,7 @@ try {
     assert.equal(away.value,'24'); assert.equal(away.label,'Maximum reduction while away');
     assert.deepEqual(away.keys,width<=650?['savingsStrategy','preheatRoomBoostC','maxDropC','maxRiseC','maxAwayReductionHours','maxPreheatHours']
       :['savingsStrategy','maxDropC','maxAwayReductionHours','preheatRoomBoostC','maxRiseC','maxPreheatHours']);
-    await evaluate(`document.getElementById('heating-explorer-jump').click()`);
+    await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
     await screenshot(`${width}-away-controls`);
   }
   await evaluate(`explorerFixture.value.controls=${JSON.stringify(fixture.controls)};document.getElementById('heating-explorer-refresh').click()`);
@@ -454,7 +481,6 @@ try {
     await send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:point.x,y:point.y}]});
     await send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
   };
-  await tap('#heating-explorer-jump');
   await tap('#heating-explorer-controls .app-select-trigger');
   await until(`document.querySelector('.app-select-popup:not([hidden]) [role="option"]')`);
   await tap('.app-select-popup:not([hidden]) [role="option"][data-index="0"]');
@@ -519,7 +545,7 @@ try {
       assert.equal(await evaluate(`document.activeElement.closest('[data-key]')?.querySelector('input,select').id`),`heating-limit-${control.key}`,'Help restores focus to its setting');
     }
   }
-  await evaluate(`document.getElementById('heating-explorer-jump').click();document.getElementById('heating-limit-maxReductionHours').value='8';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}))`);
+  await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'});document.getElementById('heating-limit-maxReductionHours').value='8';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}))`);
   const reads = await evaluate(`explorerFixture.requests.length`);
   await evaluate(`await explorerFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`), '8', 'Polling preserves hypothetical controls');
@@ -535,6 +561,18 @@ try {
   assert.equal(await evaluate(`document.getElementById('heating-explorer-illustrative').open`), false, 'A non-executable illustration has its own disclosure outside the approval summary');
   assert.match(await evaluate(`document.getElementById('heating-explorer-application-summary').textContent`), /scenario above: 6 h of reduction/);
   assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart path').length`), 2);
+  const quietUpdate = await evaluate(`
+    const regions=['heating-explorer-message','heating-explorer-receipt','heating-explorer-context','heating-explorer-comparison-summary'].map(id=>document.getElementById(id));
+    let mutations=0;
+    const observer=new MutationObserver(records=>{mutations+=records.length;});
+    regions.forEach(node=>observer.observe(node,{childList:true,subtree:true,characterData:true}));
+    const dates=document.getElementById('heating-explorer-application-dates'),firstDate=dates.firstChild;
+    const input=document.getElementById('heating-limit-maxReductionHours');input.focus();
+    await new Promise(resolve=>setTimeout(resolve,1250));
+    observer.disconnect();
+    return {mutations,datesStable:firstDate!==null&&dates.firstChild===firstDate,focusStable:document.activeElement===input};
+  `);
+  assert.deepEqual(quietUpdate,{mutations:0,datesStable:true,focusStable:true},'Routine ticks preserve focus and dated facts without repeating live announcements');
   const comparisonRequests=await evaluate(`explorerFixture.requests.length`);
   await evaluate(`explorerFixture.holdComparison=true;document.getElementById('heating-explorer-form').requestSubmit();document.getElementById('heating-explorer-form').requestSubmit()`);
   await until(`Boolean(explorerFixture.releaseComparison)`);
@@ -614,6 +652,12 @@ try {
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   assert.match(await evaluate(`document.getElementById('heating-explorer-current-source').textContent`), /Captured from the cycle approved/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-trial-caption').textContent`), /belongs to the selected plan captured above/);
+  await evaluate(`globalThis.savedApprovalRecord=explorerFixture.value.activeTrial;explorerFixture.value.activeTrial=null;document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-current-source').textContent`), /approval record is unavailable/);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-trial').hidden`), true, 'Missing records never imply a different record exists below');
+  await evaluate(`explorerFixture.value.activeTrial=savedApprovalRecord;document.getElementById('heating-explorer-refresh').click()`);
+  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   await evaluate(`document.getElementById('heating-explorer-trial-record').open=false;document.getElementById('heating-explorer-view-approval').click()`);
   assert(await evaluate(`document.getElementById('heating-explorer-trial-record').open&&document.activeElement===document.querySelector('#heating-explorer-trial-record > summary')`), 'The plan’s approval link opens the exact record and transfers keyboard focus');
   await evaluate(`explorerFixture.value.activeTrial.status='running';document.getElementById('heating-limit-maxDropC').value='1.75';document.getElementById('heating-limit-maxDropC').dispatchEvent(new Event('input',{bubbles:true}))`);

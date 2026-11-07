@@ -1725,6 +1725,12 @@ export class Engine {
     const reviewedTarget=this.heatingExplorer.retains(reviewedPlan)?reviewedPlan.targetC:null;
     const acceptedTarget = reviewedPlan?.userTrial ? reviewedTarget : reviewedPlan?.targetC;
     const targetC = this.settings.comfort.targetC ?? acceptedTarget ?? checkpoint.baselineC ?? startupReference?.value ?? (this.plant ? 21 : null);
+    const normalReferenceSource = Number.isFinite(this.settings.comfort.targetC) ? 'configured'
+      : Number.isFinite(acceptedTarget) ? 'retained'
+        : Number.isFinite(checkpoint.baselineC) ? !checkpoint.comfortReference ? 'unknown'
+          : checkpoint.comfortReference.provisional === true
+            || checkpoint.comfortReference.confidence === 'provisional-heating-demand-baseline' ? 'provisional' : 'learned'
+          : Number.isFinite(startupReference?.value) ? 'startup' : this.plant ? 'simulated' : 'unknown';
     const baseSettings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
     const scopedTrial = this.heatingExplorer.reconcile(now);
     if (this.pendingPlan?.userTrial && (scopedTrial?.status !== 'pending' || scopedTrial.id !== this.pendingPlan.userTrial.id)) {
@@ -1825,7 +1831,7 @@ export class Engine {
     const actualPlan = currentCycle?.plan ?? decision.plan;
     const actualSchedule = currentCycle?.executionSchedule ?? decision.plan?.executionSchedule;
     const currentScopeActive = scopedTrial && ['pending', 'running'].includes(this.heatingExplorer.trial()?.status);
-    this.heatingExplorer.capture({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
+    this.heatingExplorer.capture({ now, observations: controlView, ...outlook, checkpoint, normalReferenceSource, settings: baseSettings, config: this.control,
       currentSettings: currentScopeActive ? settings : baseSettings, currentConfig: currentScopeActive ? planningConfig : this.control,
       thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride },
       equipment: this.plant ? { ...equipment, h66Available: true, reductionTelemetryAvailable: true, preheatAvailable: true } : equipment,

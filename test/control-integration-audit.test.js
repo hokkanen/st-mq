@@ -258,17 +258,32 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
   r.room(20.4);
   for(let step=0;step<6;step++){
     r.advance(10*MINUTE);native.refresh();status=r.engine.tick();await r.settle();
-    assert.equal(status.decision.phase,'recovery');
-    assert.equal(status.decision.recoveryHoldUntil,deadline,'Polling cannot extend the shared hold');
-    assert.equal(status.decision.recoveryCompressorOnly,false,'Cold room permits AUX throughout the rest of recovery');
     if(r.now<deadline){
+      assert.equal(status.decision.phase,'recovery');
+      assert.equal(status.decision.recoveryHoldUntil,deadline,'Polling cannot extend the shared hold');
+      assert.equal(status.decision.recoveryCompressorOnly,false,'Cold room permits AUX throughout the rest of recovery');
       assert.equal(status.decision.recoveryHoldActive,true);
       assert.equal(native.values['0212'],45);assert.equal(native.values['0208'],50);
       assert.equal(native.values['2201'],1);assert.deepEqual(r.circulation,[]);
     }
   }
-  assert.equal(status.decision.recoveryHoldActive,false);
+  // This fixture has no complete observed heat-input trajectory. The fixed
+  // native hold still restores on time; its expiry cannot prove recovery.
+  assert.equal(status.decision.phase,'normal');
+  assert.equal(r.engine.cycles.active(),null);
+  const ended=r.store.cycleById({id:cycle.id});
+  assert.equal(ended.status,'incomplete');
+  assert.equal(ended.incompleteReason,'recovery-evidence-unavailable');
+  assert.equal(ended.endedAt,deadline);
+  assert.equal(ended.assessment,undefined);
+  assert.equal(status.decision.recoveryHoldActive,undefined,'An ended cycle grants no further recovery hold');
   assert.equal(native.values['0212'],47);assert.equal(native.values['0208'],62);
+  // Normal operation waits for the new economic search before requesting a
+  // circulation pulse. Complete that search at the same clock instant.
+  assert.equal(status.decision.dhwr.requested,false);
+  assert.ok(status.decision.reasons.includes('heating-planning-in-progress'));
+  await r.engine.heatingPlanning.pending?.promise;
+  status=r.engine.tick();await r.settle();
   assert.equal(status.decision.dhwr.requested,true);
   assert.deepEqual(r.circulation,[{at:deadline,on:true}]);
 });

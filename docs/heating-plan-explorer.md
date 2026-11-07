@@ -30,6 +30,13 @@ approval identity. A newer record or an ended approval does not silently relabel
 the capture. Refresh after approval, cancellation or an ended captured cycle
 before comparing again. Expanding a record or switching to it preserves drafts.
 
+The normal-temperature reference reports its actual origin alongside the value:
+learned, provisional learned, explicitly configured, retained for an accepted
+cycle, measured at startup, or simulated. A resolved planning number alone does
+not establish configuration ownership. If provenance is unavailable, the value
+remains visible with **Origin unavailable**. Both selected and scenario evidence
+use this same provenance; allowed temperature drop and rise are separate limits.
+
 The plan describes the selected preheat, reduction and recovery phases. Times
 use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. The predicted recovery period includes checking indoor and stored heat
@@ -99,8 +106,11 @@ to retain; the monetary fields remain independent. Reduction limit without pump
 telemetry ends the upper Advanced settings region. A separate **Learning trials**
 box follows, with **Enable learning trials** in its heading. Its two body inputs
 are **One-cycle experiment budget** and **Learning priority price threshold**;
-both remain visible but disabled when trials are unchecked. **Explore different limits ↓** jumps to the section heading
-below the window header, keeping Advanced settings open or closed as chosen.
+both remain visible but disabled when trials are unchecked. Exploration follows
+the selected plan directly. A suggestion’s **Use in scenario** action fills the
+draft and focuses the first changed field for review; **Compare scenario** runs
+the calculation. **Reset to configured limits** is available after draft edits,
+a comparison or an error and resets locally without refreshing conditions.
 Enter durations and monetary limits directly; several limits can be reviewed together. These are one-cycle
 preferences, with wider ranges than the automatic defaults.
 

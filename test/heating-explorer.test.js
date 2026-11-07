@@ -33,14 +33,31 @@ test('selected-plan context and approval identity remain separate from every sce
 
 test('normal reference reports its actual temperature separately from the allowed drop',()=>{
   const input=heatingExplorerFixture();input.equipment.comfortReferenceProvisional=true;
+  input.normalReferenceSource='provisional';
   input.settings.comfort.targetC=21.25;input.settings.comfort.maxDropC=1.5;
   let result=exploreHeatingPlan(input,{},options);
   const reference=result.constraints.find(row=>row.key==='normalReference');
-  assert.equal(reference.value,21.25);assert.equal(reference.unit,'°C');assert.equal(reference.status,'learning');
+  assert.equal(reference.value,21.25);assert.equal(reference.unit,'°C');assert.equal(reference.status,'reference-provisional');
   assert.equal(result.constraints.find(row=>row.key==='maxDropC').value,1.5);
   input.settings.comfort.targetC=null;input.checkpoint.baselineC=null;input.observations.indoor.stale=true;
   result=exploreHeatingPlan(input,{},options);
   assert.equal(result.constraints.find(row=>row.key==='normalReference').value,null);
+});
+
+test('resolved reference values retain their authored origin in selected and scenario diagnostics', () => {
+  for (const source of ['configured', 'learned', 'provisional', 'retained', 'startup', 'simulated', 'unknown']) {
+    const input = heatingExplorerFixture();
+    input.normalReferenceSource = source;
+    input.settings.comfort.targetC = 20.93;
+    input.checkpoint.baselineC = 20.93;
+    const result = exploreHeatingPlan(input, { maxDropC: 2.5 }, options);
+    for (const rows of [result.current.constraints, result.constraints]) {
+      const reference = rows.find(row => row.key === 'normalReference');
+      assert.equal(reference.value, 20.93);
+      assert.equal(reference.status, source === 'unknown' ? 'unknown' : `reference-${source}`);
+      if (source !== 'configured') assert.doesNotMatch(reference.detail, /explicit.*saved configuration/i);
+    }
+  }
 });
 
 test('discarding some alternatives does not label available economics or forecast coverage blocked',()=>{
@@ -174,6 +191,23 @@ test('an explicit one-cycle learning allowance is separate from an exhausted aut
   assert.equal(input.trialBudgetRemainingCents,0);
   assert.equal(input.config.learningTrials,false);
   assert.ok(exploreHeatingPlan(proposed,{},options).executablePlan);
+});
+
+test('scenario diagnostics distinguish an editable trial allowance from missing evidence', () => {
+  const input = heatingExplorerFixture({ price: 2, hours: 12 });
+  input.prices.forEach(row => { row.allInCentsPerKWh = 2; });
+  input.checkpoint.model.equipmentResponse.phases.reduction.ratio = 1.1;
+  const blocked = exploreHeatingPlan(input, { learningTrials: true }, options);
+  assert.equal(blocked.executablePlan, null);
+  const allowance = blocked.constraints.find(row => row.key === 'trial-incremental-cost-exceeds-allowance');
+  assert.equal(allowance.kind, 'economic');
+  assert.match(allowance.detail, /edited experiment budget supplies a separate allowance/);
+  assert.doesNotMatch(allowance.detail, /unchanged by policy exploration/);
+  const reviewed = exploreHeatingPlan(input, { learningTrials: true, maxTrialCostCents: 151,
+    maxDropC: 3, maxRiseC: 3, maxUnobservedReductionHours: 4 }, options);
+  assert.equal(reviewed.executablePlan.trial, true);
+  assert(!reviewed.constraints.some(row => row.key === allowance.key));
+  assert.equal(input.trialBudgetRemainingCents, 0, 'The automatic allowance remains untouched');
 });
 
 test('unchanged learning fields and permission/priority edits preserve automatic trial restrictions', () => {

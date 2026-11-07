@@ -243,11 +243,21 @@ function constraints(input, decision, evidence, selected) {
       detail: d?.economicsAssessed ? `${d.economicsRejected} of ${d.economicsAssessed} shortlisted alternatives failed paired stress, benefit or comfort hurdles.`
         : 'No normally eligible shortlist was assessed. Lower electricity purchase cost alone is insufficient.' },
   ];
-  result.unshift({ key: 'normalReference',
-    label: 'Normal temperature reference', kind: 'evidence', status: input.equipment?.comfortReferenceProvisional === true
-      ? 'learning' : finite(input.checkpoint?.baselineC) ? 'available' : 'unknown',
-    value: input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? decision.comfort?.targetC ?? null, unit: '°C',
-    detail: 'The reference temperature used for planning the weighted indoor average. The allowed drop and rise are shown separately. An initial measured Normal reference can be used while the occupied reference is learning.' });
+  const referenceC = input.settings.comfort.targetC ?? input.checkpoint?.baselineC ?? decision.comfort?.targetC ?? null;
+  const referenceDescriptions = {
+    configured: 'An explicit normal-temperature reference from the saved configuration.',
+    learned: 'Learned from the weighted indoor average during supported occupied Normal heating.',
+    provisional: 'A Normal reference learned from initial evidence; sufficient verified heating evidence has not yet accumulated.',
+    retained: 'The fixed reference used when this cycle was accepted. Later learning can update the current Normal reference separately.',
+    startup: 'An initial measured Normal indoor average used for planning while the learned reference is not yet established.',
+    simulated: 'An example reference supplied by the simulated installation.',
+  };
+  const referenceSource = finite(referenceC) && Object.hasOwn(referenceDescriptions, input.normalReferenceSource)
+    ? input.normalReferenceSource : null;
+  result.unshift({ key: 'normalReference', label: 'Normal temperature reference', kind: 'evidence',
+    status: referenceSource ? `reference-${referenceSource}` : 'unknown', value: referenceC, unit: '°C',
+    detail: `${referenceSource ? referenceDescriptions[referenceSource] : finite(referenceC)
+      ? 'The reference value is available, but its origin is unavailable in this capture.' : 'A normal-temperature reference is unavailable.'} The allowed occupied drop and rise remain separate.` });
   if (!(input.equipment?.reductionTelemetryAvailable ?? input.equipment?.h66Available)) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
     detail: 'The shorter of the ordinary and unavailable-telemetry duration limits applies; an explicit one-cycle override can change either limit. Device authority and restoration remain required.' });
@@ -270,11 +280,22 @@ function constraints(input, decision, evidence, selected) {
   if (!evidence.trialReady || !finite(input.trialBudgetRemainingCents) || input.trialBudgetRemainingCents < 0) result.push({ key: 'trialReadiness',
     label: 'Learning trial readiness', kind: 'evidence', status: 'blocking', value: null, unit: null,
     detail: 'Experiments require enabled permission, current compressor and hot-water routing observations, a measured indoor average, budget for their estimated exposure and cold/hot stress checks. Zero budget still permits zero-exposure trials. Economic cycles can use the initialized model within current input, equipment and configured limits while experiment prerequisites are missing.' });
-  for (const reason of decision.reasons.filter(reason => ['missing-or-stale-indoor', 'awaiting-normal-temperature-reference',
-    'awaiting-fireplace-response-evidence', 'no-useful-space-heating-window',
-    'trial-comfort-or-forecast-limited', 'trial-incremental-cost-exceeds-allowance',
-    'daily-learning-trial-target-reached'].includes(reason))) result.push({ key: reason, label: reason.replaceAll('-', ' '),
-    kind: 'evidence', status: 'blocking', value: null, unit: null, detail: 'This prerequisite is unchanged by policy exploration.' });
+  const prerequisites = {
+    'missing-or-stale-indoor': { label: 'Indoor temperature evidence', kind: 'evidence',
+      detail: 'Usable indoor observations are unavailable. Editing limits supplies no new temperature readings.' },
+    'awaiting-normal-temperature-reference': { label: 'Normal temperature reference', kind: 'evidence',
+      detail: 'A usable Normal reference is needed. Editing limits does not establish measured Normal heating evidence.' },
+    'awaiting-fireplace-response-evidence': { label: 'Fireplace response evidence', kind: 'evidence',
+      detail: 'The required fireplace response evidence is unavailable. Scenario calculations add no observed evidence.' },
+    'no-useful-space-heating-window': { label: 'Useful learning opportunity', kind: 'evidence',
+      detail: 'No evaluated immediate trial offers useful space-heating evidence under this scenario’s conditions.' },
+    'trial-comfort-or-forecast-limited': { label: 'Learning trial limits and forecast', kind: 'policy',
+      detail: 'The evaluated trials do not fit this scenario’s temperature limits or available forecast. You can explore other limits; calculations supply no new forecast data.' },
+    'trial-incremental-cost-exceeds-allowance': { label: 'Learning trial allowance', kind: 'economic',
+      detail: 'The evaluated trials exceed this scenario’s available experiment allowance. An explicitly edited experiment budget supplies a separate allowance for a reviewed cycle; trial permission and equipment readiness remain required.' },
+  };
+  for (const reason of decision.reasons) if (Object.hasOwn(prerequisites, reason)) result.push({ key: reason,
+    ...prerequisites[reason], status: 'blocking', value: null, unit: null });
   return result;
 }
 
@@ -286,8 +307,6 @@ function selectedPlanConstraints(input, selected) {
   return constraints(input, { reasons: [] }, evidence, selected)
     .filter(row => !['economicAdmission', 'trialReadiness'].includes(row.key))
     .map(row => {
-      if (row.key === 'normalReference' && finite(input.settings.comfort.targetC)) return { ...row, status: 'specified',
-        detail: 'The explicit normal-temperature reference used for this plan. The allowed occupied drop and rise remain separate.' };
       if (row.kind === 'policy') return { ...row, status: 'configured',
         label: row.label.replace('Configured ', 'Selected '),
         detail: ['maxDropC', 'maxRiseC'].includes(row.key)
