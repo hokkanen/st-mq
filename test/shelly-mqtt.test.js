@@ -227,6 +227,59 @@ test('Direct heating requires a post-command Switch.GetStatus response and prese
   await assert.rejects(f.capture.publishHeating(['normal']), /unavailable/);
 });
 
+for (const circulation of [false, true]) test(`${circulation ? 'Circulation' : 'Heating'} readback survives a keyed notification without a redundant component id`, async t => {
+  const device = circulation ? { id: 'dhwr', kind: 'switch', generation: 3, connection: 'shelly:invented-dhwr' } : heat;
+  const prefix = circulation ? 'invented-dhwr' : 'invented-mini';
+  const f = fixture(t, [device]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } });
+  const pending = circulation ? f.capture.publishDhwr(true) : f.capture.publishHeating(['reduction']);
+  let confirmed = false; pending.then(() => { confirmed = true; }, () => {});
+  const set = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set');
+  f.now(initial + 10); f.reply(set, { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  // A previous full state arrives after the readback query was issued. The
+  // following native delta names its component in the key, as Shelly does.
+  f.now(initial + 20);
+  f.capture.receive(`${prefix}/status/switch:0`, JSON.stringify({ id: 0, output: false }));
+  f.now(initial + 30);
+  f.capture.receive(`${prefix}/events/rpc`, JSON.stringify({ src: `fixture-${prefix}`, method: 'NotifyStatus',
+    params: { ts: (initial + 30) / 1000, 'switch:0': { output: true } } }));
+  await Promise.resolve(); assert.equal(confirmed, false, 'A notification does not confirm the command');
+  f.now(initial + 40); f.reply(get, { output: true });
+  await pending;
+  const reading = f.capture.status().devices[0].readings[circulation ? 'dhwr_active' : 'heat_savings_active'];
+  assert.equal(reading.value, 1);
+  assert.equal(reading.observedAt, initial + 30, 'Correlated readback preserves the newer native observation');
+});
+
+test('keyed switch deltas preserve absent output, reject conflicting ids and retain native faults', t => {
+  const f = fixture(t, [heat]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } });
+  const notify = component => f.capture.receive('invented-mini/events/rpc', JSON.stringify({
+    src: 'fixture-invented-mini', method: 'NotifyStatus', params: { 'switch:0': component } }));
+  const reading = () => f.capture.status().devices[0].readings.heat_savings_active;
+  f.now(initial + 10); notify({ id: 1, output: true });
+  assert.equal(reading().value, 0); assert.equal(reading().observedAt, initial);
+  f.now(initial + 20); notify({ apower: 15 });
+  assert.equal(reading().value, 0); assert.equal(reading().observedAt, initial);
+  f.now(initial + 30); notify({ output: true });
+  assert.equal(reading().value, 1); assert.equal(reading().observedAt, initial + 30);
+  f.now(initial + 40); notify({ errors: ['overpower'] });
+  assert.equal(reading().value, null); assert(reading().quality.includes('device-error'));
+  assert.equal(f.capture.status().devices[0].available, false);
+});
+
+for (const componentId of [undefined, 1]) test(`correlated switch replies still reject ${componentId === undefined ? 'missing' : 'conflicting'} component ids`, async t => {
+  const f = fixture(t, [heat]); f.capture.setConnected(true);
+  const pending = f.capture.publishHeating(['reduction']);
+  const set = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set');
+  f.reply(set, { was_on: false });
+  const request = JSON.parse(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus').payload);
+  f.capture.receive(`${request.src}/rpc`, JSON.stringify({ id: request.id, dst: request.src,
+    src: 'fixture-invented-mini', result: { id: componentId, output: true } }));
+  await assert.rejects(pending, { code: 'SHELLY_READBACK_TIMEOUT' });
+});
+
 test('Readback timeout and device disconnect never claim delivery', async t => {
   const f = fixture(t, [heat]);
   f.capture.setConnected(true);

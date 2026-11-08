@@ -239,7 +239,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (full) emit(device, signal, null, 'state', at, ['missing']);
       return;
     }
-    if (device.generation > 1 && status.id !== device.switchId) return;
+    // Keyed component notifications can omit the redundant id. Keep explicit
+    // mismatches fenced; Switch.GetStatus replies require their id at receipt.
+    if (device.generation > 1 && status.id !== undefined && status.id !== device.switchId) return;
     if (Array.isArray(status.errors) && status.errors.length) { unavailable(device, 'device-error'); return; }
     const output = device.kind === 'door' ? status.state : status.output ?? status.ison;
     const older = preserveObservation || scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt;
