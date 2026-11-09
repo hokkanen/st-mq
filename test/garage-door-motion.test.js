@@ -12,12 +12,49 @@ const wallClock = 1_700_000_000_000;
 const command = (action, extra = {}) => ({ action, status: 'published', requestedAt: wallClock + 900,
   acknowledgedAt: wallClock + 1000, ...extra });
 const at = (now, extra = {}) => ({ now, statusNow: wallClock + now, ...extra });
+const nativeCommand = (action, receipt = true) => command(action, { acknowledgement: 'mqtt-write',
+  dispatchedAt: wallClock + 900, deviceReceipt: receipt ? { action, executed: true,
+    sourceTime: wallClock + 1000, receivedAt: wallClock + 1200, admittedAt: wallClock + 1200 } : undefined });
 const assertTravel = (actual, from, to, durationMs) => {
   assert.ok(Math.abs(actual.from - from) < 1e-10, `expected position ${from}, got ${actual.from}`);
   assert.equal(actual.to, to);
   assert.ok(Math.abs(actual.durationMs - durationMs) < 1e-7, `expected duration ${durationMs}, got ${actual.durationMs}`);
   assert.equal(actual.estimated, true);
 };
+
+test('native opening starts its clock at device receipt but waits for the contact, including coarse source time', () => {
+  const motion = createGarageDoorMotion(), operation = nativeCommand('open');
+  motion.update(observation(at(0)));
+  assert.deepEqual(motion.update(observation(at(1500, { operation }))), stationary(0));
+  const response = open(at(1800, { operation, reportedAt: wallClock + 1000, reportReceivedAt: wallClock + 1800 }));
+  assertTravel(motion.update(response), 600 / 18000, 1, 17400);
+  assertTravel(motion.update({ ...response, ...at(4800) }), 3600 / 18000, 1, 14400);
+});
+
+test('a native open contact arriving before command receipt waits and then catches up from that receipt', () => {
+  const motion = createGarageDoorMotion(); motion.update(observation(at(0)));
+  const response = open(at(1100, { operation: nativeCommand('open', false),
+    reportedAt: wallClock + 1000, reportReceivedAt: wallClock + 1100 }));
+  assert.deepEqual(motion.update(response), stationary(0));
+  assertTravel(motion.update({ ...response, ...at(1800), operation: nativeCommand('open') }), 600 / 18000, 1, 17400);
+});
+
+test('native closing starts immediately on device receipt and closed contact remains the endpoint authority', () => {
+  const motion = createGarageDoorMotion(); motion.update(open(at(0)));
+  assert.deepEqual(motion.update(open(at(1000, { operation: nativeCommand('close', false) }))), stationary(1));
+  const operation = nativeCommand('close');
+  assertTravel(motion.update(closing(at(1200, { operation }))), 1, 0, 18000);
+  assertTravel(motion.update(closing(at(5700, { operation }))), 0.75, 0, 13500);
+  assert.deepEqual(motion.update(observation(at(6000, { operation, reportedAt: wallClock + 6000 }))), stationary(0));
+});
+
+test('native receipts cannot start opening without sensor evidence or closing after rejection', () => {
+  const motion = createGarageDoorMotion(); motion.update(observation(at(0)));
+  assert.deepEqual(motion.update(observation(at(1800, { operation: nativeCommand('open') }))), stationary(0));
+  const closingMotion = createGarageDoorMotion(); closingMotion.update(open(at(0)));
+  const rejected = nativeCommand('close'); rejected.deviceReceipt.executed = false;
+  assert.deepEqual(closingMotion.update(open(at(1800, { operation: rejected }))), stationary(1));
+});
 
 test('hydration shows known endpoints and does not invent a starting position during movement', () => {
   for (const report of [observation(), open(), opening(), closing()]) {

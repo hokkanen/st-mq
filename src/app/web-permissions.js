@@ -1,6 +1,6 @@
 export const FAMILY_FIREWOOD_REMOVAL_MS = 15 * 60_000;
 
-const reads = new Set(['/api/status', '/api/pair', '/api/fireplace', '/api/sensor-changes', '/api/heating/explorer',
+const reads = new Set(['/api/status', '/api/pair', '/api/garage/doors/watch', '/api/fireplace', '/api/sensor-changes', '/api/heating/explorer',
   '/api/recording-overview', '/api/recording-health', '/api/model-reconstruction', '/api/energy-audits', '/api/chart', '/api/electricity-forecast', '/api/contract', '/api/events', '/api/history']);
 const writes = new Set(['/api/automation', '/api/fireplace', '/api/fireplace/remove', '/api/temporary', '/api/heating/explorer/simulate',
   '/api/heating-test', '/api/dhwr/stop',

@@ -11,6 +11,24 @@ const door = (value = 0, extra = {}) => ({
   ...extra,
 });
 const status = device => ({ role: 'master', now, equipment: { devices: [device] } });
+
+test('native closing is an estimate from the device receipt and only a fresh closed contact turns green', () => {
+  const device = door(1);
+  device.cover.operation = { action: 'close', status: 'published', acknowledgement: 'mqtt-write',
+    requestedAt: now - 1000, dispatchedAt: now - 900, acknowledgedAt: now - 850,
+    deviceReceipt: { action: 'close', executed: true, sourceTime: now - 800, receivedAt: now - 700, admittedAt: now - 700 } };
+  let view = garageDoorControl(status(device), device);
+  assert.equal(view.state, 'Closing'); assert.equal(view.tone, 'moving'); assert.match(view.detail, /estimated/);
+  view = garageDoorControl({ ...status(device), now: now + 20000 }, device);
+  assert.equal(view.tone, 'moving', 'Travel duration cannot confirm closure');
+  device.readings.side_entrance_open.value = 0;
+  device.readings.side_entrance_open.observedAt = now;
+  device.cover.operation.status = 'observed';
+  view = garageDoorControl(status(device), device);
+  assert.equal(view.state, 'Closed'); assert.equal(view.tone, 'closed');
+  device.readings.side_entrance_open.stale = true;
+  assert.equal(garageDoorControl(status(device), device).tone, 'unknown');
+});
 const operation = (device, action, state, requestedAt = now) => {
   device.cover.operation = { action, status: state, requestedAt,
     ...(['published', 'observed', 'unconfirmed'].includes(state) ? { dispatchedAt: requestedAt } : {}) };

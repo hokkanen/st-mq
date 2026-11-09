@@ -6,40 +6,34 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = ROOT / 'integrations' / 'homeassistant'
-ORIGINAL_SHA256 = '33ce19c7d6e3fed02465448a47264d818f1c73a3d7349d54a856260ddd373cc0'
-BEFORE = '''                p_state = response[mc.KEY_PAYLOAD][mc.KEY_STATE]
-                if isinstance(p_state, list):
-                    # we eventually expect a 1 item list with our channel of course
-                    p_state = p_state[0]
-'''
-AFTER = '''                p_state = stmq_garage_command_state(
-                    response[mc.KEY_PAYLOAD][mc.KEY_STATE], self.channel
-                )
-'''
-
+BEFORE = '        p_state = response.payload[mc.KEY_STATE]\n        if type(p_state) is list:\n            # we eventually expect a 1 item list with our channel of course\n            p_state = p_state[0]\n'
+AFTER = '        p_state = stmq_garage_command_state(\n            response.payload[mc.KEY_STATE], self.index.value\n        )\n'
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
 def patched_source(original):
-    if digest(original) != ORIGINAL_SHA256:
+    contract = json.loads((BUNDLE / 'meross-lan-msg200.json').read_text())
+    if digest(original) != contract['originalSha256']:
         raise ValueError('Unreviewed Meross LAN garage source')
     helper = (BUNDLE / 'meross-lan-msg200-state.py').read_text()
     source = original.decode()
-    switch = 'class MLGarageMultipleConfigSwitch(me.MEListChannelMixin, MLSwitch):'
-    number = 'class MLGarageMultipleConfigNumber(MLConfigNumber):'
-    first_class = 'class MLGarageTimeoutBinarySensor(me.MEPartialAvailableMixin, MLBinarySensor):'
-    if any(source.count(s) != 1 for s in [BEFORE, switch, number, first_class]):
+    config = 'class GarageConfigMixin(ValueParser if TYPE_CHECKING else object):'
+    first_class = 'class GarageTimeoutBinarySensor(BinarySensorEntity):'
+    if any(source.count(context) != 1 for context in [BEFORE, config, first_class]):
         raise ValueError('Reviewed Meross LAN source context differs')
     result = (source.replace(BEFORE, AFTER)
               .replace(first_class, helper + '\n\n' + first_class)
-              .replace(switch, 'class MLGarageMultipleConfigSwitch(StmqGarageConfigMixin, MLSwitch):')
-              .replace(number, 'class MLGarageMultipleConfigNumber(StmqGarageConfigMixin, MLConfigNumber):').encode())
-    compile(result, 'garagedoor.py', 'exec')
+              .replace(config, 'class GarageConfigMixin(StmqGarageConfigMixin, ValueParser if TYPE_CHECKING else object):').encode())
+    # Upstream uses Python 3.12 type aliases. Installation on HA validates with
+    # its native interpreter; older hosts can still verify exact reviewed bytes.
+    if sys.version_info >= (3, 12):
+        compile(result, 'garagedoor.py', 'exec')
     return result
 
 
@@ -49,7 +43,7 @@ def install(integration_dir, backup_dir=None, check=False):
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
     contract = json.loads((BUNDLE / 'meross-lan-msg200.json').read_text())
-    if (manifest.get('domain') != 'meross_lan' or manifest.get('version') != '5.8.0'
+    if (manifest.get('domain') != 'meross_lan' or manifest.get('version') != contract['version']
             or manifest.get('requirements') != contract['requirements']):
         raise ValueError('Meross LAN version or dependencies need review')
     path = root / 'devices' / 'garagedoor.py'

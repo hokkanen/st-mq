@@ -22,12 +22,13 @@ def stmq_garage_command_state(payload, channel):
     return state
 
 
-class StmqGarageConfigMixin(me.MEListChannelMixin):
-    async def async_request_value(self, value):
-        if self.ns.name != "Appliance.GarageDoor.MultipleConfig":
-            return await super().async_request_value(value)
-        # This firmware acknowledges a list-shaped write without applying it.
-        return await self.manager.async_request_ack(
-            self.ns.name, mc.METHOD_SET,
-            {self.ns.key: {mc.KEY_CHANNEL: self.channel, self.key_value: value}},
+class StmqGarageConfigMixin:
+    async def async_request_value(self, device_value, /):
+        if self.ns != "Appliance.GarageDoor.MultipleConfig":
+            return await super().async_request_value(device_value)
+        # Firmware acknowledges indexed list writes without applying them.
+        await self.parent.async_request(
+            self.ns, mc.METHOD_SET,
+            {self.ns.key: self.index | self.key_value.payload(device_value)},
         )
+        self.update_device_value(device_value)

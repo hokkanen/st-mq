@@ -1,6 +1,6 @@
 import { equipmentCoverAllowed, equipmentCoverResult, equipmentCoverReceipt, equipmentReadingRows } from './equipment.js';
 import { isReadOnlyReplica } from './replica-status.js';
-import { createGarageDoorMotion } from './garage-door-motion.js';
+import { createGarageDoorMotion, garageDoorReceiptAt } from './garage-door-motion.js';
 
 export const garageDoorDevices = status => (status?.equipment?.devices ?? []).filter(device =>
   device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
@@ -26,7 +26,11 @@ export function garageDoorControl(status, device, snapshot = {}) {
   const known = device.available === true && reading && source.stale === false
     && Number.isFinite(source.observedAt) && source.observedAt <= now && [0, 1].includes(source.value)
     && !reading.stale && ['Open', 'Closed', 'Opening', 'Closing'].includes(reading.value);
-  const state = known ? reading.value : 'Unknown';
+  const operation = device.cover?.operation;
+  const estimatedClosing = known && reading.value === 'Open' && operation?.action === 'close'
+    && operation.acknowledgement === 'mqtt-write' && operation.status === 'published'
+    && Number.isFinite(garageDoorReceiptAt(operation, now));
+  const state = estimatedClosing ? 'Closing' : known ? reading.value : 'Unknown';
   const moving = known && ['Opening', 'Closing'].includes(state);
   const result = equipmentCoverResult(device, now);
   const receipt = equipmentCoverReceipt(device, now);
@@ -53,8 +57,9 @@ export function garageDoorControl(status, device, snapshot = {}) {
   else if (action && device.controls?.cover?.[action] !== true) feedback ||= `${label} control is not configured.`;
   return { state, action, label, feedback, failed, sending, moving,
     position: known ? source.value === 0 ? 'closed' : 'open' : 'unknown',
-    reportedAt: known ? source.observedAt : null, coverState: known ? source.coverState : null,
-    detail: reading?.detail ?? 'No usable reading received',
+    reportedAt: known ? source.observedAt : null, reportReceivedAt: known ? source.receivedAt : null, coverState: known ? source.coverState : null,
+    detail: estimatedClosing ? `Closing is estimated from the opener's command receipt. Waiting for closed contact. ${reading.detail}`
+      : reading?.detail ?? 'No usable reading received',
     tone: !known ? 'unknown' : moving ? 'moving' : state.toLowerCase(),
     disabled: !known || !action || !equipmentCoverAllowed(status, device, action, snapshot.busy || snapshot.blocked) };
 }

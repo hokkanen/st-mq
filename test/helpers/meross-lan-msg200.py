@@ -2,6 +2,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -14,12 +15,12 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/apply-meross-lan-msg200.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
-fixture = ROOT / 'test/fixtures/meross-lan-5.8.0'
+fixture = ROOT / 'test/fixtures/meross-lan-6.0.0'
 original = (fixture / 'garagedoor.py').read_bytes()
 patched = installer.patched_source(original)
-tree = ast.parse(patched)
+tree = ast.parse(re.sub(rb"(?m)^(        )type [^\n]+", rb"\1pass", patched))
 helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'stmq_garage_command_state')
-garage = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MLGarage')
+garage = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'GarageDoor')
 method = next(n for n in garage.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'async_request_position')
 config_mixin = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'StmqGarageConfigMixin')
 mc = NS(KEY_PAYLOAD='payload', KEY_STATE='state', KEY_OPEN='open', KEY_EXECUTE='execute', KEY_CHANNEL='channel', METHOD_SET='SET')
@@ -42,20 +43,25 @@ for bad in [[], [1], [{'channel': 1, 'open': 0}], [{'channel': 2, 'open': 1}] * 
         raise AssertionError('Ambiguous/wrong contact accepted')
 
 
+class Index(dict):
+    value = 2
+
+
+class Namespace(str):
+    key = 'config'
+
+
 async def exercise(action, contact):
     schedules = []
-    async def request(*args):
-        assert args == ('Appliance.GarageDoor.State', 'SET', {'state': {'channel': 2, 'open': action}})
-        return {'payload': {'state': [{'channel': 1, 'open': 1-contact}, {'channel': 2, 'open': contact}, 1]}}
-    manager = NS(async_request_ack=request, lastresponse=100, schedule_async_callback=lambda delay, callback: schedules.append(delay))
-    entity = NS(manager=manager, ns=NS(name='Appliance.GarageDoor.State', key='state'), channel=2,
-                number_open_timeout=NS(native_value=18), number_close_timeout=NS(native_value=22),
+    async def request(payload):
+        assert payload == {'open': action}
+        return NS(payload={'state': [{'channel': 1, 'open': 1-contact}, {'channel': 2, 'open': contact}, 1]})
+    entity = NS(parent=NS(last_rx_epoch=100), index=Index(channel=2),
+                async_request_payload=request,
+                doorOpenDuration=NS(native_value=18), doorCloseDuration=NS(native_value=22),
                 is_closed=None, is_opening=False, is_closing=False, _transition_cancel=lambda: None,
-                _async_transition_callback=lambda: None, _async_transition_end_callback=lambda: None,
-                flush_state=lambda: None, WARNING=1)
-    def error(*args):
-        raise AssertionError('Patched native method failed')
-    entity.log_exception = error
+                _transition_callback=lambda: None, _async_transition_end_callback=lambda: None,
+                schedule_callback=lambda delay, callback: schedules.append(delay), flush_state=lambda: None)
     await scope['async_request_position'](entity, action)
     assert entity.is_closed is (not contact)
     assert entity.is_opening is bool(action)
@@ -72,7 +78,6 @@ class OriginalListMixin:
         return 'original-fallback'
 
 
-scope['me'] = NS(MEListChannelMixin=OriginalListMixin)
 exec(compile(ast.Module(body=[config_mixin], type_ignores=[]), 'reviewed-config-mixin', 'exec'), scope)
 
 
@@ -81,15 +86,20 @@ async def config_write():
     async def request(*args):
         calls.append(args)
         return True
-    entity = scope['StmqGarageConfigMixin']()
-    entity.manager = NS(async_request_ack=request)
-    entity.ns = NS(name='Appliance.GarageDoor.MultipleConfig', key='config')
-    entity.channel = 2
+    class Config(scope['StmqGarageConfigMixin'], OriginalListMixin):
+        pass
+    entity = Config()
+    entity.parent = NS(async_request=request)
+    updates = []
+    entity.update_device_value = updates.append
+    entity.ns = Namespace('Appliance.GarageDoor.MultipleConfig')
+    entity.index = Index(channel=2)
     for key, value in [('doorOpenDuration', 18000), ('doorCloseDuration', 22000), ('buzzerEnable', 1)]:
-        entity.key_value = key
-        assert await entity.async_request_value(value)
-        assert calls[-1] == (entity.ns.name, 'SET', {'config': {'channel': 2, key: value}})
-    entity.ns = NS(name='Appliance.GarageDoor.Config', key='config')
+        entity.key_value = NS(payload=lambda value, key=key: {key: value})
+        await entity.async_request_value(value)
+        assert updates[-1] == value
+        assert calls[-1] == (entity.ns, 'SET', {'config': {'channel': 2, key: value}})
+    entity.ns = Namespace('Appliance.GarageDoor.Config')
     assert await entity.async_request_value(1) == 'original-fallback'
     assert len(calls) == 3
 
@@ -117,7 +127,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert source.read_bytes() == held
     source.write_bytes(original)
     manifest = json.loads((root / 'manifest.json').read_text())
-    manifest['version'] = '6.0.0'
+    manifest['version'] = '5.8.0'
     (root / 'manifest.json').write_text(json.dumps(manifest))
     try:
         installer.install(root, Path(tmp) / 'backups')

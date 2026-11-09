@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { checkGarageDoorBrowser } from './garage-door-browser-checks.js';
+import { checkGarageDoorUpdatesBrowser } from './garage-door-update-browser-checks.js';
 import { checkDashboardHeights } from './dashboard-height-browser-checks.js';
 
 async function checkEquipmentReadbackBrowser({ evaluate, command, context, refresh, settle }) {
@@ -247,6 +248,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     const caravan = '#garage-equipment-readings [data-device-id=caravan]';
     if (!caravanOnly) {
     await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until, setReducedMotion });
+    await checkGarageDoorUpdatesBrowser({ evaluate, refresh, settle, until, setReducedMotion });
     if (garageDoorsOnly) return;
     await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
     await checkEquipmentReadbackBrowser({ evaluate, command, context, refresh, settle });

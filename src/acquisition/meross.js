@@ -2,6 +2,14 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { classifySourceTime } from '../domain/time-evidence.js';
 
 export const MEROSS_STATE = 'Appliance.GarageDoor.State';
+export function merossCommandState(payload, channel) {
+  const rows = Array.isArray(payload) ? payload : [payload];
+  const matches = rows.filter(row => row && typeof row === 'object' && row.channel === channel);
+  if (matches.length !== 1 || ![0, 1].includes(matches[0].open)) return null;
+  const flags = rows.filter(row => Number.isInteger(row) && [0, 1].includes(row));
+  const execute = matches[0].execute ?? (flags.length === 1 ? flags[0] : undefined);
+  return [0, 1].includes(execute) ? { ...matches[0], execute } : null;
+}
 const digest = (id, key, timestamp) => createHash('md5').update(`${id}${key}${timestamp}`).digest('hex');
 export function merossMessage(key, from, method, payload, now = Date.now(), namespace = MEROSS_STATE) {
   const messageId = randomBytes(16).toString('hex'), timestamp = Math.floor(now / 1000);
@@ -19,7 +27,7 @@ export function validMerossMessage(message, key) {
 
 export function createMerossProtocol({ devices, clock }) {
   const replyTopic = `/app/stmq-${randomBytes(16).toString('hex')}/subscribe`;
-  const pending = new Map(), seen = new Map(), sessionReplies = new Map();
+  const pending = new Map(), commands = new Map(), seen = new Map(), sessionReplies = new Map();
   const parse = body => { try { return JSON.parse(String(body)); } catch { return null; } };
   const rows = devices.filter(d => d.meross);
   const find = (topic, body) => rows.find(d => d.mqtt.commandTopic === topic
@@ -27,12 +35,13 @@ export function createMerossProtocol({ devices, clock }) {
   const prune = () => {
     for (const [body, entry] of sessionReplies) if (clock() - entry.at > 10_000) sessionReplies.delete(body);
     for (const [id, entry] of pending) if (clock() - entry.at > 10_000) pending.delete(id);
+    for (const [id, entry] of commands) if (clock() - entry.at > 10_000) commands.delete(id);
     for (const [id, at] of seen) if (clock() - at > 120_000) seen.delete(id);
     while (seen.size > 512) seen.delete(seen.keys().next().value);
   };
   return {
     replyTopic,
-    reset() { pending.clear(); seen.clear(); sessionReplies.clear(); },
+    reset() { pending.clear(); commands.clear(); seen.clear(); sessionReplies.clear(); },
     isSessionReply(topic, body) {
       prune(); return sessionReplies.get(String(body))?.topic === topic;
     },
@@ -73,8 +82,21 @@ export function createMerossProtocol({ devices, clock }) {
         const older = [...pending].filter(([, entry]) => entry.device === d.id);
         while (older.length >= 2) pending.delete(older.shift()[0]);
         pending.set(message.header.messageId, { device: d.id, at: clock() });
-      }
+      } else commands.set(d.id, { id: message.header.messageId, at: clock(), action: body === d.mqtt.openPayload ? 'open' : 'close' });
       return JSON.stringify(message);
+    },
+    commandReceipt(d, topic, body, packet, receivedAt) {
+      prune();
+      const m = parse(body), h = m?.header, command = commands.get(d.id);
+      if (!command || packet.retain || topic !== replyTopic || !validMerossMessage(m, d.meross.key)
+        || h.namespace !== MEROSS_STATE || h.method !== 'SETACK' || h.messageId !== command.id
+        || h.from !== `/appliance/${d.meross.uuid}/publish` || receivedAt < command.at
+        || !['ready', 'pending'].includes(classifySourceTime({ sourceTime: h.timestamp * 1000,
+          receivedAt, now: receivedAt, maxAgeMs: 10_000 }).status)) return null;
+      const state = merossCommandState(m.payload?.state, d.meross.channel);
+      if (!state) return null;
+      commands.delete(d.id);
+      return { action: command.action, executed: state.execute === 1, sourceTime: h.timestamp * 1000, receivedAt };
     },
     classify(topic, body, method) {
       const m = parse(body);

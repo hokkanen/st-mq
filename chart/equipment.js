@@ -1,5 +1,6 @@
 import { actionReceiptRecent, createReceiptTracker } from './action-receipts.js';
 import { isReadOnlyReplica } from './replica-status.js';
+import { mergeDoorUpdate } from './garage-door-updates.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
@@ -212,6 +213,7 @@ export function createEquipmentActions({ request, onChange = () => {}, onStatus 
   return {
     snapshot,
     update(next) {
+      if (busy) status = mergeDoorUpdate(status, { input: next.input, now: next.now, equipment: next.equipment });
       if (!busy) {
         const device = next.equipment?.devices?.find(device => device.id === actionDeviceId);
         const reading = equipmentStateReading(device, next.now);
@@ -330,8 +332,10 @@ export function equipmentCoverReceipt(device, now) {
 function coverReceiptText(operation) {
   if (!operation) return '';
   if (Object.hasOwn(EQUIPMENT_COMMAND_ERRORS, operation.code)) return EQUIPMENT_COMMAND_ERRORS[operation.code];
-  const result = operation.status === 'published' && !operation.pending && !operation.confirmed ? 'no new position report' : operation.superseded ? `latest device report: ${operation.observedValue}; request superseded`
+  const result = operation.deviceReceipt?.executed === false && !operation.confirmed ? 'opener declined the request; check the door'
+    : operation.status === 'published' && !operation.pending && !operation.confirmed ? 'no new position report' : operation.superseded ? `latest device report: ${operation.observedValue}; request superseded`
     : operation.confirmed ? `state reported${operation.observedValue ? `: ${operation.observedValue}` : ''}`
+      : operation.deviceReceipt?.executed === true ? 'opener accepted; position unconfirmed'
       : { publishing: 'sending…', published: 'sent; position unconfirmed', observed: 'state reported',
         failed: 'could not send; check the door', unconfirmed: 'no new position report' }[operation.status] ?? 'position unconfirmed';
   const detail = operation.pending && !operation.confirmed && operation.action === 'stop' && operation.status === 'published' ? 'sent; stopping unconfirmed' : result;

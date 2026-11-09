@@ -44,6 +44,7 @@ import { createPairPanel } from './pair-status.js';
 import { createHistoryRecoveryPanel } from './history-recovery.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { createGarageDoorPanel } from './garage-doors.js';
+import { createGarageDoorWatch, mergeDoorUpdate } from './garage-door-updates.js';
 import { renderFloorPreheat } from './floor-preheat.js';
 import { assertWebRequest, createWebSession, createAccessControls, bindPasswordVisibility } from './web-access.js';
 import { createSecureWebAccessPanel } from './secure-web-access.js';
@@ -150,6 +151,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
   session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined; dashboardStatusReceived = false;
+  garageDoorWatch.stop();
   pairPanel.clear();
   configurationReview.clear(); configurationReview.update();
   secureWebAccess.clear();
@@ -278,6 +280,20 @@ const equipmentPanel = createEquipmentPanel({ document, request: api,
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
   onChange: snapshot => garageDoors.update(snapshot),
   blocked: () => temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
+const garageDoorWatch = createGarageDoorWatch({ request: api,
+  enabled: () => !session.locked && !document.hidden && Boolean(lastStatus?.equipment?.doorRevision)
+    && !isReadOnlyReplica(lastStatus) && lastStatus?.readOnly !== true
+    && lastStatus?.equipment?.devices?.some(d => d.kind === 'door' && d.enabled !== false),
+  onUpdate: update => {
+    if (update.equipment.doorRevision.generation !== lastStatus?.equipment?.doorRevision?.generation) {
+      void refresh({ background: true }); return;
+    }
+    lastStatus = mergeDoorUpdate(lastStatus, update);
+    statusReceivedMonotonicAt = performance.now();
+    equipmentPanel.update(lastStatus);
+    renderGarage(document, lastStatus);
+    garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
+  } });
 const automationControls = createAutomationControls({ document, request: api,
   beforeRequest: () => { ++refreshSequence; }, onStatus: result => render(result),
   onBusy: busy => { equipmentBusy = busy; updateTemporaryButtons(false); },
@@ -884,6 +900,7 @@ function render(s) {
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = retainDashboardHealth(lastStatus, s);
+  garageDoorWatch.update();
   dashboardStatusReceived = true;
   statusReceivedMonotonicAt = performance.now();
   if (s.recordingHealth?.version === 3) resetRecordingContext(s.recordingHealth);
@@ -1393,7 +1410,9 @@ setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => {
   checkCommunication();
+  garageDoorWatch.update();
   if (!document.hidden) { void refresh({ forceEvents: true }); void refreshRecordingOverview(); void refreshAudits(); databaseExport.tick(); }
 });
+window.addEventListener('pagehide', () => garageDoorWatch.stop());
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();

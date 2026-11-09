@@ -7,6 +7,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { merossMessage, validMerossMessage } from '../src/acquisition/meross.js';
 import { mqttRouting } from '../src/acquisition/mqtt-routing.js';
 import { equipmentCoverResult } from '../chart/equipment.js';
+import { waitForDoorUpdate } from '../src/app/door-watch.js';
 const uuid = '0123456789abcdef0123456789abcdef', key = 'abcdef0123456789abcdef0123456789';
 const door = channel => ({ id: `door${channel}`, area: 'garage', kind: 'door',
   connection: `mqtt:/appliance/${uuid}/publish`, cover_control: true, meross: { uuid, key, channel } });
@@ -22,10 +23,11 @@ function fixture(t) {
     } });
   t.after(() => { capture.close(); store.close(); });
   const reply = (channel, open = 0, { method = 'GETACK', retain = false, badKey = false, execute = 0, sourceOffsetMs = 0 } = {}) => {
-    const request = sent.findLast(x => x.body.header.method === 'GET' && x.body.payload.state[0].channel === channel);
+    const request = sent.findLast(x => x.body.header.method === (method === 'SETACK' ? 'SET' : 'GET')
+      && (method === 'SETACK' ? x.body.payload.state.channel : x.body.payload.state[0].channel) === channel);
     const m = merossMessage(badKey ? '0'.repeat(32) : key, `/appliance/${uuid}/publish`, method,
       { state: [{ channel, open, execute }] }, now + sourceOffsetMs);
-    if (method === 'GETACK' && request) {
+    if (['GETACK', 'SETACK'].includes(method) && request) {
       m.header.messageId = request.body.header.messageId;
       m.header.sign = createHash('md5').update(`${m.header.messageId}${badKey ? '0'.repeat(32) : key}${m.header.timestamp}`).digest('hex');
     }
@@ -80,6 +82,65 @@ test('signed queries recover both channels independently; native commands use Qo
   assert.equal(f.capture.status().devices[0].readings.door1_open.value, 1);
   f.authority(false);
   await assert.rejects(f.capture.setCover({ deviceId: 'door2', action: 'open' }));
+});
+
+test('matching MSG200 execution receipts notify immediately without manufacturing a contact', async t => {
+  const f = fixture(t); await settle(); f.reply(1); f.reply(2); await settle();
+  f.advance(250);
+  await f.capture.setCover({ deviceId: 'door2', action: 'open' });
+  const command = f.sent.at(-1).body;
+  const receive = (changes = {}) => {
+    const m = merossMessage(key, `/appliance/${uuid}/publish`, 'SETACK',
+      { state: [{ channel: 1, open: 1 }, { channel: 2, open: 0 }, 1] }, command.header.timestamp * 1000);
+    m.header.messageId = changes.wrongId ? 'f'.repeat(32) : command.header.messageId;
+    m.header.sign = createHash('md5').update(`${m.header.messageId}${key}${m.header.timestamp}`).digest('hex');
+    if (changes.badSign) m.header.sign = '0'.repeat(32);
+    f.capture.receiveDoors(command.header.from, JSON.stringify(m), { retain: changes.retain }, undefined, 'primary');
+  };
+  const before = f.capture.status(), revision = JSON.stringify(before.doorRevision);
+  const waiting = waitForDoorUpdate({ source: f.capture, revision, current: () => true, timeoutMs: 500 });
+  receive({ wrongId: true }); receive({ badSign: true }); receive({ retain: true });
+  assert.equal(f.capture.status().devices[1].cover.operation.deviceReceipt, undefined);
+  f.advance(100); const started = performance.now(); receive();
+  const update = await waiting;
+  assert.ok(performance.now() - started < 100, 'Receipt wakes a held watcher without a polling interval');
+  const device = update.equipment.devices[1];
+  assert.equal(device.cover.operation.deviceReceipt.executed, true);
+  assert.equal(device.cover.operation.deviceReceipt.receivedAt, device.cover.operation.requestedAt + 100);
+  assert.equal(device.readings.door2_open.value, 0); assert.equal(device.cover.operation.status, 'published');
+  const after = JSON.stringify(f.capture.status().doorRevision); receive();
+  assert.equal(JSON.stringify(f.capture.status().doorRevision), after, 'Duplicate receipt cannot renew animation');
+  f.reply(2, 1, { method: 'PUSH' });
+  assert.equal(f.capture.status().devices[1].cover.operation.status, 'observed', 'A changed contact in the same source second confirms the request');
+});
+
+test('negative execution and source-clock admission remain separate from contact and transport evidence', async t => {
+  const f = fixture(t); await settle(); f.reply(1); f.reply(2); await settle();
+  await f.capture.setCover({ deviceId: 'door1', action: 'open' });
+  f.reply(1, 0, { method: 'SETACK', execute: 1, sourceOffsetMs: 1000 });
+  assert.equal(f.capture.status().devices[0].cover.operation.deviceReceipt, undefined);
+  f.advance(1000); f.capture.tickDoors();
+  assert.equal(f.capture.status().devices[0].cover.operation.deviceReceipt.executed, true);
+  f.advance(1000); f.reply(1, 1, { method: 'PUSH' });
+  await f.capture.setCover({ deviceId: 'door1', action: 'close' });
+  f.reply(1, 1, { method: 'SETACK', execute: 0 });
+  const device = f.capture.status().devices[0];
+  assert.equal(device.cover.operation.status, 'failed');
+  assert.equal(device.cover.operation.deviceReceipt.executed, false);
+  assert.equal(device.readings.door1_open.value, 1);
+});
+
+test('door watcher capacity is bounded and a disconnected command cannot acquire a later device receipt', async t => {
+  const f = fixture(t); await settle(); f.reply(1); f.reply(2); await settle();
+  const releases = Array.from({ length: 32 }, () => f.capture.subscribeDoors(() => {}));
+  assert.throws(() => f.capture.subscribeDoors(() => {}), { statusCode: 429 });
+  releases.pop()(); const release = f.capture.subscribeDoors(() => {}); release();
+  for (const stop of releases) stop();
+  await f.capture.setCover({ deviceId: 'door1', action: 'open' });
+  f.capture.setConnected(false); f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  f.reply(1, 0, { method: 'SETACK', execute: 1 });
+  assert.equal(f.capture.status().devices[0].cover.operation.deviceReceipt, undefined);
+  assert.equal(f.capture.status().devices[0].cover.operation.status, 'unconfirmed');
 });
 
 test('fresh native contacts confirm Open and Close receipts in the dashboard without treating SETACK as state', async t => {

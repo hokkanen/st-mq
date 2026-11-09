@@ -64,7 +64,14 @@ messages and unmatched responses do not refresh the contact. Small source-clock
 leads use [delayed admission](time-evidence.md#device-report-admission): the original
 source and receipt times remain intact, and control waits until the source time
 arrives. Larger leads are rejected. A command acknowledgement does not establish
-movement or a new contact observation.
+movement or a new contact observation. A separate correlated `SETACK` execution
+receipt records acceptance or refusal without changing contact state. Its original
+source, receipt and admission clocks remain separate from transport publication.
+The Garage illustration uses an accepted receipt to time estimated travel;
+opening also waits for the not-closed contact and only closed contact turns green.
+Native contact timestamps have one-second precision: post-dispatch receipt order,
+a new reading revision and the dispatch source-clock second fence confirmation
+without rewriting the original source timestamp.
 
 A closed contact confirms the configured closed sensor. An open contact means
 that the door is not closed; it does not prove full opening. Unknown connectivity
@@ -84,7 +91,9 @@ replay. A newer request cancels an unsent request;
 a request whose starting contact changed before transmission is rejected.
 
 Publication confirms a transport write, not a broker acknowledgement. The
-interface distinguishes publication from a subsequently observed contact.
+interface distinguishes publication, the opener's execution receipt and a
+subsequently observed contact. Admitted changes reach visible dashboards through
+a door-only long-poll watch rather than waiting for the normal status interval.
 An unconfirmed outcome requires checking current door state before another request.
 The opener retains its native limits and protection.
 

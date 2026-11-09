@@ -26,6 +26,7 @@ import { createWebSessions, rememberedCookieDigest, rememberedCookie, clearRemem
 import { eventLogQuery } from './event-log.js';
 import { createEventLogService } from './event-log-service.js';
 import { isRecordedDataAction } from '../domain/recorded-data-action.js';
+import { waitForDoorUpdate } from './door-watch.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -436,6 +437,24 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (unavailable()) return json(503, { error: unavailable() });
           if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
             return json(400, { error: 'Save a database copy with an empty JSON object.' });
+        }
+        if (req.method === 'GET' && url.pathname === '/api/garage/doors/watch') {
+          if ([...url.searchParams.keys()].some(key => key !== 'revision') || url.searchParams.getAll('revision').length > 1
+            || (url.searchParams.get('revision')?.length ?? 0) > 160)
+            throw new TypeError('Invalid door watch revision');
+          const currentEngine = getEngine(), source = currentEngine?.equipment;
+          if (writesBlocked() || recovering() || !source?.subscribeDoors)
+            return json(409, { error: 'Live door updates require the active master.' });
+          const cancellation = new AbortController(), cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          try {
+            const view = await waitForDoorUpdate({ source, revision: url.searchParams.get('revision'), signal: cancellation.signal,
+              current: () => !res.destroyed && getEngine() === currentEngine && currentEngine.equipment === source
+                && !writesBlocked() && !recovering() && !unavailable() && access().enabled
+                && (ingress || access() === acceptedAccess) && Boolean(identity(access())) });
+            if (res.destroyed || !stillAuthorized()) return;
+            return json(200, { ...view, now: currentEngine.clock(), input: currentEngine.config.input });
+          } finally { res.removeListener('close', cancel); }
         }
         readContext = await getReadContext?.();
         const engine = readContext?.engine ?? getEngine();

@@ -1,7 +1,10 @@
 {
-  "version": "5.8.0",
-  "requirements": [],
-  "originalSha256": "33ce19c7d6e3fed02465448a47264d818f1c73a3d7349d54a856260ddd373cc0",
-  "helperSha256": "b5190b0edb0617d2651ed0e165552f8e8b95fe33ae07c0560321d281eced2117",
-  "patchedSha256": "b62a0047f0df04103cc3d1439f6ce31f7db54da3e6c2cf8bc04aa9aee46f6cc3"
+  "version": "6.0.0",
+  "requirements": [
+    "bleak",
+    "paho-mqtt"
+  ],
+  "originalSha256": "c685cf5b9d848797c18d841b94bb52ce0afd08abb0da1b539f088984ff1acbf6",
+  "helperSha256": "78e1f1da2cc0458021d677c9bbba07075824aae64d4728a53f833e676e865260",
+  "patchedSha256": "c701f6e8be17bada0e34211682e872e70ca18a15ec539f7a73050e037a84a0b6"
 }

@@ -1,4 +1,5 @@
 import { isReadOnlyReplica } from './replica-status.js';
+import { retainNewerDoors } from './garage-door-updates.js';
 
 const writerStates = new Set(['ready', 'saving', 'confirming', 'unavailable', 'stopped', 'unknown']);
 const observationFields = ['webAccess', 'topology', 'role', 'instance', 'controlAuthority', 'pair',
@@ -47,6 +48,7 @@ export function observeDashboardStatus(displayed, observed) {
 /** A delayed reply cannot undo independently observed authority or health.
  * Compare immutable snapshots so unrelated pairing polls never renew health. */
 export function retainNewerDashboardObservations(result, atRequest, latest) {
+  result = retainNewerDoors(result, latest, atRequest);
   if (!latest || latest === atRequest || !Number.isFinite(result?.now) || typeof result?.input !== 'string') return result;
   if (atRequest && (latest.input !== atRequest.input
     || latest.recordingHealth?.contextId !== atRequest.recordingHealth?.contextId)) return latest;

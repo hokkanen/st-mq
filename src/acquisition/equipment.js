@@ -5,7 +5,7 @@ import { createDoorRecording } from './equipment-door-recording.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
 import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, observationTimeAdmitted } from '../domain/time-evidence.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createShellyCapture } from './shelly.js';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity, canonicalEquipmentTemperature as canonicalTemperature } from './equipment-config.js';
@@ -83,6 +83,28 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       nativeRestartMonotonicDeadline: null, nativePowerContinuity: false, nativePowerContinuityLostAt: engine.clock() }, recordingLocation: false }));
   const admission = createMqttAdmission(), doorAdmission = createMqttAdmission();
   const coverDispatches = new Map();
+  const doorListeners = new Set(), doorGeneration = randomUUID();
+  let doorRevision = 0, doorKey;
+  function notifyDoors() {
+    const now = engine.clock();
+    const key = JSON.stringify(devices.filter(d => d.kind === 'door').map(d => ({
+      id: d.id, available: !closed && canControl() && healthy(d, now), subscription: d.subscriptionStatus,
+      readings: Object.values(d.readings).map(r => [r.value, r.coverState, fresh(d, r, now)]), operation: d.coverOperation,
+    })));
+    if (key === doorKey) return;
+    doorKey = key; ++doorRevision;
+    for (const listener of [...doorListeners]) listener();
+  }
+  function acceptDoorReceipt(device, operation, receipt, admittedAt = engine.clock()) {
+    if (closed || !canControl() || !device.brokerConnected || device.coverOperation !== operation
+      || !scalar(operation.dispatchedAt) || receipt.receivedAt < operation.dispatchedAt
+      || receipt.action !== operation.action || !['publishing', 'published', 'observed'].includes(operation.status)) return;
+    operation.deviceReceipt = { ...receipt, admittedAt };
+    if (!receipt.executed && operation.status !== 'observed') {
+      operation.status = 'failed'; operation.error = 'The opener did not accept this door request.';
+    }
+    notifyDoors();
+  }
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
     const garage = ['garage_temperature', 'garage_temperature_2'].includes(device.temperatureSignal);
@@ -109,11 +131,12 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
   const doorPendingTime = createSourceTimePending({ clock: engine.clock, monotonicClock,
     ordered: row => row.device.id,
     onReject({ device }, reason) { if (reason !== 'cleared') unavailable(device, 'invalid-source-time'); },
-    onReady({ device, topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
+    onReady({ device, operation, receipt, topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
       if (closed || !device.brokerConnected || ['failed', 'disconnected'].includes(device.subscriptionStatus)) return;
+      if (receipt) { acceptDoorReceipt(device, operation, receipt, admittedAt); return; }
       const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
       try { receiveDevice(device, device.meross ? device.topic : topic, body, packet, receivedAt, receivedMonotonicAt); }
-      finally { admittedReceptionAt = previous; }
+      finally { admittedReceptionAt = previous; notifyDoors(); }
     } });
   const pendingTime = createSourceTimePending({ clock: engine.clock, dispatch: action => write(() => (store.transaction ?? (fn => fn())).call(store, () => {
     const checkpoint = pendingTime.checkpoint();
@@ -218,6 +241,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
         if (previous?.value != null) device.readings[definition.signal] = {
           ...previous, unavailable: true, quality: [...new Set([...(previous.quality ?? []), reason, 'last-reported'])] };
       }
+      notifyDoors();
       return;
     }
     if (store.runWrite && !store.transactionDepth) {
@@ -770,7 +794,8 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     const operation = device.coverOperation, main = device.readings[device.stateSignal];
     if (operation && scalar(operation.dispatchedAt) && operation.action !== 'stop' && !['failed', 'observed'].includes(operation.status)
       && main.revision > operation.dispatchedRevision
-      && main.receivedAt >= operation.dispatchedAt && main.observedAt >= operation.dispatchedAt
+      && main.receivedAt >= operation.dispatchedAt
+      && main.observedAt >= (device.meross ? Math.floor(operation.dispatchedAt / 1000) * 1000 : operation.dispatchedAt)
       && main.coverState === (operation.action === 'open' ? 'open' : 'closed')) {
       operation.observedAt = main.observedAt;
       if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
@@ -1270,6 +1295,11 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     return { ...operation, deviceId: device.id, acknowledgement: 'mqtt-broker', confirmed: operation.status === 'observed' };
   }
   const api = {
+    subscribeDoors(listener) {
+      if (doorListeners.size >= 32) throw Object.assign(new Error('Too many door watchers'), { statusCode: 429 });
+      doorListeners.add(listener);
+      return () => doorListeners.delete(listener);
+    },
     receptionKey(topic, payload, broker) {
       const nativeKey = broker === 'primary' ? native?.receptionKey(topic, payload) : null;
       if (nativeKey) return nativeKey;
@@ -1307,6 +1337,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
         device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
         if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.bridgeOnline = null; device.liveSinceConnect = false; }
       }
+      notifyDoors();
     },
     confirmSubscriptions(topics, broker = null, group = 'all') {
       if (closed) return;
@@ -1345,6 +1376,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       // current state. Ask its explicitly configured endpoint after all of the
       // response topics are subscribed, including on broker reconnection.
       for (const deviceId of requests) void api.recheck({ deviceId }).catch(() => {});
+      notifyDoors();
     },
     subscriptionFailed(topic, broker = null, group = 'all') {
       if (group !== 'doors' && (broker === null || broker === 'primary')) native?.subscriptionFailed(topic);
@@ -1376,6 +1408,19 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
             }).catch(() => {});
           }
         }
+        if (device.meross) {
+          const receipt = meross.commandReceipt(device, topic, rawBody, packet, receivedAt);
+          if (receipt) {
+            const operation = device.coverOperation;
+            if (operation && scalar(operation.dispatchedAt) && receipt.action === operation.action) {
+              const timing = classifySourceTime({ sourceTime: receipt.sourceTime, receivedAt, now: receivedAt });
+              if (timing.status === 'pending' || pendingFor(device))
+                doorPendingTime.defer(++pendingSequence, { device, operation, receipt }, { sourceTime: receipt.sourceTime, receivedAt });
+              else acceptDoorReceipt(device, operation, receipt);
+            }
+            continue;
+          }
+        }
         const body = device.meross ? meross.decode(device, topic, rawBody, packet, receivedAt) : rawBody;
         if (body === null) continue;
         const input = parse(body);
@@ -1387,6 +1432,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
           doorPendingTime.defer(++pendingSequence, { device, topic, body, packet, receivedMonotonicAt }, { sourceTime: at, receivedAt });
         } else receiveDevice(device, device.meross ? device.topic : topic, body, packet, receivedAt, receivedMonotonicAt);
       }
+      notifyDoors();
       return true;
     },
     receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null, receivedMonotonicAt = null) {
@@ -1446,6 +1492,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
           device.coverOperation.error = 'The requested door state has not been observed. Check its live state.';
         }
       }
+      notifyDoors();
     },
     tick(now = engine.clock()) {
       if (closed) return;
@@ -1558,6 +1605,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock(),
         ...(device.meross ? { acknowledgement: 'mqtt-write' } : {}) };
       device.coverOperation = operation;
+      notifyDoors();
       const previous = device.readings[device.stateSignal];
       const startingState = { value: previous?.value, coverState: previous?.coverState };
       const deadline = operation.requestedAt + readbackTimeoutMs, monotonicDeadline = performance.now() + readbackTimeoutMs;
@@ -1598,6 +1646,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
         clearTimeout(timer);
         if (coverDispatches.get(device) === dispatch) coverDispatches.delete(device);
         cancellation.abort();
+        notifyDoors();
       }
       return { ...operation, deviceId: device.id, acknowledgement: device.meross ? 'mqtt-write' : 'mqtt-broker', confirmed: operation.status === 'observed' };
     },
@@ -1730,7 +1779,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
             || device.kind === 'dehumidifier' && dehumidifierHistory(device, now).value === null
             || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
         ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
-      return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),
+      return { configured: configured.length > 0, connected, doorRevision: { generation: doorGeneration, revision: doorRevision }, checking: rows.some(row => row.check?.checking),
         topicGroups, brokers: api.brokerStatus?.(),
         lastCheckedAt: Math.max(0, ...rows.map(row => row.check?.checkedAt ?? 0)) || null,
         devices: configured.map(config => ({ ...(rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,

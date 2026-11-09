@@ -42,7 +42,8 @@ states and estimate labels.
 
 Both views share the same illustration and reported states. Missing, stale or
 ambiguous reports remain unknown. Sending or acknowledging a command does not
-establish motion or position. Existing command receipts, read-only restrictions
+prove motion or position. An accepted native command can start estimated closing;
+opening additionally requires the not-closed contact. Existing command receipts, read-only restrictions
 and device authority checks still apply.
 
 Door controls and fresh door feedback remain available when recording is delayed
@@ -54,12 +55,25 @@ door feedback remain separate. Other equipment retains its own storage rules.
 `garage.door_travel_seconds` is **18 seconds** by default, shared by both doors for
 opening and closing. Travel animation uses constant linear speed; reversing
 direction uses the remaining distance rather than restarting a full travel time.
-Successful command publication starts the estimate's clock, but the illustration
-waits for a fresh door response before showing that movement. When the response
-arrives, both the overview and dialog jump to the position estimated from elapsed
-time and animate the remaining distance. A response three seconds after successful
-send therefore starts one sixth into an 18-second stroke, with 15 seconds left.
+For native Meross doors, a validated matching command-executed reply starts the
+estimate's clock in both directions. Opening stays still until fresh not-closed
+contact evidence arrives, then immediately catches up and animates the remaining
+distance. A contact three seconds after the device receipt therefore starts one
+sixth into an 18-second stroke, with 15 seconds left. Closing starts immediately
+on the device receipt; it does not wait for the closed contact at the end.
+MQTT publication alone cannot start either native estimate. A missing or negative
+device reply retains an unconfirmed or declined request; movement is never retried.
+Other integrations retain their reported-motion and publication timing rules.
 Unchanged reports cannot confirm a new direction or restart its timer.
+
+Visible signed-in dashboards keep one bounded door-only watch on the active
+master. Admitted contact changes, command receipts and availability changes wake
+it immediately, updating both illustrations and their labels without waiting for
+the regular dashboard refresh. Idle watch renewals do not rerender the dashboard.
+Source, receipt and admission clocks remain distinct; a future-source report
+cannot update the illustration before admission. Slave views retain recorded
+snapshot semantics. A separate remote's closing start cannot be inferred from
+the binary contact, but its final closed report updates immediately.
 
 Positions inferred during travel are labeled as estimates. A closed report ends
 travel immediately; a binary Open/`coverState: open` report only establishes that
@@ -68,7 +82,8 @@ When estimated closing reaches the floor, the downward arrow disappears in both
 views. Each arrow shares its own shutter's animation clock; it does not wait for
 the other door, a completion callback, or another status report. The door keeps
 its attention colour and reported state until a closed
-report confirms it; reduced motion hides the arrow when the shutter snaps closed.
+report confirms it; reaching the estimated floor never turns the door green.
+Reduced motion hides the arrow when the shutter snaps closed.
 The current contact integration has no measured opening percentage. Failed or
 unacknowledged commands supply no timing anchor, and lost evidence or replacement
 equipment clears pending estimates. Reported movement without a local command can
