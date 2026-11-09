@@ -253,6 +253,8 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
         assert(Math.abs(motion.from - (direction === 'open' ? -16 : -80)) < 3, 'Three-second confirmation catches up to the anticipated position');
         assert(motion.duration > 14_500 && motion.duration <= 15_050, 'Only the remaining fifteen seconds are animated');
         assert.equal(motion.to, direction === 'open' ? -96 : 0);
+        assert.equal(await evaluate(`(() => {const cue=document.querySelector('${bay(scope, side)} .garage-door-motion'),style=getComputedStyle(cue);return style.display!=='none'&&style.visibility!=='hidden'&&style.animationName==='garage-motion';})()`), true,
+          'Direction arrows flash during the illustrated stroke, including a binary Open report');
         assert(Math.abs(Math.abs(motion.to-motion.from)/motion.duration - 96/18_000) < 0.00001, 'Both directions keep the same configured linear speed');
       }
       assert.equal(await evaluate(`document.querySelector('${bay(panel, side)} .garage-door-estimate').checkVisibility()`), true);
@@ -269,6 +271,8 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
         const motion = await travel(scope, side);
         assert(motion && motion.remaining < firstMotion[scope].remaining, 'Repeated and native Open reports preserve progress instead of restarting or snapping');
         assert.equal(motion.to, firstMotion[scope].to, 'A not-closed report preserves the current travel direction');
+        assert.equal(await evaluate(`(() => {const s=getComputedStyle(document.querySelector('${bay(scope, side)} .garage-door-motion'));return s.display!=='none'&&s.visibility!=='hidden';})()`), true,
+          'Binary Open updates keep the active direction arrows visible');
       }
       await close();
       await until(`!document.querySelector('${panel}').open`);
@@ -309,6 +313,17 @@ export async function checkGarageDoorBrowser({ evaluate, command, context, refre
     };
     await evaluate("(() => {const f=window.equipmentUiFixture;f.status.garage.doorTravelSeconds=1;for(const d of f.devices.filter(d=>d.kind==='door'))Object.values(d.readings)[0].stale=true;return true;})()");
     await refresh();
+    await reportBoth('closed');
+    await reportBoth('open');
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), true,
+      'Binary contacts show upward arrows in both views while the shutter rises');
+    await withoutFinishNotifications();
+    await until(`[...document.querySelectorAll('${physicalDoors}')].every(n=>new DOMMatrix(getComputedStyle(n.querySelector('.garage-door-leaf')).transform).m42===-96)`);
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), false,
+      'Upward arrows stop at the estimated top without a new report or finish callback');
+    await refresh();
+    for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), false,
+      'A later refresh cannot revive a completed opening arrow');
     await reportBoth('open');
     await reportBoth('closing');
     for (const scope of [overview, panel]) for (const side of ['left', 'right']) assert.equal(await evaluate(cueVisible(bay(scope, side))), true, 'Both doors show closing arrows in both views during travel');

@@ -91,7 +91,9 @@ Positions inferred during travel are labeled as estimates. A closed report ends
 travel immediately; a binary Open/`coverState: open` report only establishes that
 the door is not closed, so it does not skip or finish the opening animation.
 When estimated closing reaches the floor, the downward arrow disappears in both
-views. Each arrow shares its own shutter's animation clock; it does not wait for
+views. Upward arrows also follow inferred rising travel when the sensor reports
+only Open, finishing with that stroke. Each timed arrow shares its own shutter's
+animation clock; it does not wait for
 the other door, a completion callback, or another status report. The door keeps
 its attention colour and reported state until a closed
 report confirms it; reaching the estimated floor never turns the door green.

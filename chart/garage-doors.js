@@ -202,17 +202,22 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     node.cueAnimation = null;
     const transform = value => `translateY(${-96 * (value ?? 0)}px)`;
     const animate = motion.durationMs > 0 && !reducedMotion.matches && node.leaf.animate;
-    const closing = node.row.dataset.motion === 'closing' && motion.to === 0;
+    // Binary Open means not-closed, so a rising shutter can have no reported
+    // Opening state. Its visible direction comes from the existing trajectory.
+    if (motion.durationMs > 0 && motion.from !== null && motion.to !== null && motion.from !== motion.to)
+      node.row.dataset.motion = motion.to > motion.from ? 'opening' : 'closing';
+    const timedCue = node.row.dataset.motion === 'closing' && motion.to === 0
+      || node.row.dataset.motion === 'opening' && motion.to === 1 && node.row.dataset.state === 'open';
     node.row.dataset.travelKnown = String(motion.to !== null);
     node.estimate.hidden = !motion.estimated;
     node.leaf.style.transform = transform(motion.to);
-    node.cue.style.visibility = closing ? 'hidden' : '';
+    node.cue.style.visibility = timedCue ? 'hidden' : '';
     if (animate) {
       node.animation = node.leaf.animate([{ transform: transform(motion.from) }, { transform: transform(motion.to) }],
         { duration: motion.durationMs, easing: 'linear', fill: 'forwards' });
-      if (closing) {
-        // Share the shutter's timeline: no delayed finish event can leave an
-        // arrow on a closed illustration. Reported evidence still owns colour.
+      if (timedCue) {
+        // Timed direction cues finish on their shutter's timeline, without
+        // waiting for a callback or another report. Evidence still owns colour.
         node.cueAnimation = node.cue.animate([{ visibility: 'visible' }, { visibility: 'hidden' }],
           { duration: motion.durationMs, easing: 'steps(1, end)', fill: 'forwards' });
         node.cueAnimation.startTime = node.animation.startTime = document.timeline.currentTime;
