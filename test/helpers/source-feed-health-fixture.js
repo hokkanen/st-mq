@@ -135,6 +135,9 @@ export function createSourceHealthFixture(definition = {}) {
     ...(definition.fmi || definition.openmeteo ? { outdoor: definition.providerHealth?.outdoor ?? defaultOutdoor } : {}) });
   for (const [name, snapshot] of Object.entries(definition.snapshots ?? {})) store.setState(`provider:${name}`, snapshot);
   engine.latestStatus = { now: NOW };
+  // These cases model a running loop with independently missing source feeds.
+  // A cached status timestamp is not proof that the loop completed.
+  engine.lastLoopCompletedAt = NOW;
   at = definition.startup ? NOW : NOW - 4 * MINUTE;
   const health = createRecordingHealth({ clock: () => at,
     backupCatalog: { async list() { return { copies: [], complete: true, reasons: [], checkedAt: at }; } } });
