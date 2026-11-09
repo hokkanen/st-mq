@@ -640,6 +640,23 @@ test('Shelly a lost minimum-current reply remains uncertain across restart witho
   assert.equal(view.currentTest.phase, 'superseded'); assert.equal(f.writes.length, 1);
 });
 
+test('an uncertain minimum-current command outranks a zero shared allocation after restart', async t => {
+  const f = fixture(t);
+  f.request = { id: 'lost-current-with-allocation', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  f.afterPublish = () => { throw Object.assign(Error('lost reply'), { code: 'evse-command-unconfirmed' }); };
+  await f.update();
+  f.afterPublish = null; f.request = null; f.now += 100_000; f.restart();
+  for (let i = 0; i < 2; i++) {
+    const view = await f.update({ allocation: { allocationA: 0 } });
+    assert.equal(view.limiter.currentA, 0); assert.equal(view.limiter.reason, 'priority-allocation');
+    assert.equal(view.currentTest.phase, 'uncertain'); assert.equal(view.phase, 'uncertain');
+    assert.equal(view.reason, 'evse-command-unconfirmed');
+    assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 1,
+      'Uncertain current preparation cannot be repeated or restored');
+    assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === true), false);
+  }
+});
+
 test('Shelly accepted minimum-current readback recovers across restart and restores once', async t => {
   const f = fixture(t, { limiterEnabled: false });
   f.request = { id: 'current-read-failure', connectedAt: NOW, phase: 'charging', minimumCurrent: true };

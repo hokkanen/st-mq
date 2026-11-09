@@ -313,6 +313,12 @@ An initially observed false setting on a new connection, with no intervening
 device Stop, is not such a hold. Normal connection authority can still start a
 charger whose native Auto charge is disabled.
 
+A known device permission hold takes precedence over allocation and vehicle-start
+restrictions in charging status; the current limiter keeps its separate reason.
+Uncertain commands and outstanding current-restoration duties remain visible.
+The dashboard distinguishes a known charger Stop from missing command confirmation
+and can show evidenced target attainment without clearing the hold.
+
 A same-value `sys` refresh of an uninterrupted, application-owned Stop preserves
 that pause and its original resume deadline. A true edge interrupts its physical
 confirmation, even if a later false edge arrives in the same batch before polling.

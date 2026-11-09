@@ -2950,12 +2950,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const deviceHeld = devicePermission(adapter.snapshot()).held;
           state.phase = userPause ? 'waiting' : state.manual ? 'manual' : currentUnconfirmed ? 'uncertain' : deviceHeld ? 'waiting' : identification ? 'identifying' : pause ? 'waiting'
             : input.enabled || chargeNow ? !open ? 'waiting' : state.provisional ? 'provisional' : intermediate ? 'active' : 'released' : 'off';
+          // Match the phase: unresolved current duties and a known device Stop
+          // outrank planning restrictions. The limiter retains its own reason.
           state.reason = userPause ? 'session-pause' : state.manual?.kind === 'stop' ? 'manual-stop'
             : state.manual?.kind === 'takeover-unconfirmed' ? 'evse-native-schedule-unconfirmed'
             : state.manual?.kind === 'instruction-unconfirmed' ? 'evse-command-unconfirmed' : snapshot.nativeScheduleActive ? 'native-schedule'
             : state.manual ? `manual-${state.manual.kind}`
-            : nativeBlocked ? 'vehicle-not-before' : limitation.pause ? limitation.reason
-            : currentUnconfirmed ? 'evse-command-unconfirmed' : deviceHeld ? 'device-permission-held' : identificationPause ? 'identification-pause'
+            : currentUnconfirmed ? 'evse-command-unconfirmed' : deviceHeld ? 'device-permission-held'
+            : nativeBlocked ? 'vehicle-not-before' : limitation.pause ? limitation.reason : identificationPause ? 'identification-pause'
               : identification ? identification.phase === 'waiting' ? 'identification-waiting' : 'identification-charging'
                 : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
           if (takeoverRequested) {

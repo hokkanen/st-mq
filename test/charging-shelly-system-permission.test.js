@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fixture, startedFixture, ownedPauseFixture, START, DEVICE, PREFIX } from './helpers/shelly-system-fixture.js';
+import { chargerDisplay } from '../chart/charging.js';
+import { chargerSummary, chargingNotice } from '../chart/charging-summary.js';
 
 for (const writer of [false, true]) test(`reboot compatibility evidence reaches the durable session report and replays once; writer ${writer}`, async t => {
   const f = await fixture(t, { durableStorage: true, automatic: false, vehicleFeed: false });
@@ -374,6 +376,62 @@ async function ordinaryFixture(t, options = {}) {
   assert.equal(f.item().controller.status().currentTest ?? null, null);
   return f;
 }
+
+test('a witnessed SYS hold outranks zero shared allocation across restart and dashboard summaries', async t => {
+  const f = await ordinaryFixture(t, { limiterEnabled: true });
+  const phases = current => ({ healthy: true, currents: [current, current, current], times: Array(3).fill(f.now),
+    evidence: { connected: true, online: true, synchronized: true, epoch: 'synthetic-held-feed' } });
+  f.runtime.allocationContext = () => ({ property: phases(3), easee: phases(0),
+    priority: 'balanced', allocationA: 0 });
+  f.advance(62_000); f.permission(false); f.measure(0);
+  let control = await f.update();
+  const hold = structuredClone(control.deviceHold), writes = f.writes.length;
+  for (const restart of [false, true]) {
+    if (restart) {
+      await f.restart();
+      f.runtime.allocationContext = () => ({ property: phases(3), easee: phases(0),
+        priority: 'balanced', allocationA: 0 });
+    }
+    f.advance(1000); control = await f.update();
+    assert.equal(control.reason, 'device-permission-held');
+    assert.equal(control.phase, 'waiting'); assert.equal(control.devicePermissionHeld, true);
+    assert.deepEqual(control.deviceHold, hold);
+    assert.equal(control.confirmed, false, 'A native hold cannot confirm application Start permission');
+    assert.equal(control.pending, null); assert.equal(control.handoverConfirmed, true);
+    assert.equal(control.limiter.currentA, 0); assert.equal(control.limiter.reason, 'priority-allocation');
+    assert.equal(f.writes.length, writes, 'Reporting the hold sends no replacement Start or setting');
+    const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    for (const reached of [false, true]) {
+      const item = { ...view, requiredGridKwh: reached ? 0 : 10,
+        progress: { ...view.progress, remainingGridKwh: reached ? 0 : 10 },
+        values: { ...view.values,
+          soc: { value: reached ? 100 : 40, available: true, source: 'teslamate', receivedAt: f.now },
+          minimumSoc: { value: 100, available: true, source: 'teslamate', receivedAt: f.now } } };
+      const display = chargerDisplay(item, { now: f.now });
+      const summary = chargerSummary(item, display, { now: f.now });
+      const notice = chargingNotice(item, display, summary);
+      const label = reached ? 'Target reached' : 'Stopped by charger';
+      assert.equal(display.state, label); assert.equal(display.event, label);
+      assert.equal(summary.activity, label); assert.equal(notice.label, label);
+      assert.match(notice.detail, /permission.*off|withdrew charging permission/);
+      assert.match(notice.detail, /no replacement Start/i);
+      for (const patch of [
+        { pending: { role: 'start_charging', stage: 'dispatched', value: true } },
+        { currentAdjustment: { pending: true } },
+        { currentTest: { phase: 'restoring', restoreCurrentA: 16 } },
+        { snapshot: { ...control.snapshot, online: false } },
+        { errorCode: 'charger-fault' },
+      ]) {
+        const blocked = { ...item, control: { ...item.control, ...patch } };
+        const display = chargerDisplay(blocked, { now: f.now });
+        const summary = chargerSummary(blocked, display, { now: f.now });
+        const notice = chargingNotice(blocked, display, summary);
+        assert.equal(notice.state, 'attention');
+        assert.notEqual(display.event, label, 'A known hold cannot hide uncertainty, recovery or lost health');
+      }
+    }
+  }
+});
 
 test('late SYS false and true preserve an existing minimum-current attempt without another Start', async t => {
   const f = await startedFixture(t), before = f.item().controller.status(), attempt = structuredClone(f.item().identification);

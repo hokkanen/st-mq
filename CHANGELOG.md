@@ -62,7 +62,9 @@ Versions follow Semantic Versioning.
 
 - Charger 2 limiting reasons distinguish electrical headroom from a tighter
   shared allocation after current-step rounding, with the same treatment for
-  native and vehicle limits.
+  native and vehicle limits. A known charger-permission hold remains visible
+  alongside these limits instead of appearing as a pending charger confirmation;
+  genuine command uncertainty and restoration warnings retain priority.
 
 - Session-owned RPC diagnostics show their retained report's data context,
   including an explicit Simulation label for simulated transport evidence.
