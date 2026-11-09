@@ -570,6 +570,14 @@ state after dispatch. H66 and Garage adapter tests exercise original deadlines,
 identity/challenge changes and native readback across delayed publication. The
 installed MQTT.js tests also cancel a request while its outgoing store is delayed.
 
+`test/mqtt-h66-rollback.test.js` checks restorative acquisition shutdown before
+MQTT reception and write admission close. Matching native feedback must commit
+before restoration duties clear, including a held real-writer COMMIT. Missing
+feedback retains its obligation and records a pending-restoration event without
+misreporting shutdown cancellation as a storage fault. Authority loss, shutdown
+without restoration and late callbacks retain their command fences. These
+synthetic checks do not establish an installed pump's physical restoration.
+
 Startup rejection tests exercise the real application constructor and snapshot
 workers with unsupported charging state. Compare original database bytes, state
 and interrupted WAL companions, not only the thrown error. Current saved state

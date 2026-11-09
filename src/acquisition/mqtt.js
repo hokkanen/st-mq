@@ -188,7 +188,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const subscriptionRejected = (topic, error, granted) => Boolean(error || Array.isArray(granted)
     && (!granted.length || !granted.some(row => row.topic === topic && [0, 1, 2].includes(row.qos))));
   const lastErrorAt = new Map();
-  const report = (type, cause) => {
+  const report = (type, cause, signal = cancellation.signal) => {
     const now = engine.clock();
     if (now - (lastErrorAt.get(type) ?? -Infinity) >= 60_000) {
       // Diagnostic failures must not escape a timer or reject its catch handler.
@@ -205,7 +205,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       };
       try {
         const action = () => store.event(type, { source, ...diagnostic, ...(errorCode === undefined ? {} : { errorCode }) }, now);
-        if (store.runWrite) store.runWrite(action, { signal: cancellation.signal }).catch(rejected); else action();
+        if (store.runWrite) return store.runWrite(action, { signal }).catch(rejected);
+        return action();
       } catch (error) { rejected(error); }
     }
   };
@@ -999,15 +1000,23 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
       if (stopped || stopping) return;
+      h66?.beginShutdown({ restore });
+      const reportRestoration = type => report(type, undefined,
+        AbortSignal.any([cancellation.signal, AbortSignal.timeout(5000)]));
       // Native power confirmation still needs the normal message handler and
-      // publication authority. Stop discovery before disabling either path.
+      // publication authority. Finish restoration and its diagnostic saves
+      // before disabling reception or aborting acquisition write admission.
       if (restore && canControl() && equipment) {
         try {
           const result = await equipment.restoreCaravanProbes({ resume: false });
-          if (result.restorationPending) report('caravan-shutdown-restoration-pending');
-        } catch { report('caravan-shutdown-restoration-pending'); }
+          if (result.restorationPending) await reportRestoration('caravan-shutdown-restoration-pending');
+        } catch { await reportRestoration('caravan-shutdown-restoration-pending'); }
       }
-      if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
+      if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => reportRestoration('floor-shutdown-restoration-pending'));
+      if (restore && canControl() && h66 && primary.connected && settings.writeEnabled === true) {
+        try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }
+        catch { await reportRestoration('h66-shutdown-restoration-pending'); }
+      }
       // Freeze pending readiness evidence before cancellation clears the queue.
       const readinessClosed = primary.readinessWaiters.size
         ? readinessFailure(new Error('MQTT closed'), 'primary-subscriptions', 'closed') : null;
@@ -1038,10 +1047,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
       }
       if (engine.teslamate === teslamate) engine.teslamate = null;
-      if (restore && canControl() && h66 && primary.connected && settings.writeEnabled === true) {
-        try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }
-        catch { report('h66-shutdown-restoration-pending'); }
-      }
       stopped = true;
       unsubscribeStorage?.();
       for (const channel of channels.values()) {

@@ -11,7 +11,7 @@ import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 
 const START = Date.parse('2026-09-07T12:00:00Z'), DEVICE = 'synthetic-h66';
 const flush = () => new Promise(resolve => setImmediate(resolve));
-async function fixture(t, store = new Store(':memory:')) {
+async function fixture(t, store = new Store(':memory:'), { h66 = {}, ...options } = {}) {
   const client = new EventEmitter(); let now = START;
   client.subscribe = (_topic, _options, done) => done();
   client.stream = { write() { return true; } };
@@ -20,16 +20,94 @@ async function fixture(t, store = new Store(':memory:')) {
   client.publish = (topic, payload, options, done) => client._sendPacket({ cmd: 'publish', topic, payload, qos: options.qos, retain: options.retain }, done);
   client.end = (_force, _options, done) => done();
   const config = { input: 'mqtt', deviceId: DEVICE, settings: {  },
-    h66: { writeEnabled: true, readbackTimeoutMs: 1000, confirmationTimeoutMs: 1000 }, garage: { enabled: false },
+    h66: { writeEnabled: true, readbackTimeoutMs: 1000, confirmationTimeoutMs: 1000, ...h66 }, garage: { enabled: false },
     connections: { mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: equipmentConfiguration({ devices: [] }) } };
   const engine = new Engine({ store, config, clock: () => now });
-  const reader = await startMqtt({ engine, store, config, connect: () => client });
+  const diagnostics = [];
+  const reader = await startMqtt({ engine, store, config, connect: () => client,
+    reportStorageFailure: diagnostic => diagnostics.push(diagnostic), ...options });
   client.emit('connect');
   t.after(async () => { await reader.close({ restore: false }); await engine.garage.close({ restore: false });
     await engine.charging.close(); await engine.closeFireplace(); await engine.executor.close({ restore: false }); await store.close(); });
-  return { engine, store, reader, client, at: at => { now = at; },
+  return { engine, store, reader, client, diagnostics, at: at => { now = at; },
     send: (register, value, packet = {}) => client.emit('message', `${DEVICE}/HP/${register}`, Buffer.from(String(value)), packet) };
 }
+
+for (const outcome of ['confirmed', 'missing', 'authority-lost', 'revoked'])
+  test(`MQTT shutdown preserves H66 restoration evidence when ${outcome}`, async t => {
+    let authority = true;
+    const f = await fixture(t, undefined, { canControl: () => authority });
+    f.send('0212', 48);
+    const override = f.reader.h66.writeSettings({ '0212': 45 });
+    await flush(); f.send('0212', 45); await override;
+    const packets = [];
+    f.client.on('packetsend', ({ topic, payload }) => {
+      packets.push({ topic, payload });
+      if (topic === `${DEVICE}/HP/SET/0212`) queueMicrotask(() => {
+        if (outcome === 'authority-lost') authority = false;
+        if (outcome !== 'missing') f.send('0212', 48);
+      });
+    });
+    await f.reader.close({ restore: outcome !== 'revoked' });
+    await flush();
+    const saved = f.store.getState(`h66:control:${DEVICE}`);
+    const changed = packets.filter(packet => packet.topic === `${DEVICE}/HP/SET/0212`);
+    assert.equal(changed.length, outcome === 'revoked' ? 0 : 1);
+    if (outcome === 'confirmed') {
+      assert.equal(f.reader.h66.status().readings['0212'].value, 48);
+      assert.deepEqual(saved.obligations, {});
+      assert.equal(f.store.observations({ signal: 'dhw_start_setting' }).at(-1).value, 48);
+      assert.equal(f.store.events().filter(event => event.type === 'h66-shutdown-restoration-pending').length, 0);
+    } else {
+      assert.ok(saved.obligations['0212'], 'Unconfirmed restoration remains durable');
+      if (outcome === 'missing')
+        assert.equal(f.store.events().filter(event => event.type === 'h66-shutdown-restoration-pending').length, 1);
+    }
+    assert.deepEqual(f.diagnostics, [], 'Shutdown cancellation is not a diagnostic storage failure');
+    const count = packets.length;
+    f.client.emit('connect'); f.send('0212', 45); await flush();
+    assert.equal(packets.length, count, 'Late callbacks cannot dispatch after shutdown');
+    await assert.rejects(f.reader.h66.writeSettings({ '0212': 44 }), { code: 'H66_CLOSED' });
+  });
+
+test('MQTT shutdown waits for the restoration readback COMMIT before closing acquisition', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-shutdown-'));
+  const f = await fixture(t, new Store(join(directory, 'recording.sqlite')),
+    { h66: { readbackTimeoutMs: 10_000, confirmationTimeoutMs: 30_000 } });
+  let release;
+  t.signal.addEventListener('abort', () => release?.(), { once: true });
+  t.after(() => { release?.(); rmSync(directory, { recursive: true, force: true }); });
+  await f.store.startWriter();
+  f.send('0212', 48); await f.store.runWrite(() => {});
+  f.client.on('packetsend', ({ topic, payload }) => {
+    if (topic === `${DEVICE}/HP/SET/0212` && payload === '45') queueMicrotask(() => f.send('0212', 45));
+  });
+  await f.reader.h66.writeSettings({ '0212': 45 });
+  let received = false, entered;
+  const held = new Promise(resolve => { entered = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  const request = f.store.writer.request.bind(f.store.writer);
+  f.store.writer.request = async (operation, args) => {
+    if (operation === 'commit' && received) {
+      received = false; entered(); await resumed;
+    }
+    return request(operation, args);
+  };
+  f.client.on('packetsend', ({ topic }) => {
+    if (topic === `${DEVICE}/HP/SET/0212`) queueMicrotask(() => { received = true; f.send('0212', 48); });
+  });
+  let closed = false;
+  const closing = f.reader.close().then(() => { closed = true; });
+  try {
+    await Promise.race([held, closing.then(() => { throw new Error('Acquisition closed before the readback reached COMMIT'); })]);
+    assert.equal(closed, false, 'Received readback alone cannot finish shutdown');
+    assert.ok(f.store.getState(`h66:control:${DEVICE}`).obligations['0212']);
+  } finally { release(); }
+  await closing;
+  assert.deepEqual(f.store.getState(`h66:control:${DEVICE}`).obligations, {});
+  assert.equal(f.store.observations({ signal: 'dhw_start_setting' }).at(-1).value, 48);
+  assert.deepEqual(f.diagnostics, []);
+});
 
 for (const outcome of ['commit', 'rollback']) test(`H66 disconnect withdraws held readings through worker ${outcome}`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-worker-withdrawal-'));
