@@ -17,7 +17,7 @@ export function garageDoorLayout(status) {
   });
 }
 
-/** The shortcut follows reported state; publishing a command never moves the door in the UI. */
+/** Contact evidence owns closure; accepted native travel is explicitly estimated. */
 export function garageDoorControl(status, device, snapshot = {}) {
   const readings = equipmentReadingRows(device).filter(row => /_open$/.test(row.signal));
   const reading = readings.length === 1 ? readings[0] : null;
@@ -27,10 +27,18 @@ export function garageDoorControl(status, device, snapshot = {}) {
     && Number.isFinite(source.observedAt) && source.observedAt <= now && [0, 1].includes(source.value)
     && !reading.stale && ['Open', 'Closed', 'Opening', 'Closing'].includes(reading.value);
   const operation = device.cover?.operation;
+  const receiptAt = garageDoorReceiptAt(operation, now);
+  const travelMs = status?.garage?.doorTravelSeconds * 1000;
+  const phaseNow = snapshot.doorAnimationNow ?? now;
+  const estimatedOpening = known && reading.value === 'Open' && operation?.action === 'open'
+    && operation.acknowledgement === 'mqtt-write' && ['published', 'observed'].includes(operation.status)
+    && operation.startingContact === 0 && Number.isFinite(receiptAt)
+    && source.receivedAt >= operation.dispatchedAt && source.observedAt >= Math.floor(operation.dispatchedAt / 1000) * 1000
+    && travelMs > 0 && phaseNow < receiptAt + travelMs;
   const estimatedClosing = known && reading.value === 'Open' && operation?.action === 'close'
     && operation.acknowledgement === 'mqtt-write' && operation.status === 'published'
-    && Number.isFinite(garageDoorReceiptAt(operation, now));
-  const state = estimatedClosing ? 'Closing' : known ? reading.value : 'Unknown';
+    && Number.isFinite(receiptAt);
+  const state = estimatedOpening ? 'Opening' : estimatedClosing ? 'Closing' : known ? reading.value : 'Unknown';
   const moving = known && ['Opening', 'Closing'].includes(state);
   const result = equipmentCoverResult(device, now);
   const receipt = equipmentCoverReceipt(device, now);
@@ -56,9 +64,13 @@ export function garageDoorControl(status, device, snapshot = {}) {
   else if (device.cover?.available !== true) feedback ||= 'Door control is currently unavailable.';
   else if (action && device.controls?.cover?.[action] !== true) feedback ||= `${label} control is not configured.`;
   return { state, action, label, feedback, failed, sending, moving,
+    reportedState: known ? reading.value : 'Unknown',
+    reportedMoving: known && ['Opening', 'Closing'].includes(reading.value),
+    phaseEndsAt: estimatedOpening ? receiptAt + travelMs : null,
     position: known ? source.value === 0 ? 'closed' : 'open' : 'unknown',
     reportedAt: known ? source.observedAt : null, reportReceivedAt: known ? source.receivedAt : null, coverState: known ? source.coverState : null,
-    detail: estimatedClosing ? `Closing is estimated from the opener's command receipt. Waiting for closed contact. ${reading.detail}`
+    detail: estimatedOpening ? `Opening is estimated from the opener's command receipt and not-closed contact. ${reading.detail}`
+      : estimatedClosing ? `Closing is estimated from the opener's command receipt. Waiting for closed contact. ${reading.detail}`
       : reading?.detail ?? 'No usable reading received',
     tone: !known ? 'unknown' : moving ? 'moving' : state.toLowerCase(),
     disabled: !known || !action || !equipmentCoverAllowed(status, device, action, snapshot.busy || snapshot.blocked) };
@@ -163,7 +175,9 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     shortcut.setAttribute('aria-expanded', 'false');
     if (shortcut.isConnected && !shortcut.disabled) shortcut.focus({ preventScroll: true });
   });
-  let current;
+  let current, phaseTimer, clockServer, clockBrowser;
+  const animationClock = () => Number.isFinite(clockServer)
+    ? clockServer + Math.max(0, document.defaultView.performance.now() - clockBrowser) : undefined;
   const overview = createGarageFacade(document, false);
   document.getElementById('garage-facade-overview').append(overview.facade);
   const controls = createGarageFacade(document, true, node => {
@@ -171,7 +185,7 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     const latest = node.bay.side ? garageDoorLayout(current?.status).find(bay => bay.side === node.bay.side)?.device
       : garageDoorDevices(current?.status).find(device => device.id === node.bay.device?.id);
     if (!latest) return;
-    const view = garageDoorControl(current.status, latest, { ...current, blocked: blocked() });
+    const view = garageDoorControl(current.status, latest, { ...current, doorAnimationNow: animationClock(), blocked: blocked() });
     if (!view.disabled) void onAction(latest.id, view.action);
   });
   const content = document.getElementById('garage-doors-content');
@@ -206,8 +220,14 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
   }
   function update(snapshot = {}) {
     current = snapshot;
+    clearTimeout(phaseTimer);
+    const animationNow = document.defaultView.performance.now();
+    if (Number.isFinite(snapshot.status?.now) && snapshot.status.now !== clockServer) {
+      clockServer = snapshot.status.now; clockBrowser = animationNow;
+    }
+    const phaseNow = animationClock();
     const devices = garageDoorDevices(snapshot.status), layout = garageDoorLayout(snapshot.status);
-    const viewFor = device => device ? garageDoorControl(snapshot.status, device, { ...snapshot, blocked: blocked() })
+    const viewFor = device => device ? garageDoorControl(snapshot.status, device, { ...snapshot, doorAnimationNow: phaseNow, blocked: blocked() })
       : { state: 'Unknown', tone: 'unknown', position: 'unknown', label: 'Unavailable', disabled: true,
         detail: 'No unique door connection is available for this position.', feedback: '' };
     const updateControl = (node, bay) => {
@@ -215,10 +235,12 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
       if (document.activeElement === node.action && (view.disabled || node.bay.device?.id !== bay.device?.id)) back.focus({ preventScroll: true });
       controls.updateNode(node, bay, view);
     };
-    const animationNow = document.defaultView.performance.now();
-    const motionFor = (node, device) => node.motion.update({ ...viewFor(device), deviceId: device?.id,
+    const motionFor = (node, device) => {
+      const view = viewFor(device);
+      return node.motion.update({ ...view, state: view.reportedState, moving: view.reportedMoving, deviceId: device?.id,
       durationSeconds: snapshot.status?.garage?.doorTravelSeconds, now: animationNow,
       statusNow: snapshot.status?.now, operation: device?.cover?.operation });
+    };
     layout.forEach((bay, index) => {
       overview.updateNode(overview.nodes[index], bay, viewFor(bay.device));
       updateControl(controls.nodes[index], bay);
@@ -246,6 +268,13 @@ export function createGarageDoorPanel({ document, onAction, blocked = () => fals
     }
     other.hidden = !extras.length;
     empty.hidden = devices.length > 0;
+    // Complete the estimated opening phase even when no more contact edges
+    // arrive. This advances only UI timing, never source evidence or closure.
+    const ends = devices.map(device => viewFor(device).phaseEndsAt).filter(at => Number.isFinite(at) && at > phaseNow);
+    if (ends.length) {
+      phaseTimer = setTimeout(() => update(current), Math.ceil(Math.min(...ends) - phaseNow) + 1);
+      phaseTimer.unref?.();
+    }
   }
   reducedMotion.addEventListener('change', () => update(current));
   update();

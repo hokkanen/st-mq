@@ -33,7 +33,7 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
     await refresh(); await until('Boolean(window.equipmentUiFixture.watchPending)');
     for (const [id, side] of [['door1', 'right'], ['door2', 'left']]) {
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=200;
-        d.cover.operation={action:'open',status:'published',acknowledgement:'mqtt-write',requestedAt:f.now-100,dispatchedAt:f.now-90,acknowledgedAt:f.now-80,
+        d.cover.operation={action:'open',status:'published',acknowledgement:'mqtt-write',requestedAt:f.now-100,dispatchedAt:f.now-90,acknowledgedAt:f.now-80,startingContact:0,
           deviceReceipt:{action:'open',executed:true,sourceTime:f.now-50,receivedAt:f.now,admittedAt:f.now}};
         f.sendDoorUpdate();return true;})()`);
       await until('Boolean(window.equipmentUiFixture.watchPending)'); await settle();
@@ -42,14 +42,16 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=3000;
         for(const r of Object.values(d.readings)){r.value=1;r.coverState='open';r.observedAt=f.now;r.receivedAt=f.now;}
         d.cover.operation.status='observed';f.sendDoorUpdate();return true;})()`);
-      await until(`document.querySelector('${bay(side)}').dataset.state==='open'`);
+      await until(`document.querySelector('${bay(side)}').dataset.motion==='opening'`);
       assert.equal(await evaluate('window.equipmentUiFixture.responses'), reportsBefore, 'Contact updates do not wait for or request a full dashboard refresh');
       assert.ok(await evaluate('performance.now()-window.equipmentUiFixture.watchPublishedAt') < 500, 'Opening is rendered within 500ms of the admitted event');
       assert.ok(await progress(side) >= 1/6 && await progress(side) < 0.3, 'Opening catches up from native receipt time');
-      assert.equal(await evaluate(`document.querySelector('${bay(side)}').dataset.state`), 'open');
+      assert.equal(await evaluate(`document.querySelector('${bay(side)}').dataset.state`), 'moving');
+      assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"] button').disabled`), true, 'Unsupported reversal is unavailable during estimated opening');
+      assert.equal(await evaluate(`getComputedStyle(document.querySelector('${bay(side)} .garage-door-motion')).display!=='none'`), true, 'Native not-closed contact displays the up arrows');
       await until('Boolean(window.equipmentUiFixture.watchPending)');
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=500;
-        d.cover.operation={action:'close',status:'published',acknowledgement:'mqtt-write',requestedAt:f.now-100,dispatchedAt:f.now-90,acknowledgedAt:f.now-80,
+        d.cover.operation={action:'close',status:'published',acknowledgement:'mqtt-write',startingContact:1,requestedAt:f.now-100,dispatchedAt:f.now-90,acknowledgedAt:f.now-80,
           deviceReceipt:{action:'close',executed:true,sourceTime:f.now-50,receivedAt:f.now,admittedAt:f.now}};
         f.sendDoorUpdate();return true;})()`);
       await until(`document.querySelector('${bay(side)}').dataset.motion==='closing'`);
@@ -65,8 +67,23 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"]').dataset.state`), 'closed');
       await until('Boolean(window.equipmentUiFixture.watchPending)');
     }
+    // No source report arrives at the estimated fully-open instant. Both
+    // surfaces must finish their labels/arrows without a dashboard poll.
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedTravel=f.status.garage;f.status.garage={...f.status.garage,doorTravelSeconds:1};return true;})()`);
+    await refresh(); await until('Boolean(window.equipmentUiFixture.watchPending)');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now+=1000;
+      for(const d of f.devices.filter(d=>d.kind==='door')) {
+        d.cover.operation={action:'open',status:'observed',acknowledgement:'mqtt-write',startingContact:0,
+          requestedAt:f.now-100,dispatchedAt:f.now-90,deviceReceipt:{action:'open',executed:true,sourceTime:f.now-50,receivedAt:f.now,admittedAt:f.now}};
+        for(const r of Object.values(d.readings)){r.value=1;r.coverState='open';r.observedAt=f.now;r.receivedAt=f.now;}
+      }f.sendDoorUpdate();return true;})()`);
+    await until(`[...document.querySelectorAll('#garage-doors-shortcut .garage-door-row')].every(n=>n.dataset.motion==='opening')`);
+    const reports = await evaluate('window.equipmentUiFixture.responses');
+    await until(`[...document.querySelectorAll('#garage-doors-dialog .garage-door-row button')].every(n=>n.dataset.coverAction==='close'&&!n.disabled)`);
+    assert.equal(await evaluate('window.equipmentUiFixture.responses'), reports, 'Both estimated opening phases complete without a full refresh');
+    assert.equal(await evaluate(`[...document.querySelectorAll('.garage-door-row[data-side]')].every(n=>n.dataset.state==='open'&&getComputedStyle(n.querySelector('.garage-door-motion')).display==='none')`), true);
   } finally {
-    await evaluate(`(() => {const f=window.equipmentUiFixture;window.fetch=f.savedDoorWatch.fetch;f.response=f.savedDoorWatch.response;return true;})()`);
+    await evaluate(`(() => {const f=window.equipmentUiFixture;window.fetch=f.savedDoorWatch.fetch;f.response=f.savedDoorWatch.response;if(f.savedTravel){f.status.garage=f.savedTravel;delete f.savedTravel;}return true;})()`);
     await refresh();
     await evaluate('delete window.equipmentUiFixture.savedDoorWatch;true');
   }

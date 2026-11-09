@@ -65,6 +65,13 @@ MQTT publication alone cannot start either native estimate. A missing or negativ
 device reply retains an unconfirmed or declined request; movement is never retried.
 Other integrations retain their reported-motion and publication timing rules.
 Unchanged reports cannot confirm a new direction or restart its timer.
+The dispatch contact is retained with a native operation so opening or closing
+an active dashboard view resumes the remaining estimated stroke. Opening uses
+the confirmed closed starting contact; a not-closed starting contact remains an
+estimate of the illustrated open position. Native opening shows up arrows and
+the Opening label until its estimated duration ends, without requiring another
+sensor report. As with reported movement, an unsupported reversal is unavailable
+during this phase; the other door remains independently operable.
 
 Visible signed-in dashboards keep one bounded door-only watch on the active
 master. Admitted contact changes, command receipts and availability changes wake

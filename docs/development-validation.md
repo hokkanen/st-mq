@@ -19,6 +19,12 @@ layouts. These fixtures do not establish physical travel or opener protection.
 family access, idle renewals, cancellation, revocation and stale-response ordering.
 Door browser checks also cover native receipt timing in both directions, opening's
 sensor gate and immediate closed feedback without a full dashboard refresh.
+`test/garage-door-native-feedback.test.js` also checks initialization during each
+direction, either receipt/contact arrival order, independent simultaneous and
+mixed door estimates, and closed-contact precedence. The writer-failure suite
+requires live door revisions to accompany live rows during pending recording.
+Browser checks retain opening arrows and finish both estimated opening phases
+without a new source report or dashboard refresh.
 
 `test/easee-ocpp-approval-integration.test.js` exercises a locally refused virtual-tag
 start followed by a confirmed deauthorization and suspension. Recovery requires

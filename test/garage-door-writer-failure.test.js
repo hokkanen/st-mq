@@ -146,6 +146,8 @@ for (const lostReply of [false, true]) test(`door HTTP, current UI state and fee
       'Only door rows may cross the pending transaction boundary');
     assert.equal(device.cover.operation.status, 'observed'); assert.equal(device.cover.state, 'open');
     assert.equal(device.readings.garage_door1_open.observedAt, START + 2000);
+    assert.deepEqual(response.body.equipment.doorRevision, f.reader.equipment.status().doorRevision,
+      'A pending recording transaction cannot attach an old revision to live door rows');
     assert.equal(garageDoorControl(response.body, device).disabled, false);
     assert.equal((await f.post('stop')).code, 200);
     assert.deepEqual(f.commands.filter(row => row.topic === 'fixture/door/set').map(row => row.payload), ['open', 'stop']);

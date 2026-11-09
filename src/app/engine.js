@@ -2304,9 +2304,12 @@ export class Engine {
       const result = copyOwnedValue(this.committedStatus), now = this.clock();
       // Doors are witnessed live independently of recording. Expose only those
       // rows over the committed view; other equipment can still be provisional.
-      const doors = new Map((this.equipment?.status(now)?.devices ?? []).filter(device => device.kind === 'door').map(device => [device.id, device]));
-      if (result.equipment?.devices && doors.size)
+      const liveEquipment = this.equipment?.status(now);
+      const doors = new Map((liveEquipment?.devices ?? []).filter(device => device.kind === 'door').map(device => [device.id, device]));
+      if (result.equipment?.devices && doors.size) {
         result.equipment.devices = result.equipment.devices.map(device => doors.get(device.id) ?? device);
+        result.equipment.doorRevision = liveEquipment.doorRevision;
+      }
       return { ...result, now, storagePending: true, runtimeTiming: this.runtimeTiming?.() ?? null };
     }
     const checkTime = this.clock();

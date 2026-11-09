@@ -43,8 +43,11 @@ export function createGarageDoorMotion() {
       if (Number.isFinite(now)) lastNow = Math.max(lastNow, now);
       const requestKey = operation && Number.isFinite(operation.requestedAt)
         ? `${operation.requestedAt}:${operation.action}` : null;
+      const native = operation?.acknowledgement === 'mqtt-write';
+      const startingContact = native && [0, 1].includes(operation.startingContact) ? operation.startingContact : null;
       if (requestKey !== command?.key) command = requestKey
-        ? { key: requestKey, cancelled: !previous, initialState: previous?.state } : undefined;
+        ? { key: requestKey, cancelled: !previous && startingContact === null,
+          initialState: previous?.state ?? (startingContact === 0 ? 'Closed' : startingContact === 1 ? 'Open' : undefined) } : undefined;
       if (!deviceId || !Number.isFinite(now) || !Number.isFinite(reportedAt)
         || !['Open', 'Closed', 'Opening', 'Closing'].includes(state) || !validPosition(position)) {
         previous = undefined; trajectory = undefined;
@@ -56,7 +59,6 @@ export function createGarageDoorMotion() {
       const next = { state, position, motion, coverState, duration };
       const sameEvidence = previous && ['state', 'position', 'motion', 'coverState'].every(key => previous[key] === next[key]);
       const before = sample();
-      const native = operation?.acknowledgement === 'mqtt-write';
       const receiptAt = garageDoorReceiptAt(operation, statusNow);
 
       // Cache the successful-send clock once. Later polls, dialog navigation and
@@ -68,7 +70,7 @@ export function createGarageDoorMotion() {
       if (command && ['failed', 'unconfirmed'].includes(operation.status)) command.cancelled = true;
       if (acknowledged && !command.cancelled && command.startedAt === undefined) {
         command.startedAt = lastNow - (statusNow - receiptAt);
-        command.from = sample(command.startedAt).from;
+        command.from = sample(command.startedAt).from ?? startingContact;
       }
       const freshResponse = acknowledged && !command.cancelled && !command.responded
         && (native ? Number.isFinite(reportReceivedAt) && reportReceivedAt >= operation.dispatchedAt
@@ -81,7 +83,7 @@ export function createGarageDoorMotion() {
           : !moving && ['Open', 'Closed'].includes(state));
       const acceptedClosing = native && acknowledged && !command.cancelled && !command.responded
         && operation.action === 'close' && state !== 'Closed';
-      if (native && command && !command.cancelled && !acknowledged && operation.action === 'open') {
+      if (native && command && !command.cancelled && !acknowledged && operation.action === 'open' && state !== 'Closed') {
         // A contact arriving before SETACK cannot supply the command clock.
         setPosition(before.from, before.estimated); previous = next; return sample();
       }

@@ -1605,9 +1605,13 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const operation = { action: input.action, status: 'publishing', requestedAt: engine.clock(),
         ...(device.meross ? { acknowledgement: 'mqtt-write' } : {}) };
       device.coverOperation = operation;
-      notifyDoors();
       const previous = device.readings[device.stateSignal];
       const startingState = { value: previous?.value, coverState: previous?.coverState };
+      // Keep the contact that passed dispatch fencing with the receipt. A new
+      // browser can reconstruct an explicitly estimated stroke without assuming
+      // that the current not-closed report is a measured fully-open position.
+      if (device.meross) operation.startingContact = startingState.value;
+      notifyDoors();
       const deadline = operation.requestedAt + readbackTimeoutMs, monotonicDeadline = performance.now() + readbackTimeoutMs;
       const cancellation = new AbortController();
       const dispatch = { operation, cancellation };

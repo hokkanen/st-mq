@@ -76,6 +76,7 @@ test('signed queries recover both channels independently; native commands use Qo
   assert.equal(command.options.noReplay, true); assert.equal(command.options.retain, false);
   assert.equal(command.options.qos, 0); assert.equal(receipt.acknowledgement, 'mqtt-write');
   assert.equal(receipt.confirmed, false);
+  assert.equal(f.capture.status().devices[0].cover.operation.startingContact, 0);
   f.reply(1, 1, { method: 'SETACK', execute: 1 });
   assert.equal(f.capture.status().devices[0].readings.door1_open.value, 0);
   f.advance(1000); f.reply(1, 1, { method: 'PUSH' });
@@ -105,6 +106,7 @@ test('matching MSG200 execution receipts notify immediately without manufacturin
   const update = await waiting;
   assert.ok(performance.now() - started < 100, 'Receipt wakes a held watcher without a polling interval');
   const device = update.equipment.devices[1];
+  assert.equal(device.cover.operation.startingContact, 0);
   assert.equal(device.cover.operation.deviceReceipt.executed, true);
   assert.equal(device.cover.operation.deviceReceipt.receivedAt, device.cover.operation.requestedAt + 100);
   assert.equal(device.readings.door2_open.value, 0); assert.equal(device.cover.operation.status, 'published');
@@ -123,6 +125,7 @@ test('negative execution and source-clock admission remain separate from contact
   assert.equal(f.capture.status().devices[0].cover.operation.deviceReceipt.executed, true);
   f.advance(1000); f.reply(1, 1, { method: 'PUSH' });
   await f.capture.setCover({ deviceId: 'door1', action: 'close' });
+  assert.equal(f.capture.status().devices[0].cover.operation.startingContact, 1);
   f.reply(1, 1, { method: 'SETACK', execute: 0 });
   const device = f.capture.status().devices[0];
   assert.equal(device.cover.operation.status, 'failed');
