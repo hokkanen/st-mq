@@ -6,6 +6,7 @@ import { createGarageDoorMotion } from '../chart/garage-door-motion.js';
 const epoch = Date.parse('2026-11-09T10:00:00Z');
 const operation = (action, extra = {}) => ({ action, acknowledgement: 'mqtt-write', status: action === 'open' ? 'observed' : 'published',
   requestedAt: epoch, dispatchedAt: epoch + 10, startingContact: action === 'open' ? 0 : 1,
+  ...(action === 'open' ? { observedAt: epoch, observedReceivedAt: epoch + 100, observedAdmittedAt: epoch + 100 } : {}),
   deviceReceipt: { action, executed: true, sourceTime: epoch, receivedAt: epoch + 100, admittedAt: epoch + 100 }, ...extra });
 const device = (action, extra = {}) => ({ id: 'fixture-door', kind: 'door', available: true,
   controls: { cover: { open: true, close: true, stop: false } },
@@ -32,23 +33,27 @@ for (const action of ['open', 'close']) test(`first live view during native ${ac
   assertTravel(render(motion, door, 4600, 4500).travel, 0.5, action === 'open' ? 1 : 0, 9000);
 });
 
-test('native opening waits for both receipt and released contact in either arrival order', () => {
+test('native opening waits for the released contact and its clock is independent of receipt order', () => {
   for (const receiptFirst of [true, false]) {
     const door = device('open'), motion = createGarageDoorMotion();
     door.readings.fixture_open.value = 0; door.readings.fixture_open.coverState = 'closed';
     door.readings.fixture_open.observedAt = epoch; door.readings.fixture_open.receivedAt = epoch;
     door.cover.operation.status = 'published';
+    for (const key of ['observedAt', 'observedReceivedAt', 'observedAdmittedAt']) delete door.cover.operation[key];
     const receipt = door.cover.operation.deviceReceipt; delete door.cover.operation.deviceReceipt;
     assert.equal(render(motion, door, 50).travel.from, 0);
     if (receiptFirst) door.cover.operation.deviceReceipt = receipt;
     else {
       Object.assign(door.readings.fixture_open, { value: 1, coverState: 'open', observedAt: epoch + 2000, receivedAt: epoch + 2050 });
       door.cover.operation.status = 'observed';
+      Object.assign(door.cover.operation, { observedAt: epoch + 2000, observedReceivedAt: epoch + 2050, observedAdmittedAt: epoch + 2050 });
     }
-    assert.equal(render(motion, door, 2100).travel.from, 0);
+    const first = render(motion, door, 2050);
+    assert.equal(first.travel.from, 0);
     door.cover.operation.deviceReceipt = receipt; door.cover.operation.status = 'observed';
     Object.assign(door.readings.fixture_open, { value: 1, coverState: 'open', observedAt: epoch + 2000, receivedAt: epoch + 2050 });
-    assertTravel(render(motion, door, 4600).travel, 0.25, 1, 13500);
+    Object.assign(door.cover.operation, { observedAt: epoch + 2000, observedReceivedAt: epoch + 2050, observedAdmittedAt: epoch + 2050 });
+    assertTravel(render(motion, door, 4600).travel, 2550 / 18000, 1, 15450);
   }
 });
 
@@ -96,4 +101,31 @@ test('failed, unavailable or replaced evidence cannot restart a native hydration
   const replacement = device('close', { id: 'fixture-replacement' });
   delete replacement.cover.operation.startingContact;
   assert.equal(render(motion, replacement, 9100).travel.durationMs, 0);
+});
+
+test('a delayed second opening gets its full stroke and waiting phase from its own contact', () => {
+  const first = device('open'), second = device('open', { id: 'fixture-second' });
+  Object.assign(first.cover.operation, { observedAt: epoch + 2000, observedReceivedAt: epoch + 2000, observedAdmittedAt: epoch + 2000 });
+  Object.assign(second.cover.operation, { observedAt: epoch + 10000, observedReceivedAt: epoch + 10000, observedAdmittedAt: epoch + 10000 });
+  Object.assign(second.readings.fixture_open, { observedAt: epoch + 10000, receivedAt: epoch + 10000 });
+  const motion = createGarageDoorMotion();
+  const beginning = render(motion, second, 10000);
+  assertTravel(beginning.travel, 0, 1, 18000); assert.equal(beginning.view.state, 'Opening');
+  const earlierDoor = garageDoorControl(status(first, 20000), first);
+  assert.equal(earlierDoor.state, 'Open'); assert.equal(earlierDoor.disabled, false);
+  const laterDoor = render(motion, second, 20000);
+  assertTravel(laterDoor.travel, 10 / 18, 1, 8000); assert.equal(laterDoor.view.disabled, true);
+  // A new browser during this later stroke also uses the contact clock.
+  assertTravel(render(createGarageDoorMotion(), second, 20000, 0).travel, 10 / 18, 1, 8000);
+  Object.assign(second.readings.fixture_open, { observedAt: epoch + 25000, receivedAt: epoch + 25000 });
+  const ended = render(motion, second, 28000);
+  assert.equal(ended.travel.from, 1); assert.equal(ended.travel.durationMs, 0);
+  assert.equal(ended.view.action, 'close'); assert.equal(ended.view.disabled, false);
+});
+
+test('a confirming open contact starts travel even while transport completion is delayed', () => {
+  const door = device('open'); door.cover.operation.status = 'publishing'; delete door.cover.operation.deviceReceipt;
+  const response = render(createGarageDoorMotion(), door, 4600, 0);
+  assertTravel(response.travel, 0.25, 1, 13500);
+  assert.equal(response.view.state, 'Opening'); assert.equal(response.view.disabled, true);
 });

@@ -797,7 +797,13 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       && main.receivedAt >= operation.dispatchedAt
       && main.observedAt >= (device.meross ? Math.floor(operation.dispatchedAt / 1000) * 1000 : operation.dispatchedAt)
       && main.coverState === (operation.action === 'open' ? 'open' : 'closed')) {
-      operation.observedAt = main.observedAt;
+      // Keep the first confirming report's three clocks. Later unchanged
+      // contacts must not restart an opening estimate or its UI waiting phase.
+      if (!scalar(operation.observedAt)) {
+        operation.observedAt = main.observedAt;
+        operation.observedReceivedAt = main.receivedAt;
+        operation.observedAdmittedAt = now;
+      }
       if (operation.acknowledgedAt !== undefined) { operation.status = 'observed'; delete operation.error; }
     }
   }

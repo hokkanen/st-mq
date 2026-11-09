@@ -43,7 +43,7 @@ states and estimate labels.
 Both views share the same illustration and reported states. Missing, stale or
 ambiguous reports remain unknown. Sending or acknowledging a command does not
 prove motion or position. An accepted native command can start estimated closing;
-opening additionally requires the not-closed contact. Existing command receipts, read-only restrictions
+opening starts from the not-closed contact. Existing command receipts, read-only restrictions
 and device authority checks still apply.
 
 Door controls and fresh door feedback remain available when recording is delayed
@@ -55,14 +55,19 @@ door feedback remain separate. Other equipment retains its own storage rules.
 `garage.door_travel_seconds` is **18 seconds** by default, shared by both doors for
 opening and closing. Travel animation uses constant linear speed; reversing
 direction uses the remaining distance rather than restarting a full travel time.
-For native Meross doors, a validated matching command-executed reply starts the
-estimate's clock in both directions. Opening stays still until fresh not-closed
-contact evidence arrives, then immediately catches up and animates the remaining
-distance. A contact three seconds after the device receipt therefore starts one
-sixth into an 18-second stroke, with 15 seconds left. Closing starts immediately
-on the device receipt; it does not wait for the closed contact at the end.
-MQTT publication alone cannot start either native estimate. A missing or negative
-device reply retains an unconfirmed or declined request; movement is never retried.
+For native Meross doors, opening stays still until fresh not-closed contact
+evidence is admitted, then starts a full stroke from that report. A contact ten
+seconds after the command receipt therefore starts at the bottom, with the full
+18 seconds left. The first report's source, reception and admission clocks stay
+with the operation; later polls cannot restart its clock. A delayed device reply
+does not delay or restart this physically witnessed opening.
+Closing starts immediately on a validated matching command-executed reply; it
+does not wait for the closed contact at the end. A device receipt confirms
+acceptance, not immediate motor movement: shared-controller openings can start
+at different physical times despite immediate replies. MQTT publication alone
+cannot start either native estimate. A missing or negative device reply cannot
+start closing; fresh contact evidence can still establish an opening. Movement
+is never retried automatically.
 Other integrations retain their reported-motion and publication timing rules.
 Unchanged reports cannot confirm a new direction or restart its timer.
 The dispatch contact is retained with a native operation so opening or closing
@@ -95,7 +100,8 @@ The current contact integration has no measured opening percentage. Failed or
 unacknowledged commands supply no timing anchor, and lost evidence or replacement
 equipment clears pending estimates. Reported movement without a local command can
 animate from the last known position, with no assumed command-start time.
-This setting changes only the visualization, not motor timing or door controls.
+This setting controls estimated travel and the dialog's waiting phase during
+opening. It changes no motor timing, native capabilities or command payloads.
 
 ## Local temperature regulation
 

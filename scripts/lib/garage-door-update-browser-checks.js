@@ -41,11 +41,11 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       const reportsBefore = await evaluate('window.equipmentUiFixture.responses');
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=3000;
         for(const r of Object.values(d.readings)){r.value=1;r.coverState='open';r.observedAt=f.now;r.receivedAt=f.now;}
-        d.cover.operation.status='observed';f.sendDoorUpdate();return true;})()`);
+        Object.assign(d.cover.operation,{status:'observed',observedAt:f.now,observedReceivedAt:f.now,observedAdmittedAt:f.now});f.sendDoorUpdate();return true;})()`);
       await until(`document.querySelector('${bay(side)}').dataset.motion==='opening'`);
       assert.equal(await evaluate('window.equipmentUiFixture.responses'), reportsBefore, 'Contact updates do not wait for or request a full dashboard refresh');
       assert.ok(await evaluate('performance.now()-window.equipmentUiFixture.watchPublishedAt') < 500, 'Opening is rendered within 500ms of the admitted event');
-      assert.ok(await progress(side) >= 1/6 && await progress(side) < 0.3, 'Opening catches up from native receipt time');
+      assert.ok(await progress(side) >= 0 && await progress(side) < 0.05, 'Opening begins a full stroke at the open report, without receipt catch-up');
       assert.equal(await evaluate(`document.querySelector('${bay(side)}').dataset.state`), 'moving');
       assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"] button').disabled`), true, 'Unsupported reversal is unavailable during estimated opening');
       assert.equal(await evaluate(`getComputedStyle(document.querySelector('${bay(side)} .garage-door-motion')).display!=='none'`), true, 'Native not-closed contact displays the up arrows');
@@ -74,6 +74,7 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.now+=1000;
       for(const d of f.devices.filter(d=>d.kind==='door')) {
         d.cover.operation={action:'open',status:'observed',acknowledgement:'mqtt-write',startingContact:0,
+          observedAt:f.now,observedReceivedAt:f.now,observedAdmittedAt:f.now,
           requestedAt:f.now-100,dispatchedAt:f.now-90,deviceReceipt:{action:'open',executed:true,sourceTime:f.now-50,receivedAt:f.now,admittedAt:f.now}};
         for(const r of Object.values(d.readings)){r.value=1;r.coverState='open';r.observedAt=f.now;r.receivedAt=f.now;}
       }f.sendDoorUpdate();return true;})()`);

@@ -114,6 +114,13 @@ test('matching MSG200 execution receipts notify immediately without manufacturin
   assert.equal(JSON.stringify(f.capture.status().doorRevision), after, 'Duplicate receipt cannot renew animation');
   f.reply(2, 1, { method: 'PUSH' });
   assert.equal(f.capture.status().devices[1].cover.operation.status, 'observed', 'A changed contact in the same source second confirms the request');
+  const firstContact = f.capture.status().devices[1].cover.operation;
+  assert.equal(firstContact.observedReceivedAt, firstContact.requestedAt + 100);
+  assert.equal(firstContact.observedAdmittedAt, firstContact.observedReceivedAt);
+  f.advance(5000); f.reply(2, 1, { method: 'PUSH' });
+  assert.equal(f.capture.status().devices[1].cover.operation.observedReceivedAt, firstContact.observedReceivedAt,
+    'A later unchanged report cannot move the first contact clock');
+  assert.equal(f.capture.status().devices[1].cover.operation.observedAdmittedAt, firstContact.observedAdmittedAt);
 });
 
 test('negative execution and source-clock admission remain separate from contact and transport evidence', async t => {

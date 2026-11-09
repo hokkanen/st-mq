@@ -1,6 +1,6 @@
 import { equipmentCoverAllowed, equipmentCoverResult, equipmentCoverReceipt, equipmentReadingRows } from './equipment.js';
 import { isReadOnlyReplica } from './replica-status.js';
-import { createGarageDoorMotion, garageDoorReceiptAt } from './garage-door-motion.js';
+import { createGarageDoorMotion, garageDoorReceiptAt, garageDoorMotionAt } from './garage-door-motion.js';
 
 export const garageDoorDevices = status => (status?.equipment?.devices ?? []).filter(device =>
   device.enabled !== false && device.kind === 'door' && ((device.area ?? 'garage') === 'garage'
@@ -28,13 +28,14 @@ export function garageDoorControl(status, device, snapshot = {}) {
     && !reading.stale && ['Open', 'Closed', 'Opening', 'Closing'].includes(reading.value);
   const operation = device.cover?.operation;
   const receiptAt = garageDoorReceiptAt(operation, now);
+  const openingAt = garageDoorMotionAt(operation, now);
   const travelMs = status?.garage?.doorTravelSeconds * 1000;
   const phaseNow = snapshot.doorAnimationNow ?? now;
   const estimatedOpening = known && reading.value === 'Open' && operation?.action === 'open'
-    && operation.acknowledgement === 'mqtt-write' && ['published', 'observed'].includes(operation.status)
-    && operation.startingContact === 0 && Number.isFinite(receiptAt)
+    && operation.acknowledgement === 'mqtt-write' && ['publishing', 'published', 'observed'].includes(operation.status)
+    && operation.startingContact === 0 && Number.isFinite(openingAt)
     && source.receivedAt >= operation.dispatchedAt && source.observedAt >= Math.floor(operation.dispatchedAt / 1000) * 1000
-    && travelMs > 0 && phaseNow < receiptAt + travelMs;
+    && travelMs > 0 && phaseNow < openingAt + travelMs;
   const estimatedClosing = known && reading.value === 'Open' && operation?.action === 'close'
     && operation.acknowledgement === 'mqtt-write' && operation.status === 'published'
     && Number.isFinite(receiptAt);
@@ -66,10 +67,10 @@ export function garageDoorControl(status, device, snapshot = {}) {
   return { state, action, label, feedback, failed, sending, moving,
     reportedState: known ? reading.value : 'Unknown',
     reportedMoving: known && ['Opening', 'Closing'].includes(reading.value),
-    phaseEndsAt: estimatedOpening ? receiptAt + travelMs : null,
+    phaseEndsAt: estimatedOpening ? openingAt + travelMs : null,
     position: known ? source.value === 0 ? 'closed' : 'open' : 'unknown',
     reportedAt: known ? source.observedAt : null, reportReceivedAt: known ? source.receivedAt : null, coverState: known ? source.coverState : null,
-    detail: estimatedOpening ? `Opening is estimated from the opener's command receipt and not-closed contact. ${reading.detail}`
+    detail: estimatedOpening ? `Opening travel is estimated from the first not-closed contact report. ${reading.detail}`
       : estimatedClosing ? `Closing is estimated from the opener's command receipt. Waiting for closed contact. ${reading.detail}`
       : reading?.detail ?? 'No usable reading received',
     tone: !known ? 'unknown' : moving ? 'moving' : state.toLowerCase(),

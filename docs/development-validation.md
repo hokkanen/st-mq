@@ -17,8 +17,9 @@ checks cover modal navigation, receipts, motion estimates, roles and responsive
 layouts. These fixtures do not establish physical travel or opener protection.
 `test/garage-door-updates.test.js` checks authenticated bounded long-poll updates,
 family access, idle renewals, cancellation, revocation and stale-response ordering.
-Door browser checks also cover native receipt timing in both directions, opening's
-sensor gate and immediate closed feedback without a full dashboard refresh.
+Door browser checks also cover native closing-receipt timing, opening's full
+stroke from its first admitted contact, and immediate closed feedback without a
+full dashboard refresh.
 `test/garage-door-native-feedback.test.js` also checks initialization during each
 direction, either receipt/contact arrival order, independent simultaneous and
 mixed door estimates, and closed-contact precedence. The writer-failure suite

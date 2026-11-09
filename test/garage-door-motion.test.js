@@ -13,6 +13,7 @@ const command = (action, extra = {}) => ({ action, status: 'published', requeste
   acknowledgedAt: wallClock + 1000, ...extra });
 const at = (now, extra = {}) => ({ now, statusNow: wallClock + now, ...extra });
 const nativeCommand = (action, receipt = true) => command(action, { acknowledgement: 'mqtt-write',
+  ...(action === 'open' ? { observedAt: wallClock + 1000, observedReceivedAt: wallClock + 1800, observedAdmittedAt: wallClock + 1800 } : {}),
   dispatchedAt: wallClock + 900, deviceReceipt: receipt ? { action, executed: true,
     sourceTime: wallClock + 1000, receivedAt: wallClock + 1200, admittedAt: wallClock + 1200 } : undefined });
 const assertTravel = (actual, from, to, durationMs) => {
@@ -22,21 +23,22 @@ const assertTravel = (actual, from, to, durationMs) => {
   assert.equal(actual.estimated, true);
 };
 
-test('native opening starts its clock at device receipt but waits for the contact, including coarse source time', () => {
+test('native opening starts a full stroke at the admitted contact, including coarse source time', () => {
   const motion = createGarageDoorMotion(), operation = nativeCommand('open');
   motion.update(observation(at(0)));
   assert.deepEqual(motion.update(observation(at(1500, { operation }))), stationary(0));
   const response = open(at(1800, { operation, reportedAt: wallClock + 1000, reportReceivedAt: wallClock + 1800 }));
-  assertTravel(motion.update(response), 600 / 18000, 1, 17400);
-  assertTravel(motion.update({ ...response, ...at(4800) }), 3600 / 18000, 1, 14400);
+  assertTravel(motion.update(response), 0, 1, 18000);
+  assertTravel(motion.update({ ...response, ...at(4800) }), 3000 / 18000, 1, 15000);
 });
 
-test('a native open contact arriving before command receipt waits and then catches up from that receipt', () => {
+test('a native open contact starts before command receipt and a later receipt cannot reset it', () => {
   const motion = createGarageDoorMotion(); motion.update(observation(at(0)));
-  const response = open(at(1100, { operation: nativeCommand('open', false),
+  const operation = { ...nativeCommand('open', false), observedReceivedAt: wallClock + 1100, observedAdmittedAt: wallClock + 1100 };
+  const response = open(at(1100, { operation,
     reportedAt: wallClock + 1000, reportReceivedAt: wallClock + 1100 }));
-  assert.deepEqual(motion.update(response), stationary(0));
-  assertTravel(motion.update({ ...response, ...at(1800), operation: nativeCommand('open') }), 600 / 18000, 1, 17400);
+  assertTravel(motion.update(response), 0, 1, 18000);
+  assertTravel(motion.update({ ...response, ...at(1800), operation: { ...operation, deviceReceipt: nativeCommand('open').deviceReceipt } }), 700 / 18000, 1, 17300);
 });
 
 test('native closing starts immediately on device receipt and closed contact remains the endpoint authority', () => {

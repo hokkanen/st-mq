@@ -12,10 +12,19 @@ export function garageDoorReceiptAt(operation, now) {
     && receipt.admittedAt <= now ? receipt.receivedAt : undefined;
 }
 
+export function garageDoorMotionAt(operation, now) {
+  if (operation?.acknowledgement !== 'mqtt-write' || operation.action !== 'open') return garageDoorReceiptAt(operation, now);
+  return Number.isFinite(operation.observedAt) && Number.isFinite(operation.observedReceivedAt)
+    && Number.isFinite(operation.observedAdmittedAt) && operation.observedReceivedAt >= operation.dispatchedAt
+    && operation.observedAt >= Math.floor(operation.dispatchedAt / 1000) * 1000
+    && operation.observedAdmittedAt >= Math.max(operation.observedAt, operation.observedReceivedAt)
+    && operation.observedAdmittedAt <= now ? operation.observedAdmittedAt : undefined;
+}
+
 /** One visual slot's estimate; acquisition/the caller own report freshness.
  * `now` is monotonic browser time. `statusNow`, report and operation timestamps
- * share the server clock. Native command receipts arm the estimate clock;
- * opening additionally waits for the not-closed contact.
+ * share the server clock. Native opening starts at the first admitted not-closed
+ * report; native closing starts at the accepted command receipt.
  * A binary Open report confirms not-closed, not a measured fully-open position.
  */
 export function createGarageDoorMotion() {
@@ -59,17 +68,17 @@ export function createGarageDoorMotion() {
       const next = { state, position, motion, coverState, duration };
       const sameEvidence = previous && ['state', 'position', 'motion', 'coverState'].every(key => previous[key] === next[key]);
       const before = sample();
-      const receiptAt = garageDoorReceiptAt(operation, statusNow);
+      const clockAt = garageDoorMotionAt(operation, statusNow);
 
-      // Cache the successful-send clock once. Later polls, dialog navigation and
-      // receipt changes must not restart it. Failed/uncertain delivery has no clock.
+      // Cache the first contact/receipt clock once. Later polls, dialog
+      // navigation and transport completion must not restart it.
       const acknowledged = command && ['open', 'close', 'stop'].includes(operation.action)
-        && ['published', 'observed'].includes(operation.status)
-        && Number.isFinite(statusNow) && Number.isFinite(receiptAt)
-        && receiptAt >= operation.requestedAt && receiptAt <= statusNow;
+        && (['published', 'observed'].includes(operation.status) || native && operation.action === 'open' && operation.status === 'publishing')
+        && Number.isFinite(statusNow) && Number.isFinite(clockAt)
+        && clockAt >= operation.requestedAt && clockAt <= statusNow;
       if (command && ['failed', 'unconfirmed'].includes(operation.status)) command.cancelled = true;
       if (acknowledged && !command.cancelled && command.startedAt === undefined) {
-        command.startedAt = lastNow - (statusNow - receiptAt);
+        command.startedAt = lastNow - (statusNow - clockAt);
         command.from = sample(command.startedAt).from ?? startingContact;
       }
       const freshResponse = acknowledged && !command.cancelled && !command.responded
@@ -83,10 +92,6 @@ export function createGarageDoorMotion() {
           : !moving && ['Open', 'Closed'].includes(state));
       const acceptedClosing = native && acknowledged && !command.cancelled && !command.responded
         && operation.action === 'close' && state !== 'Closed';
-      if (native && command && !command.cancelled && !acknowledged && operation.action === 'open' && state !== 'Closed') {
-        // A contact arriving before SETACK cannot supply the command clock.
-        setPosition(before.from, before.estimated); previous = next; return sample();
-      }
 
       if (typeof position === 'number') {
         if (responding) command.responded = true;
@@ -99,9 +104,9 @@ export function createGarageDoorMotion() {
         if (state === 'Closed') setPosition(0);
         else if (operation.action === 'stop') setPosition(before.from, before.estimated);
         else if (command.from !== null) {
-          // The first response may arrive seconds after delivery. Advance to the
-          // estimated position now, then show only the remaining linear travel.
-          const startedAt = Math.min(command.startedAt, lastNow - (statusNow - receiptAt));
+          // A new view can arrive after the original contact/receipt. Resume
+          // only its remaining travel, without restarting the stroke.
+          const startedAt = Math.min(command.startedAt, lastNow - (statusNow - clockAt));
           travel(command.from, operation.action === 'open' ? 1 : 0, duration, startedAt);
         } else if (!motion) setPosition(position === 'closed' ? 0 : 1);
       } else if (sameEvidence) {
