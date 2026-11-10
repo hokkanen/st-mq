@@ -1763,6 +1763,9 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
           ...(device.kind === 'door' ? { cover: { open: device.controlsCover, close: device.controlsCover,
             stop: Boolean(device.controlsCover && device.mqtt.stopPayload) } } : {}) }, check: device.check,
         ...(device.kind === 'door' ? { cover: { available: !closed && canControl() && device.subscriptionStatus === 'subscribed' && healthy(device, now),
+          // A source-clock wait fences commands, but does not discard the last
+          // independently fresh, admitted contact used by the illustration.
+          sourceTimePending: pendingFor(device) && healthy(device, now, true),
           state: device.readings[device.stateSignal]?.coverState ?? null,
           operation: device.coverOperation ? { ...device.coverOperation } : null } } : {}),
         ...(device.kind === 'dehumidifier' ? { dehumidifier: {

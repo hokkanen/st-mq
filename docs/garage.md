@@ -61,6 +61,11 @@ seconds after the command receipt therefore starts at the bottom, with the full
 18 seconds left. The first report's source, reception and admission clocks stay
 with the operation; later polls cannot restart its clock. A delayed device reply
 does not delay or restart this physically witnessed opening.
+During a short source-timestamp validation wait, both views retain the last
+independently fresh, admitted contact and the original animation timeline.
+Controls stay blocked and the pending report cannot start travel or confirm
+closure before admission. Invalidated or stale readings and actual connection
+loss still clear the estimate; this display continuity grants no control authority.
 Closing starts immediately on a validated matching command-executed reply; it
 does not wait for the closed contact at the end. A device receipt confirms
 acceptance, not immediate motor movement: shared-controller openings can start

@@ -23,7 +23,10 @@ export function garageDoorControl(status, device, snapshot = {}) {
   const reading = readings.length === 1 ? readings[0] : null;
   const source = device.readings?.[reading?.signal];
   const now = status?.now ?? Date.now();
-  const known = device.available === true && reading && source.stale === false
+  // Pending source clocks block control while the last admitted contact stays
+  // independently usable. Preserve travel until admission without inventing a
+  // contact edge or treating a real outage as a temporary clock wait.
+  const known = (device.available === true || device.cover?.sourceTimePending === true) && reading && source.stale === false
     && Number.isFinite(source.observedAt) && source.observedAt <= now && [0, 1].includes(source.value)
     && !reading.stale && ['Open', 'Closed', 'Opening', 'Closing'].includes(reading.value);
   const operation = device.cover?.operation;

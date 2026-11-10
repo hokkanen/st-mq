@@ -8,6 +8,8 @@ import { merossMessage, validMerossMessage } from '../src/acquisition/meross.js'
 import { mqttRouting } from '../src/acquisition/mqtt-routing.js';
 import { equipmentCoverResult } from '../chart/equipment.js';
 import { waitForDoorUpdate } from '../src/app/door-watch.js';
+import { garageDoorControl } from '../chart/garage-doors.js';
+import { createGarageDoorMotion } from '../chart/garage-door-motion.js';
 const uuid = '0123456789abcdef0123456789abcdef', key = 'abcdef0123456789abcdef0123456789';
 const door = channel => ({ id: `door${channel}`, area: 'garage', kind: 'door',
   connection: `mqtt:/appliance/${uuid}/publish`, cover_control: true, meross: { uuid, key, channel } });
@@ -35,7 +37,7 @@ function fixture(t) {
     return m;
   };
   capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
-  return { capture, sent, reply, ingested, advance: ms => now += ms, authority: value => authority = value };
+  return { capture, sent, reply, ingested, clock: () => now, advance: ms => now += ms, authority: value => authority = value };
 }
 test('Meross config enforces exact native identity, channel, finite age and no generic mapping', () => {
   for (const patch of [{ meross: { uuid, key, channel: 0 } }, { meross: { uuid, key } }, { max_age_seconds: 0 },
@@ -186,6 +188,7 @@ test('native clock leads wait for source time without changing clocks or grantin
   const message = f.reply(1, 0, { sourceOffsetMs: 1000 });
   f.reply(2, 0, { sourceOffsetMs: 1000 });
   assert.ok(f.capture.status().devices.every(d => !d.available));
+  assert.ok(f.capture.status().devices.every(d => !d.cover.sourceTimePending), 'A pending first report has no prior admitted contact to retain');
   await assert.rejects(f.capture.setCover({ deviceId: 'door1', action: 'open' }));
   assert.equal(f.sent.filter(row => row.body.header.method === 'SET').length, 0);
   f.advance(499); f.capture.tickDoors();
@@ -197,6 +200,68 @@ test('native clock leads wait for source time without changing clocks or grantin
   assert.equal(reading.receivedAt, reading.observedAt - 500);
   assert.deepEqual(reading.timeAdmission, { sourceTime: reading.observedAt,
     receivedAt: reading.receivedAt, admittedAt: reading.observedAt });
+});
+
+for (const action of ['open', 'close']) test(`native ${action} animation survives receipt and contact timestamp waits`, async t => {
+  const f = fixture(t), motion = createGarageDoorMotion(), views = [];
+  const render = () => {
+    const door = f.capture.status().devices[0], now = f.clock();
+    const view = garageDoorControl({ now, role: 'master', garage: { doorTravelSeconds: 18 } }, door);
+    const travel = motion.update({ ...view, state: view.reportedState, moving: view.reportedMoving,
+      deviceId: door.id, now, statusNow: now, durationSeconds: 18, operation: door.cover.operation });
+    const result = { door, view, travel }; views.push(result); return result;
+  };
+  await settle(); f.reply(1, action === 'open' ? 0 : 1); f.reply(2); render();
+  f.capture.subscribeDoors(render);
+  f.advance(788); await f.capture.setCover({ deviceId: 'door1', action });
+  const receiptAt = f.clock();
+  f.reply(1, action === 'open' ? 1 : 0, { method: 'SETACK', execute: 1, sourceOffsetMs: 1000 });
+  assert.equal(views.at(-1).door.available, false);
+  assert.equal(views.at(-1).door.cover.sourceTimePending, true);
+  assert.equal(views.at(-1).view.reportedState, action === 'open' ? 'Closed' : 'Open');
+  assert.equal(views.at(-1).view.disabled, true);
+  assert.equal(views.at(-1).travel.durationMs, 0, 'A pending receipt cannot start either stroke');
+  await assert.rejects(f.capture.setCover({ deviceId: 'door1', action }));
+  f.advance(212); f.capture.tickDoors();
+  assert.equal(views.at(-1).travel.durationMs, action === 'open' ? 0 : 18000 - (f.clock() - receiptAt));
+
+  f.advance(1930); const prior = f.capture.status().devices[0].readings.door1_open;
+  f.reply(1, 1, { method: 'PUSH', sourceOffsetMs: 1000 });
+  assert.deepEqual(views.at(-1).door.readings.door1_open, prior, 'Pending contact retains the original admitted evidence and clocks');
+  assert.equal(views.at(-1).door.cover.sourceTimePending, true);
+  assert.equal(views.at(-1).view.reportedState, action === 'open' ? 'Closed' : 'Open');
+  f.advance(70); f.capture.tickDoors();
+  assert.equal(views.at(-1).travel.durationMs, action === 'open' ? 18000 : 18000 - (f.clock() - receiptAt));
+  assert.equal(views.at(-1).door.cover.sourceTimePending, false);
+  const anchor = action === 'open' ? f.clock() : receiptAt;
+
+  f.advance(2930); f.reply(1, 1, { method: 'PUSH', sourceOffsetMs: 1000 });
+  assert.equal(views.at(-1).door.available, false);
+  assert.equal(views.at(-1).view.disabled, true);
+  assert.equal(views.at(-1).view.reportedState, 'Open');
+  assert.equal(views.at(-1).travel.durationMs, 18000 - (f.clock() - anchor));
+  f.advance(70); f.capture.tickDoors();
+  assert.equal(views.at(-1).travel.durationMs, 18000 - (f.clock() - anchor), 'Admission resumes the original timeline without a jump or restart');
+  assert.equal(views.at(-1).travel.to, action === 'open' ? 1 : 0);
+  assert(views.every(({ view }) => view.reportedState !== 'Unknown'), 'Timestamp waits do not flash a question mark');
+
+  f.advance(930); f.reply(1, 0, { method: 'PUSH', sourceOffsetMs: 1000 });
+  assert.notEqual(views.at(-1).view.tone, 'closed', 'Pending closed contact cannot turn the door green');
+  f.advance(70); f.capture.tickDoors();
+  assert.equal(views.at(-1).view.tone, 'closed'); assert.equal(views.at(-1).travel.to, 0);
+});
+
+for (const loss of ['disconnect', 'expiry']) test(`a pending native contact cannot hide ${loss}`, async t => {
+  const f = fixture(t); await settle(); f.reply(1); f.reply(2);
+  f.advance(loss === 'expiry' ? 89930 : 930);
+  f.reply(1, 1, { method: 'PUSH', sourceOffsetMs: 1000 });
+  assert.equal(f.capture.status().devices[0].cover.sourceTimePending, true);
+  if (loss === 'disconnect') f.capture.setConnected(false);
+  else f.advance(70); // The old contact expires before draining the new report.
+  const door = f.capture.status().devices[0];
+  assert.equal(door.cover.sourceTimePending, false);
+  const view = garageDoorControl({ now: f.clock(), role: 'master' }, door);
+  assert.equal(view.reportedState, 'Unknown'); assert.equal(view.disabled, true);
 });
 
 test('native admission rejects excessive clock leads and cannot restore a disconnected pending report', async t => {

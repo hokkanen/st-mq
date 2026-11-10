@@ -7,7 +7,7 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
     const f=window.equipmentUiFixture;
     f.savedDoorWatch={fetch:window.fetch,response:f.response};f.watchRevision=1;
     for(const d of f.devices.filter(d=>d.kind==='door')) {
-      d.cover.operation=null;d.available=true;
+      d.cover.operation=null;d.available=true;d.cover.available=true;d.cover.sourceTimePending=false;
       for(const r of Object.values(d.readings)){r.value=0;r.coverState='closed';r.stale=false;r.observedAt=f.now;r.receivedAt=f.now;}
     }
     f.response=base=>{const s=f.savedDoorWatch.response(base);s.equipment.doorRevision={generation:'fixture-watch-generation',revision:f.watchRevision};return s;};
@@ -39,7 +39,15 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       await until('Boolean(window.equipmentUiFixture.watchPending)'); await settle();
       assert.equal(await progress(side), 0, 'Device receipt alone keeps opening still');
       const reportsBefore = await evaluate('window.equipmentUiFixture.responses');
-      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=3000;
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=2930;
+        d.available=false;d.cover.available=false;d.cover.sourceTimePending=true;f.sendDoorUpdate();return true;})()`);
+      await until('Boolean(window.equipmentUiFixture.watchPending)');
+      for (const scope of ['#garage-doors-shortcut', '#garage-doors-dialog'])
+        assert.equal(await evaluate(`document.querySelector('${scope} .garage-door-row[data-side="${side}"]').dataset.state`), 'closed', 'Pending contact retains the admitted closed state without a question mark');
+      assert.equal(await progress(side), 0, 'Pending contact cannot start opening');
+      assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"] button').disabled`), true);
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=70;
+        d.available=true;d.cover.available=true;d.cover.sourceTimePending=false;
         for(const r of Object.values(d.readings)){r.value=1;r.coverState='open';r.observedAt=f.now;r.receivedAt=f.now;}
         Object.assign(d.cover.operation,{status:'observed',observedAt:f.now,observedReceivedAt:f.now,observedAdmittedAt:f.now});f.sendDoorUpdate();return true;})()`);
       await until(`document.querySelector('${bay(side)}').dataset.motion==='opening'`);
@@ -50,6 +58,16 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"] button').disabled`), true, 'Unsupported reversal is unavailable during estimated opening');
       assert.equal(await evaluate(`getComputedStyle(document.querySelector('${bay(side)} .garage-door-motion')).display!=='none'`), true, 'Native not-closed contact displays the up arrows');
       await until('Boolean(window.equipmentUiFixture.watchPending)');
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=500;
+        d.available=false;d.cover.available=false;d.cover.sourceTimePending=true;f.sendDoorUpdate();return true;})()`);
+      await until('Boolean(window.equipmentUiFixture.watchPending)');
+      for (const scope of ['#garage-doors-shortcut', '#garage-doors-dialog'])
+        assert.equal(await evaluate(`document.querySelector('${scope} .garage-door-row[data-side="${side}"]').dataset.motion`), 'opening', 'A timestamp wait keeps both shutters moving');
+      assert.ok(await progress(side) > 0 && await progress(side) < 0.15, 'A pending repeated report cannot jump to fully open');
+      await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=70;
+        d.available=true;d.cover.available=true;d.cover.sourceTimePending=false;f.sendDoorUpdate();return true;})()`);
+      await until('Boolean(window.equipmentUiFixture.watchPending)');
+      assert.ok(await progress(side) > 0 && await progress(side) < 0.15, 'Admission preserves the remaining stroke');
       await evaluate(`(() => {const f=window.equipmentUiFixture,d=f.devices.find(d=>d.id==='${id}');f.now+=500;
         d.cover.operation={action:'close',status:'published',acknowledgement:'mqtt-write',startingContact:1,requestedAt:f.now-100,dispatchedAt:f.now-90,acknowledgedAt:f.now-80,
           deviceReceipt:{action:'close',executed:true,sourceTime:f.now-50,receivedAt:f.now,admittedAt:f.now}};
