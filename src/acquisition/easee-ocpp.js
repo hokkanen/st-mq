@@ -25,7 +25,7 @@ const EXTERNAL_STOP_REASONS = OCPP_EXTERNAL_STOP_REASONS;
 const METER_CONTEXTS = new Set(['Interruption.Begin', 'Interruption.End', 'Sample.Clock', 'Sample.Periodic',
   'Transaction.Begin', 'Transaction.End', 'Trigger', 'Other']);
 const AUTHORIZATION_KEYS = Object.freeze(['AuthorizationCacheEnabled', 'AuthorizeRemoteTxRequests',
-  'LocalPreAuthorize', 'LocalAuthorizeOffline', 'ExternalAuthorizationRequired']);
+  'LocalPreAuthorize', 'LocalAuthorizeOffline', 'ExternalAuthorizationRequired', 'FreeCharging']);
 const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability', 'TriggerMessage']);
 const READ_ONLY_REQUEST_ACTIONS = new Set(['GetCompositeSchedule', 'GetConfiguration', 'TriggerMessage']);
 const requestError = code => Object.assign(new Error(code), { code });

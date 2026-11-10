@@ -1130,10 +1130,13 @@ with its original decision clock.
 These bounded in-memory diagnostics contain only reasons, booleans and clocks;
 they grant no permission and do not disclose connection or recovery identifiers.
 
-In plug-and-charge mode, connection setup also reads the five native authorization
-and cache flags in separate single-key `GetConfiguration` requests, respecting
+In plug-and-charge mode, connection setup also reads the native authorization
+and cache flags, including the Home `FreeCharging` flag, in separate single-key
+`GetConfiguration` requests, respecting
 the native charger's one-key limit. Diagnostics retain only the requested
 boolean values and each read's original receipt time for the current connection. Missing,
 conflicting or unsupported values stay unknown. The read does not change native
 RFID/offline policy or authorize a start; it helps distinguish a cached native
 authorization decision from a new server reply or actual transaction.
+The Home firmware documents that a refused Start disables `FreeCharging`; an
+accepted later RemoteStart is not proof that this native mode was restored.

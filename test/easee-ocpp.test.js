@@ -2181,7 +2181,7 @@ test('automatic start diagnostics read only bounded native authorization flags a
   const f=await fixture(t,{authorization_mode:'plug-and-charge'},'fixture-diag-tag');
   const client=await f.connect({autoReply:frame=>frame[2]==='GetConfiguration'?null:'Accepted'});
   await client.call('Heartbeat',{});await flushCalls(client);
-  const keys=['AuthorizationCacheEnabled','AuthorizeRemoteTxRequests','LocalPreAuthorize','LocalAuthorizeOffline','ExternalAuthorizationRequired'];
+  const keys=['AuthorizationCacheEnabled','AuthorizeRemoteTxRequests','LocalPreAuthorize','LocalAuthorizeOffline','ExternalAuthorizationRequired','FreeCharging'];
   assert.deepEqual(client.calls.find(frame=>frame[2]==='GetConfiguration')[3].key,[keys[0]],'Native chargers may accept only one configuration key per request');
   assert.equal(f.local.status().authorizationConfiguration.status,'pending');
   for (const [index,key] of keys.entries()) {
@@ -2195,13 +2195,14 @@ test('automatic start diagnostics read only bounded native authorization flags a
     {key:'LocalPreAuthorize',value:'false',readonly:false},
     {key:'LocalAuthorizeOffline',value:'unknown-secret',readonly:false},
     {key:'ExternalAuthorizationRequired',value:'true',readonly:false},
+    {key:'FreeCharging',value:'false',readonly:false},
     {key:'unrequested-private-key',value:'private-response-value',readonly:false},
   ],unknownKey:['ExternalAuthorizationRequired','unrequested-private-key']} ]));
   await flushCalls(client);
   }
-  assert.equal(client.calls.filter(frame=>frame[2]==='GetConfiguration').length,5);
+  assert.equal(client.calls.filter(frame=>frame[2]==='GetConfiguration').length,6);
   const result=f.local.status().authorizationConfiguration;
-  assert.equal(result.status,'partial');assert.equal(result.requestedAt,at);assert.equal(result.respondedAt,at+5000);
+  assert.equal(result.status,'partial');assert.equal(result.requestedAt,at);assert.equal(result.respondedAt,at+6000);
   assert.equal(result.reads.AuthorizationCacheEnabled.respondedAt,at+1000,'Later keys cannot refresh the original cache readback');
   assert.equal(result.reads.LocalAuthorizeOffline.requestedAt,at+3000);
   assert.deepEqual(result.values.AuthorizationCacheEnabled,{value:true,readOnly:false});
@@ -2209,6 +2210,7 @@ test('automatic start diagnostics read only bounded native authorization flags a
   assert.equal(result.values.LocalPreAuthorize.value,null,'Conflicting duplicates remain unknown');
   assert.equal(result.values.LocalAuthorizeOffline.value,null,'Unparseable native values remain unknown');
   assert.equal(result.values.ExternalAuthorizationRequired.value,null);
+  assert.deepEqual(result.values.FreeCharging,{value:false,readOnly:false},'A native refusal can disable FreeCharging independently of a later accepted RemoteStart');
   assert.equal(JSON.stringify(result).includes('private'),false);assert.equal(JSON.stringify(result).includes('secret'),false);
   assert.equal(client.calls.filter(frame=>frame[2]==='ChangeConfiguration').length,4,'Only the existing telemetry settings are written');
   f.now=at+6000;assert.deepEqual(f.local.status().authorizationConfiguration,result,'Status reads do not refresh the diagnostic');
