@@ -103,6 +103,18 @@ test('missing vehicle feeds leave both chargers planned with configured inputs',
   }
 });
 
+test('an exhausted OCPP Start wait is displayed as a failure rather than pending approval', () => {
+  const item = charger({ control: { phase: 'unavailable', errorCode: 'charger-start-unconfirmed',
+    reason: 'The charger did not confirm a transaction after Start. Charge now can make a new attempt.',
+    snapshot: { transport: 'ocpp', transactionConfirmed: false } },
+    plan: { state: 'waiting', startAt, finishAt, deadlineAt, feasible: true, periods: [{ startAt, endAt: null }] } });
+  const display = chargerDisplay(item, { now });
+  assert.equal(display.state, 'Charging did not start');
+  assert.match(display.event, /No transaction confirmed.*Charge now/);
+  assert.equal(display.activityTiming, null);
+  assert.equal(display.periodRows.length, 1);
+});
+
 test('OCPP approval pending shows proposed periods without claiming applied control or completion', () => {
   const item = charger({ control: { phase: 'unavailable', errorCode: 'transaction-unconfirmed',
     reason: 'Waiting for a current transaction confirmed on this connection.',

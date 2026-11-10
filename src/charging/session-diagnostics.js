@@ -37,7 +37,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'access-denied', 'control-revoked', 'state-changed', 'unsupported-schedule', 'invalid-plan', 'missing-current-limit',
   'start-passed', 'ambiguous-start', 'start-out-of-range', 'charger-fault', 'charging-authorization', 'incomplete-state',
   'charger-stopped', 'pause-unconfirmed',
-  'offline', 'transaction-unconfirmed', 'composite-unavailable', 'profile-rejected', 'retry-limit', 'storage-failed',
+  'offline', 'transaction-unconfirmed', 'charger-start-unconfirmed', 'composite-unavailable', 'profile-rejected', 'retry-limit', 'storage-failed',
   'takeover-stale', 'takeover-unavailable', 'takeover-unconfirmed', 'resume-current-limit', 'status-stale',
   'ocpp-request-timeout', 'ocpp-request-aborted', 'ocpp-request-failed', 'ocpp-request-revoked',
   'ocpp-disconnected', 'ocpp-reconfigured', 'ocpp-unavailable', 'ocpp-queue-full',

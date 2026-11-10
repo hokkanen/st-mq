@@ -45,17 +45,12 @@ request initialized during connection admission, for both feasible and fallback
 plans. The transport fixture verifies that a separate explicit Charge now action
 can complete a new transaction after a recorded refusal without reusing the
 consumed automatic context. This does not prove recovery on installed firmware.
-The Home firmware fixture additionally holds its native FreeCharging mode off
-after deauthorization, despite an accepted RemoteStart. Recovery preserves its
-private tag and verifies native mode readback. The real Home `ProtocolError` for
-the private-tag read is reproduced: without RFID enrollments, only the exact
-owned refusal tag or current code can obtain a fresh scoped Start. Independent
-RFID enrollments keep that unreadable-tag path blocked. Whole-second native
-transaction clocks retain the recovery fence. Pause, native Stop,
-disconnect, authority loss, the original operation budget, pending admission,
-foreign tags, unknown/read-only mode, refused settings, mismatched readback and receiver
-restart retain their fences. Native recovery sends no Reset or ClearCache and
-does not rewrite the original refused transaction.
+The same transport fixture accepts RemoteStart but withholds StartTransaction,
+verifying its original one-minute outcome deadline, explicit rejection, restart
+without replay, and a later scoped request. A confirmed transaction with zero
+power must not be called a startup failure. The production runtime verifies the
+existing Charge now OFF transition and protects a newer request; UI coverage
+distinguishes an exhausted Start from approval still pending.
 
 Selected-period regressions cover exact Energy-check parity across range changes,
 outside-period prior counters, long crossing intervals and pending/conflicting

@@ -12,7 +12,7 @@ export const CHARGING_CONTROL_CAUSES = {
   ['charging-authorization']: 'Charging authorization required', 'incomplete-state': 'Charger state incomplete',
   'charger-stopped': 'Charger reported stopped', 'pause-unconfirmed': 'Pause not confirmed',
   offline: 'Charger offline', 'provider-offline': 'Charger provider offline',
-  'transaction-unconfirmed': 'Charging transaction not confirmed', 'composite-unavailable': 'Charger schedule readback unavailable',
+  'transaction-unconfirmed': 'Charging transaction not confirmed', 'charger-start-unconfirmed': 'Charging did not start', 'composite-unavailable': 'Charger schedule readback unavailable',
   'charging-plan-unavailable': 'Waiting for a charging plan', 'takeover-unavailable': 'Waiting for automatic control',
   'status-stale': 'Waiting for current connection status',
   'takeover-stale': 'Charger instructions changed before automatic handover',

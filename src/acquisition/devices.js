@@ -813,6 +813,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   };
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     controlPending: () => local.controlPending?.() ?? null,
+    readStartOutcome: context => local.startOutcome?.(context) ?? null,
     controlAttempt,
     readAllowanceTelemetry: nativeAllowanceTelemetry,
     readCurrentSupply,

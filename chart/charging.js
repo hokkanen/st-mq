@@ -244,6 +244,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const identificationActive = connected === true && charger.identification?.active === true;
   const identificationInProgress = connected === true && chargingIdentificationInProgress(charger);
   const transactionWaiting = enabled && chargingTransactionWaiting(charger);
+  const startUnconfirmed = control.errorCode === 'charger-start-unconfirmed';
   const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual : null;
   const unknownInstruction = ['unknown', 'takeover-unconfirmed'].includes(manual?.kind);
   const takeoverUnconfirmed = manual?.kind === 'takeover-unconfirmed';
@@ -262,7 +263,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const ownedStart = validTime(owned?.startAt) ? owned.startAt : ownedPeriods[0]?.startAt;
   const estimateOnly = Boolean(currentAssumption && (uncertain || identificationActive));
   const periods = ownedPeriods.length ? ownedPeriods : ownedStart != null ? [{ startAt: ownedStart, endAt: null }]
-    : !yielded && (!uncertain || estimateOnly || transactionWaiting) ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
+    : !yielded && (!uncertain || estimateOnly || transactionWaiting || startUnconfirmed) ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
   const scheduledPeriods = periods.length > 1 || periods.some(period => validTime(period.endAt));
   const currentPeriod = periods.find(period => Number(period.startAt) <= now && (!validTime(period.endAt) || Number(period.endAt) > now));
   const nextPeriod = periods.find(period => Number(period.startAt) > now);
@@ -349,6 +350,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       : `${uncertain ? 'Last confirmed ' : ''}${betweenPeriods ? uncertain ? 'resume' : 'Resumes' : uncertain ? 'start' : 'Starts'} ${time(eventAt)}${revisionPending && !uncertain ? ' · update awaiting confirmation' : ''}`;
   } else if (handoverUnconfirmed) {
     state = 'Handover unconfirmed'; event = 'Waiting for handover confirmation';
+  } else if (startUnconfirmed) {
+    state = 'Charging did not start';
+    event = 'No transaction confirmed · choose Charge now to retry';
   } else if (transactionWaiting) {
     state = 'Waiting for charging approval';
     eventAt = nextPeriod?.startAt ?? (validTime(plan.startAt) && Number(plan.startAt) > now ? plan.startAt : null);
@@ -374,7 +378,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     && /^([01]\d|2[0-3]):[0-5]\d$/.test(defaults.readyBy)
     ? { soc: number(defaults.manualSoc, '%'), minimum: number(defaults.minimumSoc, '%'),
       capacity: number(defaults.capacityKwh, 'kWh'), readyBy: defaults.readyBy } : null;
-  const showPlan = !sessionPause && enabled && showMetrics && (!identificationInProgress || estimateOnly) && !yielded && (!uncertain || ownedStart != null || estimateOnly || transactionWaiting);
+  const showPlan = !sessionPause && enabled && showMetrics && (!identificationInProgress || estimateOnly) && !yielded && (!uncertain || ownedStart != null || estimateOnly || transactionWaiting || startUnconfirmed);
   const currentForecast = forecastAbsent || Object.hasOwn(forecast, 'feasible') ? forecast : plan;
   const deadlineAt = plan.deadlineAt ?? charger.deadlineAt;
   const risk = showPlan && !targetReached

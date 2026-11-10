@@ -448,6 +448,16 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   for incoming authorization and Start. The installation seed retains its existing
   live authorization rule; it is not used as the outgoing automatic attempt code.
 
+  A consumed Start has one 60-second transaction-confirmation budget, measured
+  from its original durable attempt time. A fresh accepted transaction ends that
+  wait even if the vehicle is not drawing power yet. An explicit native rejection
+  is reported immediately; no transaction by the deadline is reported as
+  **Charging did not start**, rather than indefinitely awaiting approval. An
+  exhausted current Charge now attempt uses the existing return-to-Automatic
+  transition. A newer request has a separate context and cannot be cancelled by
+  that outcome. Polling and restart cannot renew the old budget or replay Start.
+  This outcome grants no native configuration, RFID-policy or reset operation.
+
   If the controller refused its own automatic transaction and the charger
   confirms that transaction ended as `DeAuthorized`, it may recover from
   `SuspendedEVSE` without waiting for another `Preparing` transition. Recovery
@@ -458,31 +468,6 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   unexplained suspension, dashboard Pause or expired identification probe never
   supplies this recovery authority. The original rejection remains historical
   evidence; a later permission does not rewrite its response.
-
-  Home firmware can disable its native `FreeCharging` mode after that refusal.
-  An accepted recovery RemoteStart does not itself prove the mode was restored.
-  For the same durably consumed recovery context, ST-MQ reads `FreeCharging` and
-  its private tag separately, preserving the tag rather than rewriting it. A
-  reported writable disabled mode and an owned automatic tag permit enabling
-  the mode and reading it back. Some Home firmware returns `ProtocolError` for
-  the documented private-tag read. With no independent RFID enrollments, the
-  exact tag hash in our recorded refusal may then qualify a new Start within
-  this recovery's original connection, permission and source-time bounds. An
-  unknown incoming tag remains rejected. With RFID enrollments, an unsupported
-  tag read remains blocked, preserving independent authorization rules. A
-  readable foreign tag, unknown/read-only mode or refused setting remains
-  blocked. Diagnostics distinguish native tag readback from recorded-refusal
-  evidence and never disclose the native tag.
-  Every dispatch retains the original start lease, physical connection,
-  instruction and authority checks; all recovery steps share one 15-second
-  operation budget. Pending admission may defer the original received reply
-  within that budget, without replaying it or holding up another control duty.
-  Restart and polling cannot repeat the consumed attempt. This is a native
-  start operation, not a charger reset or an RFID/offline-policy change.
-  The recorded refusal cannot authorize an old source-timed Start, another
-  connection or another start context. Native mode readback, an accepted
-  transaction and measured charging remain
-  separate evidence.
 
   While this local plug-and-charge controller owns authorization, Easee's
   **Awaiting Authentication** mode (7) and **Pending authorization** reason (55)

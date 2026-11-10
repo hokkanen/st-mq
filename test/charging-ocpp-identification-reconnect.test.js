@@ -9,6 +9,28 @@ const START = Date.parse('2026-10-05T12:00:00Z'), MINUTE = 60_000;
 const SCOPE = 'd'.repeat(64), TOPIC = 'synthetic/reconnect/bmw';
 const RELEASE_AT = START + 60 * MINUTE;
 
+test('an exhausted OCPP Charge now attempt returns the current request to Automatic without cancelling a newer request', async t => {
+  const f = await fixture(t);
+  f.reconnect(); await f.update();
+  const view = f.runtime.status().chargers.find(row => row.id === 'charger1');
+  await f.runtime.chargeNow('charger1', { association: view.association,
+    sessionId: view.request.sessionId, revision: view.request.revision });
+  const requestedAt = f.item.request.chargeNowAt;
+  assert.equal(f.item.request.chargeNow, true);
+  f.startOutcome('unconfirmed');
+  await f.update();
+  assert.equal(f.item.request.chargeNow, undefined);
+  assert.equal(f.item.controls.enabled, true);
+  f.advance(1000);
+  const next = f.runtime.status().chargers.find(row => row.id === 'charger1');
+  await f.runtime.chargeNow('charger1', { association: next.association,
+    sessionId: next.request.sessionId, revision: next.request.revision });
+  assert.equal(f.item.request.chargeNow, true);
+  assert.notEqual(f.item.request.chargeNowAt, requestedAt);
+  await f.update();
+  assert.equal(f.item.request.chargeNow, true, 'The previous attempt cannot cancel a newer instruction');
+});
+
 for (const input of ['missing', 'reviewed']) for (const provisional of [false, true])
 test(`runtime publication retains Start with a ${input} input plan, ${provisional ? 'fallback' : 'feasible'} result and initialized request`, async t => {
   const f = await fixture(t);
@@ -59,7 +81,7 @@ test('an existing BMW OCPP probe waits for a queued receipt without an early pau
 // clock and economic plan are synthetic; transaction confirmation is supplied
 // only after asserting the controller has actually authorized the initial start.
 async function fixture(t) {
-  let now = START, runtime, permission = null, authority = true;
+  let now = START, runtime, permission = null, authority = true, startOutcome = null;
   let connected = true, online = true, status = 'Preparing', statusAt = START;
   let transactionId = null, transactionStartedAt = null, powerKw = 0, powerAt = START;
   let connectionId = 'synthetic-reconnect-socket';
@@ -91,6 +113,7 @@ async function fixture(t) {
       && value.connectionId === connectionId && (!requireTransaction || value.transactionId === transactionId)
       && (!unchangedStatus || value.statusAt === statusAt && value.connectorStatus === status),
     setStartPermission: (value, options) => { permission = value ? { snapshot: structuredClone(value), ...options } : null; },
+    readStartOutcome: context => startOutcome?.key === context.key ? startOutcome.result : null,
     request: async (action, payload, options) => {
       assert.equal(options.guard(), true, 'Every wire operation retains current authority');
       assert.equal(options.beforeSend?.() ?? true, true);
@@ -139,6 +162,8 @@ async function fixture(t) {
     get item() { return runtime.chargers.charger1; }, get permission() { return permission; },
     get startAllowed() { return Boolean(permission && permission.until > now && permission.guard()); },
     commands, data, profiles, update,
+    startOutcome(status) { assert(permission?.recovery); startOutcome = { key: permission.recovery.key,
+      result: { requestedAt: now, status } }; },
     advance(ms) { now += ms; powerAt = now; },
     native(value) { app = value === null ? null : { ...app, ...value }; },
     source(value) {

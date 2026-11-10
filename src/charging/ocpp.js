@@ -164,7 +164,7 @@ async function handoverOperation(step, operation) {
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, recordStartAdmission = () => {}, readCurrentSupply,
   readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback,
-  controlAttempt = () => createControlAttempt(), controlPending = () => null } = {}) {
+  controlAttempt = () => createControlAttempt(), controlPending = () => null, readStartOutcome = () => null } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function', controlAttempt,
@@ -173,7 +173,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
     ...(typeof requestMeterReadback === 'function' ? { requestMeterReadback(snapshot, { signal, guard = () => false } = {}) {
       return requestMeterReadback({ signal, guard: () => canControl() && guard() && isCurrent(snapshot) });
     } } : {}),
-    setStartPermission, recordStartAdmission, controlPending,
+    setStartPermission, recordStartAdmission, controlPending, readStartOutcome,
     deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true, diagnostic = false } = {}) {
@@ -548,6 +548,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     return { ...clone(state), phase: confirmedPausePhase ? 'paused' : phase,
       reason: confirmedPausePhase ? 'Paused until unplugging. Charge now or Use automatic can resume charging.' : reason,
       errorCode, reasonCode, enabled: desired.enabled === true,
+      chargeNowFailure: errorCode === 'charger-start-unconfirmed' && chargeNowActive()
+        ? { requestedAt: desired.chargeNow.requestedAt, reason: 'startup-retries-exhausted' } : null,
       ownsInstruction: currentOwnership, pauseConfirmed: currentOwnership && pauseConfirmed && fresh(snapshot.powerAt, now),
       handoverConfirmed, planningRevision, takeover: takeoverStatus(),
       takeoverRequired: Boolean(['stop', 'schedule', 'window'].includes(state.manual?.kind)
@@ -607,12 +609,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     }
   }
   let admittedStartIntent = null;
+  let admittedStartContext = null;
   function permitStart(plan, current) {
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
     // decision that calls for a pause must withdraw it before any awaited work.
     const record = (allowed, reason) => adapter.recordStartAdmission?.({ checkedAt: clock(), allowed, reason });
-    const revoke = reason => { admittedStartIntent = null; record(false, reason); adapter.setStartPermission?.(null, { reason }); return false; };
+    const revoke = reason => { admittedStartIntent = admittedStartContext = null; record(false, reason); adapter.setStartPermission?.(null, { reason }); return false; };
     const now = clock(), app = snapshot?.appControl;
     if (closed || current !== generation) return revoke('controller-superseded');
     if (!hasAuthority()) return revoke('controller-authority-unavailable');
@@ -645,9 +648,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       return next?.id === retryId && next?.connectedAt === state.session.connectedAt;
     };
     record(true, 'controller-admitted');
+    admittedStartContext = { connectedAt: state.session.connectedAt,
+      key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) };
     adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
-      recovery: { connectedAt: state.session.connectedAt,
-        key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) } });
+      recovery: admittedStartContext });
     // Session admission and getPlan may have published a new request/plan since
     // update began. The runtime owns that request; record its actual admitted
     // value so publication cannot revoke the Start just reviewed here.
@@ -1101,8 +1105,18 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (disconnected) return display('disconnected', 'Waiting for a vehicle connection.');
       if (!canWrite(current)) throw fail('control-revoked');
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
-      if (awaiting || !confirmedTransaction || snapshot.transactionId === null || snapshot.pluggedIn !== true)
+      if (awaiting || !confirmedTransaction || snapshot.transactionId === null || snapshot.pluggedIn !== true) {
+        const start = admittedStartContext && adapter.readStartOutcome?.(admittedStartContext);
+        if (['rejected', 'unconfirmed'].includes(start?.status)) {
+          admittedStartIntent = admittedStartContext = null;
+          adapter.setStartPermission?.(null, { reason: `start-${start.status}` });
+        }
+        if (start?.status === 'rejected')
+          return display('unavailable', 'The charger rejected the Start request.', 'charging-authorization');
+        if (start?.status === 'unconfirmed')
+          return display('unavailable', 'The charger did not confirm a transaction after Start. Charge now can make a new attempt.', 'charger-start-unconfirmed');
         return display('unavailable', 'Waiting for a current transaction confirmed on this connection.', 'transaction-unconfirmed');
+      }
       if (identification) {
         await commit({ execution: null, released: false, provisional: false });
         if (identification.phase !== 'pausing' && (identification.mode !== 'probe' || clock() < identification.probeUntil)) {
