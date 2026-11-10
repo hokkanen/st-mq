@@ -131,6 +131,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   // Process-local, current-connection evidence only. No tags, transaction IDs
   // or message bodies; observation never refreshes these original clocks.
   let startProgress = { remote: null, authorization: null, transaction: null, stop: null };
+  let homeRecoveryGrant = null;
   let startReadiness = null;
   let authorizationConfiguration = null;
   function authorizationReadback(key, patch) {
@@ -280,6 +281,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     lastMessageAt = now;
   }
   function reset() {
+    homeRecoveryGrant = null;
     for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
     deferredTransactions.clear();
     rejectRequests('ocpp-disconnected');
@@ -372,7 +374,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const recovery = call.homeRecovery, now = clock(), active = activeTransaction();
     const confirmed = recovery?.step === 'mode-verify' && active?.status === 'Accepted'
       && active.startReceivedAt >= recovery.startedAt && active.startedAt >= call.connectedAt
-      && active.tagHash === digest({ scope, idTag: startCode({ connectedAt: call.connectedAt, key: call.startKey }) });
+      && [recovery.tagHash, digest({ scope, idTag: startCode({ connectedAt: call.connectedAt, key: call.startKey }) })].includes(active.tagHash);
     return Boolean(recovery && Number.isSafeInteger(recovery.transactionId)
       && call.connection === socket && transportFresh() && currentStartContext(call)
       && recoveryAttempts(startRecoveryScope())?.some(row => row.key === call.startKey)
@@ -381,16 +383,17 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       && (confirmed || blockedStartRecovery(call.startKey)?.row.id === recovery.transactionId));
   };
   const noteHomeRecovery = (call, status, reason = null) => {
-    startProgress.recovery = { requestedAt: call.homeRecovery.startedAt, checkedAt: clock(), status, reason };
+    startProgress.recovery = { requestedAt: call.homeRecovery.startedAt, checkedAt: clock(), status, reason,
+      ...(call.homeRecovery.tagEvidence ? { tagEvidence: call.homeRecovery.tagEvidence } : {}) };
   };
   function queueHomeRecovery(source, step) {
-    const recovery = source.homeRecovery ?? { startedAt: clock(), transactionId: blockedStartRecovery(source.startKey)?.row.id };
-    const writing = ['tag-write', 'mode-enable'].includes(step);
-    const key = step.startsWith('tag-') ? 'FreeChargingIdTag' : 'FreeCharging';
+    const refused = blockedStartRecovery(source.startKey)?.row;
+    const recovery = source.homeRecovery ?? { startedAt: clock(), transactionId: refused?.id, tagHash: refused?.tagHash };
+    const writing = step === 'mode-enable';
+    const key = step === 'tag-read' ? 'FreeChargingIdTag' : 'FreeCharging';
     const call = { connection: source.connection, startKey: source.startKey, connectedAt: source.connectedAt,
       homeRecovery: { ...recovery, step }, action: writing ? 'ChangeConfiguration' : 'GetConfiguration',
-      payload: writing ? { key, value: key === 'FreeCharging' ? 'True'
-        : startCode({ connectedAt: source.connectedAt, key: source.startKey }) } : { key: [key] },
+      payload: writing ? { key, value: 'True' } : { key: [key] },
       attempt: writing ? controlAttempt() : createControlAttempt({ kind: 'query' }) };
     if (!homeRecoveryCurrent(call, false)) return;
     noteHomeRecovery(call, step); callQueue.unshift(call);
@@ -403,10 +406,18 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       call.homeRecoveryReply = { frame, receivedAt }; callQueue.push(call); return;
     }
     const step = call.homeRecovery.step, reply = frame[0] === 3 ? frame[2] : null;
+    // Some Home firmware reports ProtocolError for this documented private
+    // read. Preserve its tag. With no independent RFID enrollments, only our
+    // exact refused automatic tag or current code can approve the resulting
+    // Start; an unknown tag remains rejected. Never borrow RFID authority.
+    if (step === 'tag-read' && frame[0] === 4 && ['ProtocolError', 'NotImplemented', 'NotSupported'].includes(frame[2])
+      && config.authorization_tags.length === 0) {
+      queueHomeRecovery({ ...call, homeRecovery: { ...call.homeRecovery, tagEvidence: 'recorded-refusal' } }, 'mode-enable'); return;
+    }
     if (!reply) { noteHomeRecovery(call, 'unavailable', 'native-request-failed'); return; }
     if (call.action === 'ChangeConfiguration') {
       if (reply.status !== 'Accepted') { noteHomeRecovery(call, 'unavailable', 'native-setting-rejected'); return; }
-      queueHomeRecovery(call, step === 'tag-write' ? 'tag-verify' : 'mode-verify'); return;
+      queueHomeRecovery(call, 'mode-verify'); return;
     }
     const key = call.payload.key[0];
     const rows = Array.isArray(reply.configurationKey) ? reply.configurationKey.filter(row => row?.key === key) : [];
@@ -421,18 +432,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (value !== false || row.readonly !== false) { noteHomeRecovery(call, 'unavailable', 'native-mode-unavailable'); return; }
       queueHomeRecovery(call, 'tag-read'); return;
     }
-    // The private native tag is inspected only in memory. An unrelated tag is
-    // an independent native instruction, never permission to overwrite it.
+    // Preserve the existing native tag. A readable unrelated tag is an
+    // independent instruction, never permission to enable its automatic use.
     const refusal = ledger.transactions.find(value => value.id === call.homeRecovery.transactionId);
     const ownedTag = typeof row?.value === 'string' && row.value.length > 0 && row.value.length <= 20
       && (automaticTag(row.value) || refusal?.automatic === true && refusal.tagHash === digest({ scope, idTag: row.value }));
     if (!ownedTag) {
       noteHomeRecovery(call, 'unavailable', 'native-tag-not-owned'); return;
     }
-    const matches = equal(row.value, startCode({ connectedAt: call.connectedAt, key: call.startKey }));
-    if (step === 'tag-verify' && !matches) { noteHomeRecovery(call, 'unavailable', 'native-readback-unconfirmed'); return; }
-    if (!matches && row.readonly !== false) { noteHomeRecovery(call, 'unavailable', 'native-tag-read-only'); return; }
-    queueHomeRecovery(call, matches ? 'mode-enable' : 'tag-write');
+    queueHomeRecovery({ ...call, homeRecovery: { ...call.homeRecovery,
+      tagHash: digest({ scope, idTag: row.value }), tagEvidence: 'native-readback' } }, 'mode-enable');
   }
   function sendNextCall(skipHomeRecovery = false) {
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
@@ -517,6 +526,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return false;
       }
       call.sentAt = clock();
+      if (call.homeRecovery?.step === 'mode-enable') homeRecoveryGrant = call;
       if (action === 'TriggerMessage' && payload.requestedMessage === 'MeterValues') meterRequestedAt = monotonicClock();
       return true;
     }, () => {
@@ -741,16 +751,25 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const automaticTag = tag => typeof tag === 'string' && !configuredTag(tag)
     && plugAndCharge && authorizationReady && (equal(virtualTag, tag)
       || ledger?.automaticStartRecoveries?.attempts.some(row => equal(startCode({
-        connectedAt: ledger.automaticStartRecoveries.connectedAt, key: row.key }), tag)));
-  const currentAutomaticTag = tag => {
+        connectedAt: ledger.automaticStartRecoveries.connectedAt, key: row.key }), tag))
+      || homeRecoveryGrant?.homeRecovery.tagHash === digest({ scope, idTag: tag })
+      || activeTransaction()?.automatic === true && activeTransaction().tagHash === digest({ scope, idTag: tag }));
+  const currentAutomaticTag = (tag, sourceAt) => {
     if (equal(virtualTag, tag)) return true;
     const context = startRecoveryScope();
-    return Boolean(recoveryAttempts(context) && equal(startCode(context), tag));
+    if (!recoveryAttempts(context)) return false;
+    if (equal(startCode(context), tag)) return true;
+    const tagHash = digest({ scope, idTag: tag }), active = activeTransaction();
+    if (homeRecoveryGrant && currentStartContext(homeRecoveryGrant)
+      && active?.automatic === true && active.tagHash === tagHash && observedTransaction?.id === active.id
+      && active.startedAt >= context.connectedAt) return true;
+    return Boolean(homeRecoveryGrant?.homeRecovery.tagHash === tagHash && homeRecoveryCurrent(homeRecoveryGrant)
+      && (sourceAt === undefined || sourceAt >= Math.floor(homeRecoveryGrant.homeRecovery.startedAt / 1000) * 1000));
   };
-  const authorizationInfo = tag => automaticTag(tag)
+  const authorizationInfo = (tag, sourceAt) => automaticTag(tag)
     // This tag represents a live controller permission, never a reusable RFID
     // enrollment. Expiry cannot guarantee removal of a cached entry.
-    ? { status: transportFresh() && permittedBy(canStart) && currentAutomaticTag(tag) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
+    ? { status: transportFresh() && permittedBy(canStart) && currentAutomaticTag(tag, sourceAt) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
   function completeResponse(id, pending, frame, waited = false, receivedAt = clock()) {
     if (pendingCalls.get(id) !== pending) return;
@@ -877,6 +896,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (typeof payload.chargePointVendor !== 'string' || typeof payload.chargePointModel !== 'string') {
         send([4, id, 'FormationViolation', 'Missing product fields', {}]); return;
       }
+      homeRecoveryGrant = null;
       values.clear(); previousPhaseValues.clear(); phaseWeightBoundaryAt = receivedAt;
       futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
       for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
@@ -920,7 +940,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       let transaction = ledger.transactions.find(row => row.fingerprint === fingerprint);
       const replayed = Boolean(transaction);
       if (!transaction) {
-        const active = activeTransaction(), authorization = authorizationInfo(payload.idTag), accepted = authorization.status === 'Accepted';
+        const active = activeTransaction(), authorization = authorizationInfo(payload.idTag, startedAt), accepted = authorization.status === 'Accepted';
         const supersedes = active && accepted && (isRecovered(active) || afterModeDisable(active))
           && startedAt > Math.max(active.lastEvidenceAt, active.modeDisableIntent?.requestedAt ?? 0)
           && !futureReadings.some(pending => pending.transactionId === active.id && instant(pending.row.timestamp) >= startedAt);

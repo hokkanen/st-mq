@@ -46,10 +46,14 @@ plans. The transport fixture verifies that a separate explicit Charge now action
 can complete a new transaction after a recorded refusal without reusing the
 consumed automatic context. This does not prove recovery on installed firmware.
 The Home firmware fixture additionally holds its native FreeCharging mode off
-after deauthorization, despite an accepted RemoteStart. Recovery must verify our
-own private tag and its readback before enabling that mode. Pause, native Stop,
+after deauthorization, despite an accepted RemoteStart. Recovery preserves its
+private tag and verifies native mode readback. The real Home `ProtocolError` for
+the private-tag read is reproduced: without RFID enrollments, only the exact
+owned refusal tag or current code can obtain a fresh scoped Start. Independent
+RFID enrollments keep that unreadable-tag path blocked. Whole-second native
+transaction clocks retain the recovery fence. Pause, native Stop,
 disconnect, authority loss, the original operation budget, pending admission,
-foreign/read-only tags, refused settings, mismatched readback and receiver
+foreign tags, unknown/read-only mode, refused settings, mismatched readback and receiver
 restart retain their fences. Native recovery sends no Reset or ClearCache and
 does not rewrite the original refused transaction.
 
