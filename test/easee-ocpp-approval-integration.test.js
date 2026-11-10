@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getPlan, holdRemoteStart = false } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan, holdRemoteStart = false } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -60,7 +60,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
   controller = adapter.createController({ clock: () => now, initialState: controllerState, canControl: () => authority && admitted,
-    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification, getStartRecoveryContext, getPlan });
+    hasAuthority: () => authority, saveState: stateFor('controller').set, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
@@ -576,6 +576,130 @@ test('native admission diagnostics follow real pending, grant and economic refus
   assert.equal(await authorize(), 'Blocked');
   assert.deepEqual(f.provider.localOcppStatus().startPermissionChange, expired,
     'A later missing-lease check preserves the original expiry revocation evidence');
+});
+
+for (const previous of ['missing', 'older'])
+test(`publishing the reviewed feasible plan preserves its in-flight Start when the input plan is ${previous}`, async t => {
+  const plan = { id: 'synthetic-reviewed-plan', feasible: true, startAt: START,
+    periods: [{ startAt: START, endAt: null }] };
+  const request = { actionId: 'synthetic-initial-request', revision: 1, connectedAt: START, deadlineAt: START + 8 * 60 * MINUTE };
+  const f = await fixture(t, { holdRemoteStart: true, getPlan: async () => plan, getDeadlineRequest: () => request });
+  // Runtime supplies its previous published plan, then getPlan selects and
+  // publishes the new plan inside this reconciliation before Start is sent.
+  const previousPlan = previous === 'missing' ? null : { id: 'synthetic-old-plan', feasible: true,
+    startAt: START + 30 * MINUTE, periods: [{ startAt: START + 30 * MINUTE, endAt: null }] };
+  await f.controller.update({ enabled: true, plan: previousPlan });
+  await f.status('Preparing');
+  for (let n = 0; n < 4; n++) await f.call('Heartbeat', {});
+  assert.equal(starts(f).length, 1);
+  const code = starts(f)[0].payload.idTag;
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(), read = f.adapter.read;
+  f.adapter.read = async options => { entered.resolve(); await release.promise; return read(options); };
+  f.advance(100);
+  const refresh = f.controller.update({ enabled: true, plan: structuredClone(plan), deadlineRequest: request });
+  await entered.promise;
+  try {
+    f.answerStart();
+    await f.call('Heartbeat', {});
+    const started = await f.call('StartTransaction', { connectorId: 1, idTag: code,
+      meterStart: 0, timestamp: new Date(f.now).toISOString() });
+    assert.equal(started[2].idTagInfo.status, 'Accepted',
+      'Publishing the plan that already authorized this Start is not a changed instruction');
+    await f.status('Charging');
+    await f.meter(6900, started[2].transactionId);
+    assert.equal(f.adapter.normalize(await read(), { now: f.now }).powerKw.value, 6.9);
+    assert.equal(starts(f).length, 1, 'The original Start succeeds without retrying its consumed context');
+  } finally { release.resolve(); await refresh; f.adapter.read = read; }
+});
+
+for (const boundary of ['future period', 'period end', 'plan identity', 'pause', 'controls revision', 'deadline', 'request revision',
+  'replan', 'invalidate', 'expiry', 'disconnect', 'fault', 'native stop', 'authority', 'pending input'])
+test(`publishing the reviewed feasible plan retains the ${boundary} Start boundary`, async t => {
+  const plan = { id: 'synthetic-reviewed-plan', feasible: true, startAt: START,
+    periods: [{ startAt: START, endAt: null }] };
+  const request = { actionId: 'synthetic-initial-request', revision: 1, connectedAt: START, deadlineAt: START + 8 * 60 * MINUTE };
+  const f = await fixture(t, { holdRemoteStart: true, getPlan: async () => plan, getDeadlineRequest: () => request });
+  await f.controller.update({ enabled: true, plan: null });
+  await f.status('Preparing');
+  for (let n = 0; n < 4; n++) await f.call('Heartbeat', {});
+  assert.equal(starts(f).length, 1);
+  const code = starts(f)[0].payload.idTag;
+  const authorize = async () => (await f.call('Authorize', { idTag: code }))[2].idTagInfo.status;
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(), read = f.adapter.read;
+  f.adapter.read = async options => { entered.resolve(); await release.promise; return read(options); };
+  f.advance(100);
+  const refresh = f.controller.update({ enabled: true, plan: structuredClone(plan), deadlineRequest: request });
+  await entered.promise;
+  let replacement;
+  try {
+    assert.equal(await authorize(), 'Accepted');
+    if (boundary === 'future period') replacement = f.controller.update({ plan: { ...plan,
+      startAt: START + 30 * MINUTE, periods: [{ startAt: START + 30 * MINUTE, endAt: null }] } });
+    else if (boundary === 'period end') replacement = f.controller.update({ plan: { ...plan,
+      periods: [{ startAt: START, endAt: START + MINUTE }] } });
+    else if (boundary === 'plan identity') replacement = f.controller.update({ plan: { ...plan, id: 'synthetic-other-plan' } });
+    else if (boundary === 'pause') replacement = f.controller.update({ sessionPause: { connectedAt: START, requestedAt: f.now } });
+    else if (boundary === 'controls revision') replacement = f.controller.update({ controlsRevision: 1 });
+    else if (boundary === 'deadline') replacement = f.controller.update({ readyBy: '07:00' });
+    else if (boundary === 'request revision') {
+      request.revision++; request.deadlineAt += 60 * MINUTE;
+      replacement = f.controller.update({ deadlineRequest: request });
+    }
+    else if (boundary === 'replan') replacement = f.controller.update({ replan: true });
+    else if (boundary === 'invalidate') f.controller.invalidate();
+    else if (boundary === 'expiry') f.advance(MINUTE);
+    else if (boundary === 'disconnect') await f.status('Available');
+    else if (boundary === 'fault') await f.status('Faulted');
+    else if (boundary === 'native stop') { f.advance(1000); f.observe({ 96: 53 }); await read({ forceAppRefresh: true }); }
+    else if (boundary === 'authority') f.authority(false);
+    else f.admission(false);
+    assert.equal(await authorize(), 'Blocked', 'Retaining reviewed-plan permission cannot bypass a newer restriction');
+    assert.equal(starts(f).length, 1, 'No restriction can mint another automatic attempt');
+  } finally { release.resolve(); await refresh; await replacement; f.adapter.read = read; }
+});
+
+test('Charge now after a refused automatic Start uses a new context and survives economic plan publication', async t => {
+  const f = await fixture(t, { holdRemoteStart: true });
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  await f.status('Preparing');
+  for (let n = 0; n < 4; n++) await f.call('Heartbeat', {});
+  assert.equal(starts(f).length, 1);
+  const originalCode = starts(f)[0].payload.idTag;
+  const future = { id: 'synthetic-future-plan', feasible: true, startAt: START + 30 * MINUTE,
+    periods: [{ startAt: START + 30 * MINUTE, endAt: null }] };
+  await f.controller.update({ enabled: true, plan: future });
+  f.answerStart();
+  const refused = await f.call('StartTransaction', { connectorId: 1, idTag: originalCode,
+    meterStart: 0, timestamp: new Date(f.now).toISOString() });
+  assert.equal(refused[2].idTagInfo.status, 'Blocked');
+  await f.call('StopTransaction', { transactionId: refused[2].transactionId, meterStop: 0,
+    reason: 'DeAuthorized', timestamp: new Date(f.now).toISOString() });
+  f.advance(1000); await f.status('SuspendedEVSE'); await f.meter(0);
+  await f.controller.update({ enabled: true, plan: future });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 1, 'Polling cannot repeat the consumed automatic attempt');
+
+  await f.controller.update({ chargeNow: { connectedAt: START, requestedAt: f.now } });
+  await f.status('SuspendedEVSE');
+  assert.equal(starts(f).length, 2);
+  const immediateCode = starts(f)[1].payload.idTag;
+  assert.notEqual(immediateCode, originalCode);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(), read = f.adapter.read;
+  f.adapter.read = async options => { entered.resolve(); await release.promise; return read(options); };
+  const refresh = f.controller.update({ plan: { ...future, id: 'synthetic-refreshed-future-plan' } });
+  await entered.promise;
+  try {
+    f.answerStart();
+    const started = await f.call('StartTransaction', { connectorId: 1, idTag: immediateCode,
+      meterStart: 0, timestamp: new Date(f.now).toISOString() });
+    assert.equal(started[2].idTagInfo.status, 'Accepted');
+    f.advance(1000);
+    await f.status('Charging'); await f.meter(6900, started[2].transactionId);
+    assert.equal(f.adapter.normalize(await read(), { now: f.now }).powerKw.value, 6.9);
+    assert.equal(f.states.get('transactions').transactions[0].status, 'Blocked', 'The original refusal remains evidence');
+    assert.equal(f.states.get('transactions').automaticStartRecoveries.attempts.length, 2);
+    assert.equal(starts(f).length, 2, 'Only the explicit Charge now action adds an attempt');
+  } finally { release.resolve(); await refresh; f.adapter.read = read; }
 });
 
 test('publishing a moving immediate fallback cannot withdraw the reviewed Start while native transaction admission is pending', async t => {

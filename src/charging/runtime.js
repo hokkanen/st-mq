@@ -740,6 +740,7 @@ export class ChargingRuntime {
         hasAuthority,
         canControl: () => !this.streamPersistencePending && hasAuthority(),
         getMaximumAmps: scheduleCeiling,
+        getDeadlineRequest: () => deadlineRequest(item),
         getIdentification: snapshot => this.identificationControl(item, snapshot),
         // A passive Identify retry supplies only a new once-only start context.
         // Ordinary permission still owns whether charging may start at all.

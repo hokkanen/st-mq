@@ -35,6 +35,16 @@ OCPP transport verifies the single saved recovery attempt, restart, independent
 explicit requests, failed persistence and subsequent measured charging. These
 synthetic tests do not establish a household charger outcome or reconstruct the
 exact permission subcondition behind an earlier installed rejection.
+The suite also reproduces publication of a feasible plan selected inside
+reconciliation after an older or missing input plan. The original automatic Start
+must remain authorized through that publication without a retry. Changed periods,
+plan identity, owner choices, native restrictions, expiry and pending admission
+remain fenced while the next native read is held.
+The production runtime/controller fixture additionally covers the default session
+request initialized during connection admission, for both feasible and fallback
+plans. The transport fixture verifies that a separate explicit Charge now action
+can complete a new transaction after a recorded refusal without reusing the
+consumed automatic context. This does not prove recovery on installed firmware.
 
 Selected-period regressions cover exact Energy-check parity across range changes,
 outside-period prior counters, long crossing intervals and pending/conflicting

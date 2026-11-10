@@ -9,6 +9,33 @@ const START = Date.parse('2026-10-05T12:00:00Z'), MINUTE = 60_000;
 const SCOPE = 'd'.repeat(64), TOPIC = 'synthetic/reconnect/bmw';
 const RELEASE_AT = START + 60 * MINUTE;
 
+for (const input of ['missing', 'reviewed']) for (const provisional of [false, true])
+test(`runtime publication retains Start with a ${input} input plan, ${provisional ? 'fallback' : 'feasible'} result and initialized request`, async t => {
+  const f = await fixture(t);
+  f.reconnect();
+  const plan = { id: 'synthetic-current-economic-plan', feasible: !provisional, provisional,
+    startAt: f.now, periods: [{ startAt: f.now, endAt: null }] };
+  f.item.plan = input === 'missing' ? null : structuredClone(plan);
+  assert.equal(f.item.request, null);
+  f.runtime.updatePlan = () => { f.runtime.telemetry(f.now); f.item.plan = structuredClone(plan); };
+  await f.update();
+  assert.equal(f.startAllowed, true);
+  assert.equal(f.item.plan.id, plan.id, 'The runtime published the plan during the controller reconciliation');
+  assert.equal(f.item.request.revision, 1, 'The admitted connection initialized its default session request');
+  const original = f.permission, read = f.item.adapter.read;
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  f.item.adapter.read = async options => { entered.resolve(); await release.promise; return read(options); };
+  f.advance(100);
+  const refresh = f.update();
+  await entered.promise;
+  try {
+    assert.equal(f.permission, original, 'Passing the newly published plan and initialized request back keeps the original bounded lease');
+    assert.equal(f.startAllowed, true, 'The production runtime must not revoke its own approved Start');
+    f.beginTransaction();
+  } finally { release.resolve(); await refresh; f.item.adapter.read = read; }
+  assert.equal(f.item.controller.status().snapshot.transactionConfirmed, true);
+});
+
 test('an existing BMW OCPP probe waits for a queued receipt without an early pause', async t => {
   const f = await fixture(t);
   f.reconnect(); f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
