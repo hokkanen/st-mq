@@ -51,6 +51,15 @@ without replay, and a later scoped request. A confirmed transaction with zero
 power must not be called a startup failure. The production runtime verifies the
 existing Charge now OFF transition and protects a newer request; UI coverage
 distinguishes an exhausted Start from approval still pending.
+Native Home fixtures additionally begin with an empty private automatic tag and
+the installed firmware's `ProtocolError` for its read. Explicit initialization
+must write the installation credential, verify the exact tag, then enable and
+verify the native mode. Ordinary requests, independent RFID enrollment, readable
+foreign tags, failed readback and refused settings cannot initialize or enable
+it. Consent withdrawal, authority loss and original operation expiry block writes.
+The production runtime covers commit-only consent, control revisions and its
+absence after restart despite retained Charge now intent; family API access
+cannot grant this native configuration authority.
 
 Selected-period regressions cover exact Energy-check parity across range changes,
 outside-period prior counters, long crossing intervals and pending/conflicting

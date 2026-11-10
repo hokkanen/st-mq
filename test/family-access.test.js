@@ -134,6 +134,8 @@ test('family may use every charging card route but not charger commissioning', a
       assert.deepEqual(f.calls.at(-1).args, ['charger1', input]);
   }
   assert.equal((await f.post('/api/charging/ocpp-setup', { action: 'adopt', revision: 'a'.repeat(64) })).status, 403);
+  assert.equal((await f.post('/api/charging/chargers/charger1/charge-now', { association: 'synthetic-identity',
+    sessionId: 'synthetic-session', revision: 1, controlRevision: 2, initializeNativeTag: true })).status, 403);
   assert.equal(f.calls.length, actions.length);
 });
 

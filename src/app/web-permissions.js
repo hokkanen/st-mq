@@ -16,6 +16,8 @@ export function familyRouteAllowed(method, path) {
 }
 
 export function familyActionAllowed(path, input, engine) {
+  if (/^\/api\/charging\/chargers\/[^/]+\/charge-now$/.test(path)
+    && input?.initializeNativeTag !== undefined) return false;
   if (path === '/api/equipment/cover') {
     const device = engine.equipmentStatus().devices.find(row => row.id === input?.deviceId);
     return device?.area === 'garage' && device.kind === 'door' && device.enabled !== false

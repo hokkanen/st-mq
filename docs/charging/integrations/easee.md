@@ -458,6 +458,30 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   that outcome. Polling and restart cannot renew the old budget or replay Start.
   This outcome grants no native configuration, RFID-policy or reset operation.
 
+  Native Home recovery reads `FreeCharging` and `FreeChargingIdTag` separately.
+  With our reported installation tag and a writable disabled mode, the same
+  consumed recovery attempt can enable the mode and verify its readback. Native
+  mode readback, a confirmed transaction and measured power remain separate.
+  All steps share one original 15-second budget and retain live permission,
+  connection, instruction, storage and source-admission checks. Other control
+  work has priority; no Reset, ClearCache or RFID/offline-policy change is sent.
+
+  An empty or unreadable automatic tag is not automatically replaced. An admin
+  may explicitly initialize it through a scoped `charge-now` request with
+  `initializeNativeTag: true` and the current `controlRevision`, in addition to
+  its association, session ID and request revision. This chooses the existing
+  private installation seed as the persistent native automatic credential; an
+  unreadable previous value cannot be restored. Consent exists only for that
+  committed request in that process, and ends on revision/scope change or
+  restart; it is not saved as Charge now intent or a configuration default.
+  Initialization requires no independent RFID enrollments and refuses a readable
+  foreign tag. A native `ProtocolError` on the initial private-tag read can then
+  proceed to its explicit write, but exact private-tag readback is required
+  before enabling the mode. Missing consent, refused writes or unavailable
+  readback leave the mode disabled and the bounded startup outcome visible.
+  Once initialized, ordinary recovery preserves that tag and needs no new
+  initialization consent. Private tag values never enter public status.
+
   If the controller refused its own automatic transaction and the charger
   confirms that transaction ended as `DeAuthorized`, it may recover from
   `SuspendedEVSE` without waiting for another `Preparing` transition. Recovery

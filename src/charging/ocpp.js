@@ -649,7 +649,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     };
     record(true, 'controller-admitted');
     admittedStartContext = { connectedAt: state.session.connectedAt,
-      key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]) };
+      key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]),
+      initializeNativeTag: chargeNowActive() && desired.chargeNow.initializeNativeTag === true };
     adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
       recovery: admittedStartContext });
     // Session admission and getPlan may have published a new request/plan since

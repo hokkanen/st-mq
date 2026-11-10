@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan, holdRemoteStart = false } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan, holdRemoteStart = false, homeFreeCharging = false, homeTagReadError = false, homeTagValue, homeStartBeforeModeReply = false, authorizationTags = [] } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -27,6 +27,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   const connections = { easee: { charger_id: CHARGER, access_token: 'synthetic-access-token', local_ocpp: {
     enabled: true, host: '127.0.0.1', port, server_url: `ws://192.0.2.10:${port}/ocpp`,
     password: PASSWORD, authorization_mode: 'plug-and-charge',
+    authorization_tags: authorizationTags,
   } } };
   const stateFor = key => ({ get: () => structuredClone(states.get(key) ?? null),
     set: value => { if (key === 'transactions') beforeTransactionSave?.(value); states.set(key, structuredClone(value)); } });
@@ -51,6 +52,11 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
       assert.fail(`Unexpected synthetic provider request: ${method} ${path}`);
     } });
   const installation = ocppInstallation({ connections });
+  const homeSettings = { FreeCharging: false, FreeChargingIdTag: homeTagValue ?? installation.virtualTag };
+  const homeReadOnly = {}, homeRejected = new Set(), homeIgnored = new Set();
+  const homeTransactions = [];
+  let homeCompleted = 0;
+  let homeReplyGate = null;
   const provider = createDeviceProviders({ connections, http, clock: () => now, canControl: () => true,
     streamFactory: null, ocppInstallation: installation, ocppState: stateFor('transactions'),
     ocppSetupState: stateFor('setup'), onOcppControlTransition: async () => {} });
@@ -65,11 +71,46 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
   const pending = new Map(), pendingStarts = [];
-  ws.on('message', raw => {
+  ws.on('message', async raw => {
     const frame = JSON.parse(raw);
     if (frame[0] === 2) {
       calls.push({ action: frame[2], payload: frame[3] });
       if (holdRemoteStart && frame[2] === 'RemoteStartTransaction') { pendingStarts.push(frame); return; }
+      const key = frame[2] === 'GetConfiguration' ? frame[3].key?.[0] : frame[3].key;
+      if (homeFreeCharging && Object.hasOwn(homeSettings, key)) {
+        await homeReplyGate?.(frame);
+        if (frame[2] === 'GetConfiguration') {
+          if (key === 'FreeChargingIdTag' && homeTagReadError && !homeSettings.FreeChargingIdTag) {
+            ws.send(JSON.stringify([4, frame[1], 'ProtocolError', '', {}])); return;
+          }
+          ws.send(JSON.stringify([3, frame[1], { configurationKey: [{ key, value: String(homeSettings[key]), readonly: homeReadOnly[key] ?? false }] }]));
+          return;
+        }
+        assert.equal(frame[2], 'ChangeConfiguration');
+        if (homeRejected.has(key) || key === 'FreeCharging' && !homeSettings.FreeChargingIdTag) { ws.send(JSON.stringify([3, frame[1], { status: 'Rejected' }])); return; }
+        assert.ok(states.get('transactions').automaticStartRecoveries.attempts.length,
+          'The start context must be durable before native authorization writes');
+        if (!homeIgnored.has(key)) homeSettings[key] = key === 'FreeCharging' ? frame[3].value.toLowerCase() === 'true' : frame[3].value;
+        const earlyStart = homeStartBeforeModeReply && key === 'FreeCharging' && homeSettings.FreeCharging;
+        if (!earlyStart) ws.send(JSON.stringify([3, frame[1], { status: 'Accepted' }]));
+        if (key === 'FreeCharging' && homeSettings.FreeCharging) {
+          const reply = await call('StartTransaction', { connectorId: 1, idTag: homeSettings.FreeChargingIdTag,
+            timestamp: new Date(Math.floor(now / 1000) * 1000).toISOString(), meterStart: 0 });
+          homeTransactions.push(reply);
+          if (reply[2].idTagInfo.status === 'Accepted') {
+            now += 1000;
+            await status('Charging'); await meter(6900, reply[2].transactionId);
+          } else {
+            homeSettings.FreeCharging = false;
+            await call('StopTransaction', { transactionId: reply[2].transactionId, meterStop: 0,
+              reason: 'DeAuthorized', timestamp: new Date(now).toISOString() });
+            now += 1000; await status('SuspendedEVSE'); await meter(0);
+          }
+          homeCompleted++;
+        }
+        if (earlyStart) ws.send(JSON.stringify([3, frame[1], { status: 'Accepted' }]));
+        return;
+      }
       ws.send(JSON.stringify([3, frame[1], { status: 'Accepted' }]));
     } else { const resolve = pending.get(frame[1]); pending.delete(frame[1]); resolve?.(frame); }
   });
@@ -89,6 +130,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
   await status('Preparing'); await meter(0);
   await adapter.read({ forceAppRefresh: true });
   return { provider, adapter, controller, calls, requests, installation, states, call, status, meter, observe,
+    homeSettings, homeReadOnly, homeRejected, homeIgnored, homeTransactions, get homeCompleted() { return homeCompleted; }, homeGate(value) { homeReplyGate = value; },
     answerStart(status = 'Accepted') { const frame = pendingStarts.shift(); assert(frame); ws.send(JSON.stringify([3, frame[1], { status }])); },
     admission(value) { admitted = value; }, authority(value) { authority = value; },
     get now() { return now; }, advance(ms) { now += ms; } };
@@ -124,6 +166,83 @@ async function rejectedAutomaticStart(f, { reason = 'DeAuthorized', power = 0 } 
 }
 const openPlan = f => ({ startAt: f.now, feasible: true, periods: [{ startAt: f.now, endAt: null }] });
 const starts = f => f.calls.filter(row => row.action === 'RemoteStartTransaction');
+
+for (const [unreadable, earlyStart] of [[false, false], [true, false], [true, true]])
+test(`reviewed native automatic tag initialization verifies readback before enabling (${unreadable ? 'native ProtocolError' : 'empty native value'}, ${earlyStart ? 'Start before ACK' : 'ACK before Start'})`, async t => {
+  const f = await fixture(t, { homeFreeCharging: true, homeTagReadError: unreadable, homeTagValue: '', homeStartBeforeModeReply: earlyStart });
+  await rejectedAutomaticStart(f);
+  const chargeNow = { connectedAt: START, requestedAt: f.now, initializeNativeTag: true };
+  await f.controller.update({ enabled: true, plan: openPlan(f), chargeNow });
+  await f.status('SuspendedEVSE');
+  for (let i = 0; i < 30 && (!f.homeCompleted || f.provider.localOcppStatus().startProgress.recovery?.status !== 'confirmed'); i++) await f.call('Heartbeat', {});
+  assert.equal(f.homeCompleted, 1);
+  assert.equal(f.provider.localOcppStatus().startProgress.recovery.status, 'confirmed');
+  assert.equal(f.homeTransactions[0][2].idTagInfo.status, 'Accepted');
+  const result = await f.controller.update({ enabled: true, plan: openPlan(f), chargeNow });
+  assert.equal(result.snapshot.transactionConfirmed, true);
+  assert.equal(f.adapter.normalize(result.snapshot, { now: f.now }).powerKw.value, 6.9);
+  const operations = f.calls.filter(r => ['FreeCharging', 'FreeChargingIdTag'].includes(
+    Array.isArray(r.payload.key) ? r.payload.key[0] : r.payload.key));
+  assert.deepEqual(operations.map(r => [r.action, r.payload.key]), [
+    ['GetConfiguration', ['FreeCharging']], ['GetConfiguration', ['FreeChargingIdTag']],
+    ['ChangeConfiguration', 'FreeChargingIdTag'], ['GetConfiguration', ['FreeChargingIdTag']],
+    ['ChangeConfiguration', 'FreeCharging'], ['GetConfiguration', ['FreeCharging']],
+  ]);
+  assert.equal(f.homeSettings.FreeChargingIdTag, f.installation.virtualTag);
+  assert.equal(f.states.get('transactions').transactions[0].status, 'Blocked');
+  assert.equal(f.calls.some(r => ['Reset', 'ClearCache'].includes(r.action)), false);
+});
+
+for (const restriction of ['missing consent', 'RFID enrollment', 'foreign tag', 'failed readback', 'refused tag write'])
+test(`native automatic tag initialization preserves ${restriction}`, async t => {
+  const f = await fixture(t, { homeFreeCharging: true, homeTagReadError: true,
+    homeTagValue: restriction === 'foreign tag' ? 'fixture-foreign-tag' : '',
+    authorizationTags: restriction === 'RFID enrollment' ? ['fixture-rfid'] : [] });
+  if (restriction === 'failed readback') f.homeIgnored.add('FreeChargingIdTag');
+  if (restriction === 'refused tag write') f.homeRejected.add('FreeChargingIdTag');
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f), chargeNow: {
+    connectedAt: START, requestedAt: f.now, ...(restriction === 'missing consent' ? {} : { initializeNativeTag: true }) } });
+  await f.status('SuspendedEVSE'); for (let i = 0; i < 30; i++) await f.call('Heartbeat', {});
+  assert.equal(f.homeSettings.FreeCharging, false);
+  assert.equal(f.homeTransactions.length, 0);
+  assert.equal(f.calls.some(r => r.action === 'ChangeConfiguration' && r.payload.key === 'FreeCharging'), false);
+  if (['missing consent', 'RFID enrollment', 'foreign tag'].includes(restriction))
+    assert.equal(f.calls.some(r => r.action === 'ChangeConfiguration' && r.payload.key === 'FreeChargingIdTag'), false);
+});
+
+test('an already owned native automatic tag recovers a new refused session without initialization consent', async t => {
+  const f = await fixture(t, { homeFreeCharging: true });
+  await rejectedAutomaticStart(f);
+  await f.controller.update({ enabled: true, plan: openPlan(f), chargeNow: { connectedAt: START, requestedAt: f.now } });
+  await f.status('SuspendedEVSE'); for (let i = 0; i < 30 && !f.homeCompleted; i++) await f.call('Heartbeat', {});
+  assert.equal(f.homeCompleted, 1);
+  assert.equal(f.homeTransactions[0][2].idTagInfo.status, 'Accepted');
+  assert.equal(f.calls.some(r => r.action === 'ChangeConfiguration' && r.payload.key === 'FreeChargingIdTag'), false);
+});
+
+for (const boundary of ['consent withdrawn', 'authority lost', 'operation expired'])
+test(`native initialization rechecks ${boundary} before any setting write`, async t => {
+  const f = await fixture(t, { homeFreeCharging: true, homeTagReadError: true, homeTagValue: '' });
+  await rejectedAutomaticStart(f);
+  const chargeNow = { connectedAt: START, requestedAt: f.now, initializeNativeTag: true };
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  f.homeGate(async frame => {
+    if (frame[2] === 'GetConfiguration' && frame[3].key[0] === 'FreeChargingIdTag') {
+      entered.resolve(); await release.promise;
+    }
+  });
+  await f.controller.update({ enabled: true, plan: openPlan(f), chargeNow });
+  await f.status('SuspendedEVSE'); await entered.promise;
+  try {
+    if (boundary === 'consent withdrawn') await f.controller.update({ enabled: true, plan: openPlan(f),
+      chargeNow: { connectedAt: START, requestedAt: chargeNow.requestedAt } });
+    else if (boundary === 'authority lost') f.authority(false);
+    else f.advance(15_000);
+    release.resolve(); for (let i = 0; i < 20; i++) await f.call('Heartbeat', {});
+    assert.equal(f.calls.some(r => r.action === 'ChangeConfiguration' && r.payload.key.startsWith('FreeCharging')), false);
+  } finally { release.resolve(); }
+});
 
 test('an accepted Start with no transaction has a bounded outcome and a fresh Charge now can retry', async t => {
   const f = await fixture(t), chargeNow = { connectedAt: START, requestedAt: START };

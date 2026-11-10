@@ -3446,7 +3446,10 @@ export class ChargingRuntime {
       ...(periodicRead?.controller === controller && periodicRead.adapter === item.adapter
         && periodicRead.generation === item.adapterGeneration ? { completedRead: periodicRead.proof } : {}),
       deadlineRequest: deadlineRequest(item),
-      chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.chargeNowAt } : null,
+      chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.chargeNowAt,
+        ...(item.nativeTagInitialization?.revision === item.request.revision
+          && item.nativeTagInitialization?.sessionId === item.request.sessionId
+          && item.nativeTagInitialization?.association === item.association ? { initializeNativeTag: true } : {}) } : null,
       sessionPause: item.request?.pause ? { connectedAt: sessionConnectedAt(item.request), requestedAt: item.request.pause.requestedAt } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
@@ -3677,13 +3680,18 @@ export class ChargingRuntime {
   async chargeNow(id, input) {
     if (input?.takeoverToken !== undefined) await this.settleActionInputs(id);
     const attempt = await this.write(() => {
-    if (!object(input) || !['association,revision,sessionId', 'association,controlRevision,revision,sessionId,takeoverToken'].includes(Object.keys(input).sort().join(',')))
+    if (!object(input) || !['association,revision,sessionId', 'association,controlRevision,revision,sessionId,takeoverToken',
+      'association,controlRevision,initializeNativeTag,revision,sessionId',
+      'association,controlRevision,initializeNativeTag,revision,sessionId,takeoverToken'].includes(Object.keys(input).sort().join(',')))
       throw new Error('Charge Now requires the displayed charging connection.');
     const { item, view } = this.checkedSession(id, input);
     if (!this.canControl() || this.closed || !['mqtt', 'providers'].includes(this.config.input)
       || !view.capabilities.scheduling || !item.controller || item.backendTransition)
       throw new Error('Charge Now requires a supported charger and control authority.');
     if (view.values.connected.value !== true) throw new Error('Connect a vehicle before choosing Charge Now.');
+    if (input.initializeNativeTag !== undefined && (input.initializeNativeTag !== true
+      || input.controlRevision !== item.controls.revision || item.adapter?.ownershipNamespace !== 'ocpp'))
+      throw new Error('Native automatic tag initialization requires the current Direct OCPP control revision.');
     const token = input.takeoverToken;
     const takeoverNeeded = ['stop', 'schedule', 'window'].includes(view.control?.manual?.kind)
       || view.control?.takeoverRequired === true;
@@ -3701,6 +3709,11 @@ export class ChargingRuntime {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
     this.recordControlChoice(id, 'charge-now', { connectedAt: sessionConnectedAt(item.request) });
+    const tagInitialization = input.initializeNativeTag === true
+      ? { association: item.association, sessionId: item.request.sessionId, revision: item.request.revision } : null;
+    // This reviewed native-configuration consent belongs only to this committed
+    // action in this process. Saved Charge now intent cannot recreate it.
+    this.store.afterCommit(() => { item.nativeTagInitialization = tagInitialization; });
     if (token === undefined) return null;
     const attempt = { token, mode: 'charge-now', controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };

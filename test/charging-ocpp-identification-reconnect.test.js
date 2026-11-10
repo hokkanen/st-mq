@@ -9,6 +9,21 @@ const START = Date.parse('2026-10-05T12:00:00Z'), MINUTE = 60_000;
 const SCOPE = 'd'.repeat(64), TOPIC = 'synthetic/reconnect/bmw';
 const RELEASE_AT = START + 60 * MINUTE;
 
+test('native tag initialization consent belongs to one committed request and is not restored with Charge now intent', async t => {
+  const f = await fixture(t); f.reconnect(); await f.update();
+  const view = f.runtime.status().chargers.find(r => r.id === 'charger1');
+  const input = { association: view.association, sessionId: view.request.sessionId,
+    revision: view.request.revision, controlRevision: view.controls.revision, initializeNativeTag: true };
+  await assert.rejects(f.runtime.chargeNow('charger1', { ...input, controlRevision: input.controlRevision + 1 }));
+  await assert.rejects(f.runtime.chargeNow('charger1', { ...input, initializeNativeTag: false }));
+  await f.runtime.chargeNow('charger1', input);
+  assert.equal(f.permission.recovery.initializeNativeTag, true);
+  assert.equal(f.item.request.initializeNativeTag, undefined, 'Native configuration consent is not persisted as session intent');
+  await f.restart(); await f.update();
+  assert.equal(f.item.request.chargeNow, true);
+  assert.equal(f.permission.recovery.initializeNativeTag, false, 'Restart cannot manufacture native configuration authority');
+});
+
 test('an exhausted OCPP Charge now attempt returns the current request to Automatic without cancelling a newer request', async t => {
   const f = await fixture(t);
   f.reconnect(); await f.update();
