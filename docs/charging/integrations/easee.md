@@ -459,6 +459,23 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   supplies this recovery authority. The original rejection remains historical
   evidence; a later permission does not rewrite its response.
 
+  Home firmware can disable its native `FreeCharging` mode after that refusal.
+  An accepted recovery RemoteStart does not itself prove the mode was restored.
+  For the same durably consumed recovery context, ST-MQ reads `FreeCharging` and
+  its private tag separately. Only a reported writable disabled mode and a tag
+  belonging to our automatic authorization permit recovery: set the current
+  context's tag if needed, verify that exact tag, then enable the mode and read
+  it back. An unrelated or read-only tag, missing evidence or a refused setting
+  cannot be overwritten. The native tag never enters public diagnostics.
+  Every dispatch retains the original start lease, physical connection,
+  instruction and authority checks; all recovery steps share one 15-second
+  operation budget. Pending admission may defer the original received reply
+  within that budget, without replaying it or holding up another control duty.
+  Restart and polling cannot repeat the consumed attempt. This is a native
+  start operation, not a charger reset or an RFID/offline-policy change.
+  Native mode readback, an accepted transaction and measured charging remain
+  separate evidence.
+
   While this local plug-and-charge controller owns authorization, Easee's
   **Awaiting Authentication** mode (7) and **Pending authorization** reason (55)
   describe approval the controller must supply. They do not independently block

@@ -368,11 +368,77 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const remoteStartStateReady = call => call.recoveryKey
     ? blockedStartRecovery(call.recoveryCommitted ? call.recoveryKey : null)?.key === call.recoveryKey
     : connectorStatus === 'Preparing';
-  function sendNextCall() {
+  const homeRecoveryCurrent = (call, permission = true) => {
+    const recovery = call.homeRecovery, now = clock(), active = activeTransaction();
+    const confirmed = recovery?.step === 'mode-verify' && active?.status === 'Accepted'
+      && active.startReceivedAt >= recovery.startedAt && active.startedAt >= call.connectedAt
+      && active.tagHash === digest({ scope, idTag: startCode({ connectedAt: call.connectedAt, key: call.startKey }) });
+    return Boolean(recovery && Number.isSafeInteger(recovery.transactionId)
+      && call.connection === socket && transportFresh() && currentStartContext(call)
+      && recoveryAttempts(startRecoveryScope())?.some(row => row.key === call.startKey)
+      && now >= recovery.startedAt && now - recovery.startedAt < CALL_TIMEOUT_MS
+      && (!permission || permittedBy(canStart))
+      && (confirmed || blockedStartRecovery(call.startKey)?.row.id === recovery.transactionId));
+  };
+  const noteHomeRecovery = (call, status, reason = null) => {
+    startProgress.recovery = { requestedAt: call.homeRecovery.startedAt, checkedAt: clock(), status, reason };
+  };
+  function queueHomeRecovery(source, step) {
+    const recovery = source.homeRecovery ?? { startedAt: clock(), transactionId: blockedStartRecovery(source.startKey)?.row.id };
+    const writing = ['tag-write', 'mode-enable'].includes(step);
+    const key = step.startsWith('tag-') ? 'FreeChargingIdTag' : 'FreeCharging';
+    const call = { connection: source.connection, startKey: source.startKey, connectedAt: source.connectedAt,
+      homeRecovery: { ...recovery, step }, action: writing ? 'ChangeConfiguration' : 'GetConfiguration',
+      payload: writing ? { key, value: key === 'FreeCharging' ? 'True'
+        : startCode({ connectedAt: source.connectedAt, key: source.startKey }) } : { key: [key] },
+      attempt: writing ? controlAttempt() : createControlAttempt({ kind: 'query' }) };
+    if (!homeRecoveryCurrent(call, false)) return;
+    noteHomeRecovery(call, step); callQueue.unshift(call);
+  }
+  function homeRecoveryResponse(call, frame, receivedAt) {
+    if (!homeRecoveryCurrent(call, false)) { noteHomeRecovery(call, 'cancelled', 'start-context-changed'); return; }
+    if (!permittedBy(canStart)) {
+      // Retain a received query's original clock while its input admission is
+      // pending. Reusing this reply never replays a native request or mutation.
+      call.homeRecoveryReply = { frame, receivedAt }; callQueue.push(call); return;
+    }
+    const step = call.homeRecovery.step, reply = frame[0] === 3 ? frame[2] : null;
+    if (!reply) { noteHomeRecovery(call, 'unavailable', 'native-request-failed'); return; }
+    if (call.action === 'ChangeConfiguration') {
+      if (reply.status !== 'Accepted') { noteHomeRecovery(call, 'unavailable', 'native-setting-rejected'); return; }
+      queueHomeRecovery(call, step === 'tag-write' ? 'tag-verify' : 'mode-verify'); return;
+    }
+    const key = call.payload.key[0];
+    const rows = Array.isArray(reply.configurationKey) ? reply.configurationKey.filter(row => row?.key === key) : [];
+    const row = rows.length === 1 && (reply.unknownKey === undefined || Array.isArray(reply.unknownKey))
+      && !reply.unknownKey?.includes(key) ? rows[0] : null;
+    if (key === 'FreeCharging') {
+      const value = typeof row?.value === 'string' && /^(true|false)$/i.test(row.value) ? row.value.toLowerCase() === 'true' : null;
+      authorizationReadback(key, { requestedAt: call.sentAt, respondedAt: receivedAt,
+        status: value === null ? 'unavailable' : 'reported', value, readOnly: typeof row?.readonly === 'boolean' ? row.readonly : null });
+      if (step === 'mode-verify') { noteHomeRecovery(call, value === true ? 'confirmed' : 'unavailable', value === true ? null : 'native-readback-unconfirmed'); return; }
+      if (value === true) { noteHomeRecovery(call, 'not-required'); return; }
+      if (value !== false || row.readonly !== false) { noteHomeRecovery(call, 'unavailable', 'native-mode-unavailable'); return; }
+      queueHomeRecovery(call, 'tag-read'); return;
+    }
+    // The private native tag is inspected only in memory. An unrelated tag is
+    // an independent native instruction, never permission to overwrite it.
+    const refusal = ledger.transactions.find(value => value.id === call.homeRecovery.transactionId);
+    const ownedTag = typeof row?.value === 'string' && row.value.length > 0 && row.value.length <= 20
+      && (automaticTag(row.value) || refusal?.automatic === true && refusal.tagHash === digest({ scope, idTag: row.value }));
+    if (!ownedTag) {
+      noteHomeRecovery(call, 'unavailable', 'native-tag-not-owned'); return;
+    }
+    const matches = equal(row.value, startCode({ connectedAt: call.connectedAt, key: call.startKey }));
+    if (step === 'tag-verify' && !matches) { noteHomeRecovery(call, 'unavailable', 'native-readback-unconfirmed'); return; }
+    if (!matches && row.readonly !== false) { noteHomeRecovery(call, 'unavailable', 'native-tag-read-only'); return; }
+    queueHomeRecovery(call, matches ? 'mode-enable' : 'tag-write');
+  }
+  function sendNextCall(skipHomeRecovery = false) {
     if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
     // Background reads have no physical effect. A missing acknowledgement
     // must never keep a control action or an explicitly scoped read waiting.
-    const background = call => call.meterRefresh || call.authorizationRead || call.diagnosticRead;
+    const background = call => !call.homeRecovery && (call.meterRefresh || call.authorizationRead || call.diagnosticRead);
     if (callQueue.some(call => !background(call))) for (const [id, call] of pendingCalls) {
       if (background(call)) {
         pendingCalls.delete(id); finishRequest(call, 'ocpp-request-revoked');
@@ -381,10 +447,28 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
     }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
-    const foreground = callQueue.findIndex(call => !background(call));
-    const call = callQueue.splice(foreground < 0 ? 0 : foreground, 1)[0];
+    const eligible = call => !skipHomeRecovery || !call.homeRecovery;
+    const control = callQueue.findIndex(call => eligible(call) && !call.homeRecovery && !background(call));
+    const foreground = control < 0 ? callQueue.findIndex(call => eligible(call) && !background(call)) : control;
+    const index = foreground < 0 ? callQueue.findIndex(eligible) : foreground;
+    if (index < 0) return;
+    const call = callQueue.splice(index, 1)[0];
     const { action, payload, transition } = call, id = `stmq-${++callId}`;
     const dispatchReceiptSequence = receivedFrameSequence;
+    if (call.homeRecovery) {
+      if (!homeRecoveryCurrent(call, false)) { noteHomeRecovery(call, 'cancelled', 'start-context-changed'); finishRequest(call); sendNextCall(); return; }
+      // Pending input can temporarily withhold the original lease. Wait within
+      // its original operation budget; no new attempt or expiry is granted.
+      if (!permittedBy(canStart)) {
+        callQueue.push(call);
+        sendNextCall(true);
+        return;
+      }
+      if (call.homeRecoveryReply) {
+        const { frame, receivedAt } = call.homeRecoveryReply; delete call.homeRecoveryReply;
+        homeRecoveryResponse(call, frame, receivedAt); sendNextCall(); return;
+      }
+    }
     if (call.resolve && (call.settled || call.connection !== socket || !transportFresh()
       || !permittedBy(call.guard))) {
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
@@ -417,16 +501,19 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const revoked = pendingCalls.get(id) !== call
         || call.meterRefresh && (call.connection !== socket || !transportFresh() || meterTriggerUnsupported
           || !needsMeterReadback())
-        || (call.resolve && !['TriggerMessage', 'GetConfiguration'].includes(action) || action === 'RemoteStartTransaction')
+        || (call.resolve && !['TriggerMessage', 'GetConfiguration'].includes(action) || action === 'RemoteStartTransaction'
+          || call.homeRecovery && action === 'ChangeConfiguration')
           && dispatchReceiptSequence !== receivedFrameSequence
         || call.resolve && (call.settled
         || call.connection !== socket || !transportFresh() || !permittedBy(call.guard)
         || !permittedBy(call.beforeSend))
         || action === 'RemoteStartTransaction' && (!stateReady || !authorizationReady || !permittedBy(canStart) || !currentStartContext(call)
-          || !remoteStartStateReady(call) || transition !== statusTransition || !transportFresh());
+          || !remoteStartStateReady(call) || transition !== statusTransition || !transportFresh())
+        || call.homeRecovery && !homeRecoveryCurrent(call);
       if (revoked) {
         if (pendingCalls.get(id) === call) pendingCalls.delete(id);
         if (action === 'RemoteStartTransaction') { remoteStartStatus = 'cancelled'; }
+        if (call.homeRecovery) noteHomeRecovery(call, 'cancelled', 'dispatch-revoked');
         finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return false;
       }
       call.sentAt = clock();
@@ -681,6 +768,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (pending.action === 'RemoteStartTransaction' && startProgress.remote?.requestedAt === pending.sentAt)
       startProgress.remote = { ...startProgress.remote, respondedAt: receivedAt,
         status: frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected' };
+    if (pending.action === 'RemoteStartTransaction' && pending.recoveryKey
+      && frame[0] === 3 && frame[2]?.status === 'Accepted') queueHomeRecovery(pending, 'mode-read');
+    if (pending.homeRecovery) homeRecoveryResponse(pending, frame, receivedAt);
     if (pending.authorizationRead && authorizationConfiguration?.reads[pending.authorizationRead]?.requestedAt === pending.sentAt) {
       const rows = frame[0] === 3 && Array.isArray(frame[2]?.configurationKey) ? frame[2].configurationKey : [];
       const key = pending.authorizationRead;
@@ -1012,6 +1102,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             for (const [id, pending] of pendingCalls) if (now - pending.sentAt >= CALL_TIMEOUT_MS) {
               pendingCalls.delete(id);
               finishRequest(pending, 'ocpp-request-timeout');
+              if (pending.homeRecovery) noteHomeRecovery(pending, 'timed-out', 'native-reply-missing');
               if (pending.authorizationRead && authorizationConfiguration?.reads[pending.authorizationRead]?.requestedAt === pending.sentAt)
                 authorizationReadback(pending.authorizationRead, { status: 'timed-out', failedAt: now });
               if (pending.action === 'ChangeConfiguration') configurationFailures.add(pending.key);

@@ -45,6 +45,13 @@ request initialized during connection admission, for both feasible and fallback
 plans. The transport fixture verifies that a separate explicit Charge now action
 can complete a new transaction after a recorded refusal without reusing the
 consumed automatic context. This does not prove recovery on installed firmware.
+The Home firmware fixture additionally holds its native FreeCharging mode off
+after deauthorization, despite an accepted RemoteStart. Recovery must verify our
+own private tag and its readback before enabling that mode. Pause, native Stop,
+disconnect, authority loss, the original operation budget, pending admission,
+foreign/read-only tags, refused settings, mismatched readback and receiver
+restart retain their fences. Native recovery sends no Reset or ClearCache and
+does not rewrite the original refused transaction.
 
 Selected-period regressions cover exact Energy-check parity across range changes,
 outside-period prior counters, long crossing intervals and pending/conflicting
