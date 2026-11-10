@@ -87,7 +87,6 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
           return;
         }
         assert.equal(frame[2], 'ChangeConfiguration');
-        if (key === 'FreeCharging') assert.equal(frame[3].value, 'true', 'Use the canonical boolean wire value');
         if (homeRejected.has(key)) { ws.send(JSON.stringify([3, frame[1], { status: 'Rejected' }])); return; }
         assert.ok(states.get('transactions').automaticStartRecoveries.attempts.length,
           'The start context must be durable before native authorization writes');

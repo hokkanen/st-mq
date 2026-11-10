@@ -393,7 +393,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const key = step === 'tag-read' ? 'FreeChargingIdTag' : 'FreeCharging';
     const call = { connection: source.connection, startKey: source.startKey, connectedAt: source.connectedAt,
       homeRecovery: { ...recovery, step }, action: writing ? 'ChangeConfiguration' : 'GetConfiguration',
-      payload: writing ? { key, value: 'true' } : { key: [key] },
+      payload: writing ? { key, value: 'True' } : { key: [key] },
       attempt: writing ? controlAttempt() : createControlAttempt({ kind: 'query' }) };
     if (!homeRecoveryCurrent(call, false)) return;
     noteHomeRecovery(call, step); callQueue.unshift(call);
