@@ -13,7 +13,7 @@ channels in HA's entity registry. HA's MQTT integration remains connected to its
 fixed broker; Meross LAN uses local HTTP when the appliance is connected to the
 other broker. No Meross cloud profile is required for this configuration.
 
-Version 6.0.0 needs the supplied MSG200 compatibility adapter for firmware 4.2.8.
+Version 6.0.1 needs the supplied MSG200 compatibility adapter for firmware 4.2.8.
 That firmware can acknowledge commands with all channel states followed by a
 scalar execution flag. The adapter selects the requested channel and recognizes
 that flag. It also uses dictionary-shaped native configuration writes, because
@@ -35,14 +35,15 @@ python3 /config/stmq-meross-msg200/scripts/apply-meross-lan-msg200.py \
 
 Restart HA Core to load it. Install `meross-lan-update-guard.yaml` as an HA package
 using the installation's actual HACS update entity. The guard restores the fix
-only for the exact reviewed 6.0.0 source and dependencies. It reports that Core
+only for the exact reviewed 6.0.1 source and dependencies. It reports that Core
 needs a restart after restoration. Unknown updates require compatibility review;
 the guard does not patch them or restart Core automatically.
 
-The 6.0.0 integration registers one HA device per channel. Preserve the existing
+The 6.0.1 integration registers one HA device per channel. Preserve the existing
 cover entity IDs, custom names, automations and MQTT routes during the update,
 and verify that each cover and configuration entity belongs to its own channel.
-The installer deliberately rejects 5.8.0 and other unreviewed source versions.
+The installer deliberately rejects 6.0.0 and other source versions outside this
+review.
 
 Configure native opening and closing timeouts with the doors stationary. Their
 values include opener start delay and reporting margin. A timeout is not a

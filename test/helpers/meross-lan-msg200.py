@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/apply-meross-lan-msg200.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
-fixture = ROOT / 'test/fixtures/meross-lan-6.0.0'
+fixture = ROOT / 'test/fixtures/meross-lan-6.0.1'
 original = (fixture / 'garagedoor.py').read_bytes()
 patched = installer.patched_source(original)
 tree = ast.parse(re.sub(rb"(?m)^(        )type [^\n]+", rb"\1pass", patched))
@@ -127,13 +127,26 @@ with tempfile.TemporaryDirectory() as tmp:
     assert source.read_bytes() == held
     source.write_bytes(original)
     manifest = json.loads((root / 'manifest.json').read_text())
-    manifest['version'] = '5.8.0'
+    for version in ['5.8.0', '6.0.0', '6.0.2']:
+        manifest['version'] = version
+        (root / 'manifest.json').write_text(json.dumps(manifest))
+        for content in [original, patched]:
+            source.write_bytes(content)
+            try:
+                installer.install(root, Path(tmp) / 'backups')
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('Unsupported version was accepted')
+            assert source.read_bytes() == content
+    manifest['version'] = '6.0.1'
+    manifest['requirements'].append('fixture-unreviewed-dependency')
     (root / 'manifest.json').write_text(json.dumps(manifest))
     try:
         installer.install(root, Path(tmp) / 'backups')
     except ValueError:
         pass
     else:
-        raise AssertionError('Unknown version was patched')
-    assert source.read_bytes() == original
+        raise AssertionError('Unreviewed dependencies were accepted')
+    assert source.read_bytes() == patched
 print('Meross LAN matching-channel transitions, legacy acknowledgements and guarded installation passed')

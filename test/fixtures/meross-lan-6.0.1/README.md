@@ -1,7 +1,7 @@
-# Meross LAN 6.0.0 garage fixture
+# Meross LAN 6.0.1 garage fixture
 
 Unmodified upstream `garagedoor.py`, manifest and license from
-[v6.0.0](https://github.com/krahabb/meross_lan/tree/v6.0.0).
+[v6.0.1](https://github.com/krahabb/meross_lan/tree/v6.0.1).
 The installer checks the exact source SHA-256. Synthetic tests execute the
 patched command and configuration methods with invented multi-channel replies.
 Type-only aliases are replaced with `pass` for AST extraction on Python 3.10.
