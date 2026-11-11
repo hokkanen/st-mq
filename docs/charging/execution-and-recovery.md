@@ -46,6 +46,15 @@ departure or changed scope/instruction retain their normal effects; no pending
 report can create a new probe or identity. Independent Charge now permission
 does not depend on identification evidence.
 
+An already approved OCPP Start keeps its original scoped permission and expiry
+while a received report waits for admission. Its incoming automatic Authorize
+or StartTransaction waits outside the database writer for at most the original
+permission or native request budget, then rechecks current authority, connection
+and instructions. Pending input cannot renew that budget. A recorded transaction
+reply remains immutable. If startup exhausts its budget, its failure remains
+visible after identification ends or the service restarts; a future economic
+period is not evidence that the failed Start is still awaiting approval.
+
 For an already commissioned Easee Direct OCPP connection, authenticated local
 readiness and valid saved equipment/session authority are sufficient for normal
 operation without an Easee cloud reply. This includes scheduled charging,

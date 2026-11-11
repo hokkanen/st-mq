@@ -465,7 +465,8 @@ export function validateOcppChargingOwnershipState(state, scope = state?.scope) 
 
 /** Current transaction only; no cloud schedule is presented as native readback. */
 export function createOcppChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
-  canControl = () => false, hasAuthority = canControl, getPlan, getIdentification, getStartRecoveryContext, getDeadlineRequest } = {}) {
+  canControl = () => false, hasAuthority = canControl, getPlan, getIdentification, getStartRecoveryContext, getDeadlineRequest,
+  identificationAdmissionPending = () => false } = {}) {
   if (!adapter || !scopeValid(adapter.scope)) throw fail('invalid-ocpp-adapter');
   validateOcppChargingOwnershipState(initialState, adapter.scope);
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
@@ -610,6 +611,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   }
   let admittedStartIntent = null;
   let admittedStartContext = null;
+  const waitForIdentificationAdmission = () => Boolean(identification && identification.phase !== 'pausing'
+    && (identification.mode !== 'probe' || clock() < identification.probeUntil) && identificationAdmissionPending());
   function permitStart(plan, current) {
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
@@ -636,7 +639,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return revoke('waiting-for-economic-period');
     // Keep only the previous lease while unrelated input persistence is pending.
     // Its dynamic guard still denies Start, and this path cannot extend expiry.
-    if (!canWrite(current)) { record(false, 'input-admission-pending'); return true; }
+    if (!canWrite(current) || waitForIdentificationAdmission()) { record(false, 'input-admission-pending'); return true; }
     const until = Math.min(now + MAX_AGE_MS,
       desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
       identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
@@ -651,7 +654,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     admittedStartContext = { connectedAt: state.session.connectedAt,
       key: hash([state.session.connectedAt, state.nativeTakeoverAt, desired.chargeNow?.requestedAt, identification?.id ?? retryId ?? undefined]),
       initializeNativeTag: chargeNowActive() && desired.chargeNow.initializeNativeTag === true };
-    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) && (!retryId || retryCurrent()),
+    adapter.setStartPermission?.(snapshot, { until,
+      pending: () => hasAuthority() && (!canControl() || waitForIdentificationAdmission()),
+      guard: () => canWrite(current) && !waitForIdentificationAdmission() && (!retryId || retryCurrent()),
       recovery: admittedStartContext });
     // Session admission and getPlan may have published a new request/plan since
     // update began. The runtime owns that request; record its actual admitted
@@ -774,6 +779,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   async function refreshIdentification() {
     if (sessionPauseActive()) { identification = null; return; }
     const next = typeof getIdentification === 'function' ? await getIdentification(clone(snapshot)) : null, now = clock();
+    // Pending evidence can temporarily remove the runtime's next action. Keep
+    // only the existing scoped request; it cannot acquire a new probe or budget.
+    if (next === null && waitForIdentificationAdmission()) return;
     if (next != null && (!fields(next, ['id', 'connectedAt', 'phase', 'pauseUntil', 'mode', 'probeUntil', 'returnStartAt'])
       || !text(next.id) || next.id.length > 128 || !time(next.connectedAt) || next.connectedAt > now
       || !['waiting', 'charging', 'pausing'].includes(next.phase)
@@ -798,7 +806,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   async function dispatch(current, signal, attempt = adapter.controlAttempt?.() ?? createControlAttempt()) {
     try {
     let pending = state.pending;
-    if (!pending || !canWrite(current)) throw fail('control-revoked');
+    if (!pending || !canWrite(current) || pending.action === 'clear' && waitForIdentificationAdmission()) throw fail('control-revoked');
     if (pending.nextAttemptAt > clock()) return false;
     if (!pending.accepted) {
       if (pending.attempts >= MAX_ATTEMPTS) throw fail('retry-limit');
@@ -806,6 +814,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       await commit({ pending: { ...pending, attempts, nextAttemptAt: clock() + (attempts === 1 ? 30_000 : 120_000) } }, attempt);
       if (!canWrite(current)) throw fail('control-revoked');
       const options = { signal, attempt, guard: () => canWrite(current)
+        && (pending.action !== 'clear' || !waitForIdentificationAdmission())
         && (pending.action !== 'clear' || identification?.mode !== 'probe' || state.manual || snapshot.pluggedIn !== true
           || identification.phase === 'pausing' || clock() < identification.probeUntil) };
       const install = () => adapter.install(pending.instruction, snapshot, { ...options,
@@ -1082,6 +1091,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const startPlan = retainExecution(!independentPermission && typeof getPlan === 'function'
         ? await readPlan(signal) : desired.plan);
       retainedStartAdmission = permitStart(startPlan, current) === true;
+      if (waitForIdentificationAdmission())
+        return display('identifying', 'Vehicle identification is waiting for the received vehicle report to be saved.');
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;
       const identificationEnded = instruction?.purpose === 'identification'
@@ -1107,7 +1118,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (!canWrite(current)) throw fail('control-revoked');
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
       if (awaiting || !confirmedTransaction || snapshot.transactionId === null || snapshot.pluggedIn !== true) {
-        const start = admittedStartContext && adapter.readStartOutcome?.(admittedStartContext);
+        const start = adapter.readStartOutcome?.(admittedStartContext ?? { connectedAt: state.session?.connectedAt });
         if (['rejected', 'unconfirmed'].includes(start?.status)) {
           admittedStartIntent = admittedStartContext = null;
           adapter.setStartPermission?.(null, { reason: `start-${start.status}` });
@@ -1261,7 +1272,11 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         `${step ? `${HANDOVER_STEPS[step]} ` : ''}${REASONS[code]}`, code, step);
     }
   }
-  return { status, supportsIdentification: true,
+  return { status, supportsIdentification: true, waitForIdentificationAdmission,
+    waitForVehicleAdmission(admission) {
+      return admission?.pending === true && admission.failed !== true && (waitForIdentificationAdmission()
+        || admittedStartContext !== null && !snapshot?.transactionConfirmed && (!identification || chargeNowActive() || desired.enabled !== true));
+    },
     interruptPlanning() {
       if (!planningWait) return false;
       admittedStartIntent = null; adapter.setStartPermission?.(null, { reason: 'planning-cancelled' }); generation++; planningWait.cancel(); return true;

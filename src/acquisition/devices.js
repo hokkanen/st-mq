@@ -278,6 +278,13 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     controlAttempt,
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
     startRecoveryScope: () => nativeStartPermission?.recovery ?? null,
+    startAdmissionPending: () => {
+      const permission = nativeStartPermission;
+      if (!permission || !(nativeSourcePending() || permission.pending?.())) return null;
+      return { until: permission.until, ready: () => Boolean(nativeStartPermission
+        && permission.until > clock() && permission.connectionId === nativeStartPermission.connectionId
+        && permission.instructionRevision === instructionRevision && permission.guard()) };
+    },
     canStart: () => {
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
       observeNativeStop(current);
@@ -831,7 +838,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
         && snapshot.instructionRevision === instructionRevision
         ? { connectionId: snapshot.connectionId, instructionRevision,
-          issuedAt: clock(), until: options.until, guard: options.guard, recovery: options.recovery ?? null } : null;
+          issuedAt: clock(), until: options.until, guard: options.guard, pending: options.pending,
+          recovery: options.recovery ?? null } : null;
       nativeStartPermissionChange = { checkedAt: clock(), action: nativeStartPermission ? 'granted' : snapshot ? 'rejected' : 'revoked',
         reason: nativeStartPermission ? 'controller-admitted' : snapshot ? 'invalid-permission' : options.reason ?? 'controller-revoked' };
     },

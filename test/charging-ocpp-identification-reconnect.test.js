@@ -73,6 +73,26 @@ test(`runtime publication retains Start with a ${input} input plan, ${provisiona
   assert.equal(f.item.controller.status().snapshot.transactionConfirmed, true);
 });
 
+test('a BMW report queued before the first transaction retains the original bounded Start approval', async t => {
+  const f = await fixture(t);
+  f.reconnect(); f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
+  await f.update(); assert.equal(f.startAllowed, true);
+  const original = f.permission, probe = structuredClone(f.item.identification.probe);
+  let pending = true;
+  f.runtime.setVehicleAdmissionStatus('bmw', () => ({ pending, failed: false,
+    reason: pending ? 'vehicle-observation-storage-pending' : null }));
+  f.runtime.vehicleAdmissionChanged('bmw');
+  assert.equal(f.permission, original, 'A queued report cannot revoke the Start already dispatched for this probe');
+  assert.equal(f.startAllowed, false, 'The native transaction must wait for admission');
+  f.advance(1000); await f.update();
+  assert.equal(f.permission, original, 'Reconciliation must neither revoke nor renew the original lease');
+  assert.deepEqual(f.item.identification.probe, probe, 'Pending input cannot renew the probe budget');
+  pending = false;
+  assert.equal(f.startAllowed, true, 'Committing input restores the original lease without another Start');
+  f.beginTransaction(); await f.update();
+  assert.equal(f.item.controller.status().snapshot.transactionConfirmed, true);
+});
+
 test('an existing BMW OCPP probe waits for a queued receipt without an early pause', async t => {
   const f = await fixture(t);
   f.reconnect(); f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
@@ -90,6 +110,21 @@ test('an existing BMW OCPP probe waits for a queued receipt without an early pau
   assert.equal(f.commands.slice(before).some(command => command.action === 'SetChargingProfile'), false);
   pending = false; await f.update();
   assert.equal(f.item.identification.completedAt, null);
+});
+
+test('a queued BMW report cannot cancel independent Charge now startup, but failed admission still fences it', async t => {
+  const f = await fixture(t); f.reconnect(); await f.update();
+  const view = f.runtime.status().chargers.find(row => row.id === 'charger1');
+  await f.runtime.chargeNow('charger1', { association: view.association,
+    sessionId: view.request.sessionId, revision: view.request.revision });
+  const original = f.permission;
+  let failed = false;
+  f.runtime.setVehicleAdmissionStatus('bmw', () => ({ pending: true, failed }));
+  f.runtime.vehicleAdmissionChanged('bmw');
+  assert.equal(f.permission, original);
+  assert.equal(f.startAllowed, true, 'Charge now permission is independent of identification evidence');
+  failed = true; f.runtime.vehicleAdmissionChanged('bmw');
+  assert.equal(f.permission, null, 'Actual admission failure still cancels selected work');
 });
 
 // Production runtime, BMW ingress, OCPP adapter and controller. Only the wire,

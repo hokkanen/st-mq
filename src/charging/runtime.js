@@ -742,6 +742,8 @@ export class ChargingRuntime {
         getMaximumAmps: scheduleCeiling,
         getDeadlineRequest: () => deadlineRequest(item),
         getIdentification: snapshot => this.identificationControl(item, snapshot),
+        identificationAdmissionPending: () => item.controls.enabled && !item.request?.chargeNow
+          && ['waiting', 'charging'].includes(item.identification?.phase) && this.identificationAdmissionPending(item),
         // A passive Identify retry supplies only a new once-only start context.
         // Ordinary permission still owns whether charging may start at all.
         getStartRecoveryContext: () => {
@@ -1118,8 +1120,10 @@ export class ChargingRuntime {
         // The current native frame is between RPCs. Re-evaluate the queued
         // vehicle observation before another Start/current write; an already
         // due pause or restoration still proceeds under its original scope.
-        controller.invalidate();
-        return null;
+        if (!controller.waitForIdentificationAdmission?.()) {
+          controller.invalidate();
+          return null;
+        }
       }
       return request;
     }, { priority: 'control',
@@ -1326,11 +1330,14 @@ export class ChargingRuntime {
     feed.admissionStatus = status;
   }
   vehicleAdmissionChanged(id) {
-    // Cancel already selected work when its source becomes unavailable. The
-    // next reconciliation still owns restoration and may plan from references.
+    // A queued receipt is not source failure. OCPP retains an already admitted
+    // startup while its scoped probe waits, or while independent session inputs
+    // still own ordinary/Charge now permission. Other work is reconsidered.
+    const admission = id === 'tesla' ? this.teslaCapture?.snapshot()?.reception?.admission
+      : vehicleFeedAdmission(this.vehicleFeeds[id]);
     for (const item of Object.values(this.chargers)) {
       const ids = item.vehicleConflict?.ids ?? (item.vehicleMatch?.id ? [item.vehicleMatch.id] : ['bmw', 'tesla']);
-      if (ids.includes(id)) item.controller?.invalidate?.();
+      if (ids.includes(id) && !item.controller?.waitForVehicleAdmission?.(admission)) item.controller?.invalidate?.();
     }
   }
   receiveSoc(topic, payload, packet = {}, receivedAt = this.clock(), admission = null, onAccepted = () => {}) {

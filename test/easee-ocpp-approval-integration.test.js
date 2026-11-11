@@ -11,7 +11,7 @@ import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 const START = Date.parse('2026-01-15T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 
-async function fixture(t, { transactionState, controllerState, beforeTransactionSave, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan, holdRemoteStart = false, homeFreeCharging = false, homeTagReadError = false, homeTagValue, homeStartBeforeModeReply = false, authorizationTags = [] } = {}) {
+async function fixture(t, { transactionState, controllerState, beforeTransactionSave, beforeTransactionWrite, getIdentification, getStartRecoveryContext, getDeadlineRequest, getPlan, holdRemoteStart = false, homeFreeCharging = false, homeTagReadError = false, homeTagValue, homeStartBeforeModeReply = false, authorizationTags = [] } = {}) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
   let now = START, remote = null, sequence = 0, admitted = true, authority = true;
@@ -30,6 +30,7 @@ async function fixture(t, { transactionState, controllerState, beforeTransaction
     authorization_tags: authorizationTags,
   } } };
   const stateFor = key => ({ get: () => structuredClone(states.get(key) ?? null),
+    ...(key === 'transactions' && beforeTransactionWrite ? { runWrite: async operation => { await beforeTransactionWrite(); return operation(); } } : {}),
     set: value => { if (key === 'transactions') beforeTransactionSave?.(value); states.set(key, structuredClone(value)); } });
   const http = createHttp({ allowOcppSetup: true, canControl: () => true,
     fetchImpl: async (url, options) => {
@@ -145,12 +146,61 @@ test('committed input restores the original unexpired native Start lease without
   f.adapter.read = async options => { const snapshot = await read(options); f.admission(false); return snapshot; };
   try {
     await f.controller.update({ enabled: true, plan });
-    assert.equal(await authorize(), 'Blocked', 'Pending admission cannot authorize physical Start');
+    let answered = false;
+    const approval = authorize().then(value => { answered = true; return value; });
+    await f.call('Heartbeat', {});
+    assert.equal(answered, false, 'Pending admission cannot authorize physical Start or permanently refuse the existing lease');
     f.admission(true);
-    assert.equal(await authorize(), 'Accepted', 'The unchanged original lease remains usable after commit');
+    assert.equal(await approval, 'Accepted', 'The same native request uses the original lease after commit');
     f.advance(60_000);
     assert.equal(await authorize(), 'Blocked', 'Pending refresh cannot extend original expiry');
   } finally { f.admission(true); f.adapter.read = read; }
+});
+
+for (const boundary of ['commit', 'expiry', 'invalidate', 'pause', 'authority'])
+test(`an incoming native transaction waits on the original permission through pending admission: ${boundary}`, async t => {
+  const f = await fixture(t), plan = { id: 'open', startAt: START, feasible: true,
+    periods: [{ startAt: START, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  f.admission(false);
+  const payload = { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 }, receivedAt = f.now;
+  let answered = false;
+  const transaction = f.call('StartTransaction', payload).then(value => { answered = true; return value; });
+  await f.call('Heartbeat', {});
+  assert.equal(answered, false, 'A queued report cannot create an accepted or permanently refused transaction');
+  assert.equal(f.states.get('transactions').transactions.length, 0);
+  let replacement;
+  if (boundary === 'expiry') f.advance(MINUTE);
+  else if (boundary === 'invalidate') f.controller.invalidate();
+  else if (boundary === 'pause') replacement = f.controller.update({ sessionPause: { connectedAt: START, requestedAt: f.now } });
+  else if (boundary === 'authority') f.authority(false);
+  f.advance(500); f.admission(true);
+  const reply = await transaction; await replacement;
+  assert.equal(reply[2].idTagInfo.status, boundary === 'commit' ? 'Accepted' : 'Blocked');
+  assert.equal(f.provider.localOcppStatus().startProgress.transaction.receivedAt, receivedAt);
+  assert.equal(f.states.get('transactions').transactions[0].startReceivedAt, receivedAt);
+  f.controller.invalidate();
+  assert.deepEqual((await f.call('StartTransaction', payload))[2], reply[2], 'Historical replies remain immutable after revocation');
+});
+
+test('another report queued while the deferred transaction awaits the writer retains its original approval', async t => {
+  let gate = null;
+  const f = await fixture(t, { beforeTransactionWrite: () => gate?.() });
+  await f.controller.update({ enabled: true, plan: openPlan(f) });
+  f.admission(false);
+  let answered = false;
+  const transaction = f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+    timestamp: new Date(f.now).toISOString(), meterStart: 0 }).then(reply => { answered = true; return reply; });
+  await f.call('Heartbeat', {});
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  gate = async () => { gate = null; entered.resolve(); await release.promise; };
+  f.admission(true); await entered.promise;
+  f.admission(false); release.resolve();
+  await f.call('Heartbeat', {});
+  assert.equal(answered, false, 'A second pending report cannot become a durable refusal');
+  f.admission(true);
+  assert.equal((await transaction)[2].idTagInfo.status, 'Accepted');
 });
 
 async function rejectedAutomaticStart(f, { reason = 'DeAuthorized', power = 0 } = {}) {
@@ -242,6 +292,25 @@ test(`native initialization rechecks ${boundary} before any setting write`, asyn
     release.resolve(); for (let i = 0; i < 20; i++) await f.call('Heartbeat', {});
     assert.equal(f.calls.some(r => r.action === 'ChangeConfiguration' && r.payload.key.startsWith('FreeCharging')), false);
   } finally { release.resolve(); }
+});
+
+test('an expired identification probe retains the failed startup outcome through an economic wait and restart', async t => {
+  let identification = { id: 'synthetic-expiring-probe', connectedAt: START, phase: 'waiting', mode: 'probe',
+    probeUntil: START + 80_000, returnStartAt: START + 30 * MINUTE };
+  const f = await fixture(t, { getIdentification: () => identification });
+  const plan = { id: 'future', startAt: START + 30 * MINUTE, feasible: true,
+    periods: [{ startAt: START + 30 * MINUTE, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  await f.status('Preparing');
+  for (let i = 0; i < 8; i++) await f.call('Heartbeat', {});
+  assert.equal(starts(f).length, 1);
+  f.advance(80_000); identification = null;
+  await f.status('SuspendedEVSE'); await f.meter(0);
+  assert.equal((await f.controller.update({ enabled: true, plan })).errorCode, 'charger-start-unconfirmed');
+  const restarted = await fixture(t, { transactionState: f.states.get('transactions'), controllerState: f.states.get('controller') });
+  restarted.advance(81_000); await restarted.status('SuspendedEVSE'); await restarted.meter(0);
+  assert.equal((await restarted.controller.update({ enabled: true, plan })).errorCode, 'charger-start-unconfirmed');
+  assert.equal(starts(restarted).length, 0, 'Reporting an old failure cannot mint another Start');
 });
 
 test('an accepted Start with no transaction has a bounded outcome and a fresh Charge now can retry', async t => {
@@ -531,15 +600,17 @@ test('a second refused start cannot loop and the recovery budget survives receiv
   await f.controller.update({ enabled: true, plan: openPlan(f) }); await f.status('SuspendedEVSE');
   assert.equal(starts(f).length, 1);
   f.advance(1000); f.admission(false);
-  const second = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+  const incoming = f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
     timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+  await f.call('Heartbeat', {}); f.advance(MINUTE);
+  const second = await incoming;
   assert.equal(second[2].idTagInfo.status, 'Blocked');
   await f.call('StopTransaction', { transactionId: second[2].transactionId,
     timestamp: new Date(f.now).toISOString(), meterStop: 0, reason: 'DeAuthorized' });
   f.admission(true); await f.meter(0); await f.status('SuspendedEVSE');
   assert.equal(starts(f).length, 1);
   const restarted = await fixture(t, { transactionState: f.states.get('transactions'), controllerState: f.states.get('controller') });
-  restarted.advance(3000); await restarted.status('SuspendedEVSE'); await restarted.meter(0);
+  restarted.advance(f.now - START + 3000); await restarted.status('SuspendedEVSE'); await restarted.meter(0);
   await restarted.controller.update({ enabled: true, plan: openPlan(restarted) });
   await restarted.status('SuspendedEVSE');
   assert.equal(starts(restarted).length, 0);
@@ -707,7 +778,9 @@ test(`an economic refresh during a probe retains the ${boundary} Start boundary`
     else if (boundary === 'fault') await f.status('Faulted');
     else if (boundary === 'authority') f.authority(false);
     else f.admission(false);
-    assert.equal(await authorize(), 'Blocked', 'economic independence cannot bypass a current Start restriction');
+    const approval = authorize();
+    if (boundary === 'pending input') { await f.call('Heartbeat', {}); f.advance(30_000); }
+    assert.equal(await approval, 'Blocked', 'economic independence cannot bypass a current Start restriction');
   } finally { f.adapter.read = read; release(); await refresh; await replacement; }
 });
 
@@ -860,7 +933,9 @@ test(`publishing the reviewed feasible plan retains the ${boundary} Start bounda
     else if (boundary === 'native stop') { f.advance(1000); f.observe({ 96: 53 }); await read({ forceAppRefresh: true }); }
     else if (boundary === 'authority') f.authority(false);
     else f.admission(false);
-    assert.equal(await authorize(), 'Blocked', 'Retaining reviewed-plan permission cannot bypass a newer restriction');
+    const approval = authorize();
+    if (boundary === 'pending input') { await f.call('Heartbeat', {}); f.advance(MINUTE); }
+    assert.equal(await approval, 'Blocked', 'Retaining reviewed-plan permission cannot bypass a newer restriction');
     assert.equal(starts(f).length, 1, 'No restriction can mint another automatic attempt');
   } finally { release.resolve(); await refresh; await replacement; f.adapter.read = read; }
 });

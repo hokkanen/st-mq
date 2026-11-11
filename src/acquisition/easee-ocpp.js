@@ -114,7 +114,8 @@ export function ocppMeterReadings(payload, now) {
  * remote authorization with a known private tag. This endpoint does not infer
  * charging-profile support or silently convert an existing cloud schedule. */
 export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, canControl = () => false,
-  canStart = () => false, startRecoveryScope = () => null, onDisconnect = () => {}, state, virtualTag = '',
+  canStart = () => false, startRecoveryScope = () => null, startAdmissionPending = () => null,
+  onDisconnect = () => {}, state, virtualTag = '',
   controlAttempt = () => createControlAttempt(), monotonicClock = () => performance.now() } = {}) {
   const config = localOcppConfiguration(input);
   if (typeof virtualTag !== 'string' || virtualTag.length > 20) throw new TypeError('Invalid private OCPP virtual tag');
@@ -768,10 +769,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const context = startRecoveryScope();
     return Boolean(recoveryAttempts(context) && equal(startCode(context), tag));
   };
-  const authorizationInfo = tag => automaticTag(tag)
+  const authorizationInfo = (tag, blocked = false) => automaticTag(tag)
     // This tag represents a live controller permission, never a reusable RFID
     // enrollment. Expiry cannot guarantee removal of a cached entry.
-    ? { status: transportFresh() && permittedBy(canStart) && currentAutomaticTag(tag) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
+    ? { status: !blocked && transportFresh() && permittedBy(canStart) && currentAutomaticTag(tag) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
   function completeResponse(id, pending, frame, waited = false, receivedAt = clock()) {
     if (pendingCalls.get(id) !== pending) return;
@@ -866,13 +867,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // An Authorize retry asks about present permission. Transaction replies
       // are durable historical acknowledgements and must remain unchanged.
       if (action === 'Authorize') {
-        const info = authorizationInfo(payload.idTag); authorizationProgress(info,arrival,true);
-        send([3,id,{idTagInfo:info}]);
+        // Continue through the same bounded admission wait as a fresh request.
       } else {
         if (action === 'StartTransaction') transactionProgress(payload,prior.reply[2].idTagInfo,arrival,true);
         send(prior.reply);
+        return;
       }
-      return;
     }
     const sourceAt = ['StartTransaction', 'StopTransaction'].includes(action) ? instant(payload.timestamp) : NaN;
     const validFuture = Number.isSafeInteger(sourceAt) && sourceAt > clock() && sourceAt - receivedAt <= MAX_FUTURE_MS
@@ -880,6 +880,41 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         && typeof payload.idTag === 'string' && payload.idTag.length > 0 && payload.idTag.length <= 20
         : Number.isSafeInteger(payload.transactionId) && payload.transactionId > 0
           && Number.isSafeInteger(payload.meterStop) && payload.meterStop >= 0);
+    const validAuthorization = ['Authorize', 'StartTransaction'].includes(action)
+      && typeof payload.idTag === 'string' && payload.idTag.length > 0 && payload.idTag.length <= 20
+      && (action === 'Authorize' || payload.connectorId === 1 && Number.isSafeInteger(payload.meterStart)
+        && payload.meterStart >= 0 && Number.isSafeInteger(sourceAt) && sourceAt >= 0 && sourceAt <= clock());
+    // An already issued Start can arrive while its vehicle/native report is
+    // waiting for COMMIT. Do not turn that temporary gap into a durable refusal.
+    // Wait outside the writer, on this socket and original permission only.
+    const historicalStart = action === 'StartTransaction' && validAuthorization && ledger?.transactions.some(row =>
+      row.fingerprint === digest({ scope, connectorId: 1, startedAt: sourceAt, meterStart: payload.meterStart, idTag: payload.idTag }));
+    const currentAdmission = !historicalStart && validAuthorization && automaticTag(payload.idTag)
+      && currentAutomaticTag(payload.idTag) && !permittedBy(canStart) ? startAdmissionPending() : null;
+    const admission = currentAdmission && (deferred?.admission ?? currentAdmission);
+    if (admission && !deferred?.expired && Number.isSafeInteger(admission.until) && admission.until > clock()
+      && (deferred?.deadline === undefined || monotonicClock() < deferred.deadline)) {
+      if (deferredTransactions.size >= 8) { send([4, id, 'OccurrenceConstraintViolation', 'Too many pending transaction messages', {}]); return; }
+      const pending = { requestHash, receivedAt, connection: socket, connectionId, admission,
+        deadline: deferred?.deadline ?? monotonicClock() + CALL_TIMEOUT_MS };
+      deferredTransactions.set(id, pending);
+      const resume = () => {
+        if (deferredTransactions.get(id) !== pending) return;
+        if (pending.connection !== socket || pending.connectionId !== connectionId || !refreshAuthority() || !transportFresh()) {
+          deferredTransactions.delete(id); return;
+        }
+        if (clock() < admission.until && monotonicClock() < pending.deadline && startAdmissionPending()) {
+          pending.timer = setTimeout(resume, 20); pending.timer.unref(); return;
+        }
+        deferredTransactions.delete(id);
+        pending.expired = monotonicClock() >= pending.deadline;
+        void runState(() => receive(data, false, pending), { connection: pending.connection, bytes: data.length })
+          .catch(() => storageFailed(pending.connection));
+      };
+      pending.timer = setTimeout(resume, 20); pending.timer.unref(); return;
+    }
+    const admissionBlocked = Boolean(deferred?.admission && (deferred.expired || monotonicClock() >= deferred.deadline
+      || clock() >= deferred.admission.until || !permittedBy(deferred.admission.ready)));
     if (!deferred && validFuture) {
       if (deferredTransactions.size >= 8) { send([4, id, 'OccurrenceConstraintViolation', 'Too many pending transaction messages', {}]); return; }
       const pending = { requestHash, receivedAt, connection: socket, connectionId };
@@ -929,8 +964,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         send([4, id, 'FormationViolation', 'Invalid authorization identifier', {}]); return;
       }
       try { persist(ledger); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
-      response = { idTagInfo: authorizationInfo(payload.idTag) };
-      authorizationProgress(response.idTagInfo,receivedAt);
+      response = { idTagInfo: authorizationInfo(payload.idTag, admissionBlocked) };
+      authorizationProgress(response.idTagInfo,receivedAt,replies.has(id));
     }
     else if (action === 'StartTransaction') {
       const startedAt = instant(payload.timestamp);
@@ -944,7 +979,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       let transaction = ledger.transactions.find(row => row.fingerprint === fingerprint);
       const replayed = Boolean(transaction);
       if (!transaction) {
-        const active = activeTransaction(), authorization = authorizationInfo(payload.idTag), accepted = authorization.status === 'Accepted';
+        const active = activeTransaction(), authorization = authorizationInfo(payload.idTag, admissionBlocked), accepted = authorization.status === 'Accepted';
         const supersedes = active && accepted && (isRecovered(active) || afterModeDisable(active))
           && startedAt > Math.max(active.lastEvidenceAt, active.modeDisableIntent?.requestedAt ?? 0)
           && !futureReadings.some(pending => pending.transactionId === active.id && instant(pending.row.timestamp) >= startedAt);
@@ -1151,8 +1186,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // This is the outcome of one durably consumed instruction, never a new
       // retry allowance. Restart retains its original dispatch budget.
       if (!refreshAuthority() || !transportFresh() || activeTransaction()) return null;
+      // Reporting may outlive the probe that supplied permission. Selecting the
+      // last consumed attempt here grants no permission or new retry allowance.
+      const history = ledger?.automaticStartRecoveries;
+      if (context?.key === undefined && history?.connectedAt === context?.connectedAt)
+        context = { ...context, key: history.attempts.at(-1)?.key };
       const attempt = recoveryAttempts(context)?.find(row => row.key === context.key);
       if (!attempt || clock() < attempt.at) return null;
+      if (ledger.transactions.some(row => row.status === 'Accepted' && row.startReceivedAt >= attempt.at)) return null;
       const matching = dispatchedStart?.key === context.key && dispatchedStart.connectedAt === context.connectedAt;
       const rejected = matching && dispatchedStart.rejected === true;
       return { requestedAt: attempt.at, status: rejected ? 'rejected'
