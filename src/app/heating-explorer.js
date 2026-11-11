@@ -265,6 +265,7 @@ export class HeatingExplorer {
       if (this.engine.pendingPlan?.userTrial?.id === trial.id) this.engine.store.setState(`pending-plan:${this.engine.config.input}`, null);
       this.engine.store.afterCommit(() => {
         if (this.engine.pendingPlan?.userTrial?.id === trial.id) this.engine.pendingPlan = null;
+        this.engine.heatingPlanning?.invalidate();
         if (!this.engine.cycles.active() && this.input?.currentPlan?.userTrial?.id === trial.id)
           this.capture({ ...this.input, currentConfig: this.input.config, currentSettings: this.input.settings },
             { plan: null, action: 'normal', phase: 'normal', reasons: ['admin-cancelled-scenario'] });

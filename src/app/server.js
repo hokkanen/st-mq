@@ -560,7 +560,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return await mutate(async (current, input, commit) => {
             if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
             const receipt = await commit(() => current.heatingExplorer.cancel(input));
-            try { await current.update?.(); }
+            try {
+              await current.update?.();
+              const planning = current.heatingPlanning?.pending?.promise;
+              if (planning) { await planning; await current.update?.(); }
+            }
             catch { return json(200, { ...receipt, reconciliationPending: true }); }
             return json(200, { activeTrial: current.heatingExplorer.publicTrial() });
           });

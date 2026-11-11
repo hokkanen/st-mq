@@ -154,8 +154,9 @@ export class HeatingPlanning {
         this.pending = null;
         if (!result) return;
         this.completed = { scope, sources, at: request.at, result };
-        // The regular controller timer consumes this result. Worker completion
-        // cannot execute commands or bypass a paused/suspended runtime.
+        // Request ordinary guarded adoption promptly; a completed background
+        // search has no authority to dispatch equipment by itself.
+        this.engine.requestUpdate?.();
         this.engine.onTemporaryChange?.();
       }).catch(() => {
         if (this.closed || this.pending !== request) return;

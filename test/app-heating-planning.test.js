@@ -44,11 +44,14 @@ for (const changedField of ['indoorC', 'reserveC', 'slabC']) test(`continuation 
 
 test('background search returns Normal immediately and revalidates its plan with current measurements', async t => {
   const r = rig(t);
+  let updates = 0;
+  r.engine.requestUpdate = () => { updates++; };
   assert.equal(r.planner.choose(r.input).phase, 'normal');
   assert.equal(r.requests.length, 1);
   const result = chooseCycle(r.input);
   assert.ok(result.plan, 'Synthetic independent price spike admits a reduction');
   await r.complete(result);
+  assert.equal(updates, 1, 'A completed search requests guarded adoption without waiting for the minute timer');
   const updated = structuredClone(r.input);
   updated.now += 30_000;
   updated.observations.indoor.value = 21.1;

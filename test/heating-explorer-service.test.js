@@ -129,7 +129,8 @@ test('pending cancellation immediately removes its captured selection and reques
   const r = fixture(t), preview = await r.preview();
   const approved = r.service.apply({ previewId: preview.previewId }).activeTrial;
   const clock = r.service.input.now;
-  let updates = 0;
+  let updates = 0, invalidations = 0;
+  r.engine.heatingPlanning = { invalidate() { invalidations++; } };
   r.engine.requestUpdate = () => { updates++; };
   assert.throws(() => r.service.cancel({}), /approval to cancel/);
   assert.throws(() => r.store.transaction(() => {
@@ -140,12 +141,14 @@ test('pending cancellation immediately removes its captured selection and reques
   assert.equal(r.engine.pendingPlan.userTrial.id, approved.id);
   assert.equal(r.service.input.currentPlan.userTrial.id, approved.id);
   assert.equal(updates, 0);
+  assert.equal(invalidations, 0);
   r.service.cancel({ approvalId: approved.id });
   assert.equal(r.engine.pendingPlan, null);
   assert.equal(r.service.input.currentPlan, null);
   assert.equal(r.service.input.currentConfig.maxReductionHours, 12);
   assert.equal(r.service.input.now, clock);
   assert.equal(updates, 1);
+  assert.equal(invalidations, 1);
   assert.equal(r.service.cancel({ approvalId: approved.id }).activeTrial.status, 'cancelled');
 });
 
@@ -192,12 +195,19 @@ test('HTTP cancellation waits for ordinary scheduling outside the approval trans
   const run = r.worker.run.bind(r.worker);
   r.worker.run = async (input, limits) => ({ ...await run(input, limits), current: {
     schedule: input.currentPlan?.schedule ?? null, approvalId: input.currentPlan?.userTrial?.id ?? null } });
-  let entered, release;
+  let entered, release, updates = 0, planningReady = false;
   const reconciling = new Promise(resolve => { entered = resolve; });
+  const planning = new Promise(resolve => { release = () => { planningReady = true; resolve(); }; });
+  r.engine.heatingPlanning = { pending: null, invalidate() { this.pending = null; } };
   r.engine.update = async () => {
     assert.equal(r.store.transactionDepth, 0, 'Control reconciliation cannot hold the approval write transaction');
     assert.equal(r.service.publicTrial().status, 'cancelled');
-    entered(); await new Promise(resolve => { release = resolve; });
+    if (++updates === 1) {
+      r.engine.heatingPlanning.pending = { promise: planning };
+      entered(); return;
+    }
+    assert.equal(planningReady, true, 'The second controller pass must consume the completed natural search');
+    r.engine.heatingPlanning.pending = null;
     r.engine.pendingPlan = natural;
     r.service.capture({ ...r.service.input, currentConfig: baseControl, currentSettings: baseSettings },
       { plan: natural, phase: 'normal', action: 'normal', reasons: ['accepted-cycle-scheduled'] });
@@ -211,6 +221,7 @@ test('HTTP cancellation waits for ordinary scheduling outside the approval trans
     body: JSON.stringify({ approvalId: original.id }) });
   await reconciling; release();
   assert.equal((await response).status, 200);
+  assert.equal(updates, 2, 'Cancellation must reconcile again after background planning completes');
   const selected = (await r.service.view()).current;
   assert.deepEqual(selected.schedule, natural.schedule);
   assert.equal(selected.approvalId, null);
