@@ -132,9 +132,11 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
         .map(control => [control.key, limits[control.key]]));
       return run(`${endpoint}/simulate`, { snapshotId: result.snapshotId, limits: changes });
     },
-    apply() {
+    async apply() {
       if (!result?.previewId || !result.application?.allowed || dirty || snapshot().stale) return Promise.resolve(false);
-      return run(`${endpoint}/apply`, { previewId: result.previewId }, { mutation: true });
+      const approved = await run(`${endpoint}/apply`, { previewId: result.previewId }, { mutation: true });
+      if (approved && result) await run(endpoint, undefined, { reset: true, preserveDraft: true });
+      return approved;
     },
     cancel: () => validTrial(result?.activeTrial) ? run(`${endpoint}/cancel`, {}, { mutation: true }) : Promise.resolve(false),
     markStale() { if (result) { ++freshnessRevision; stale = true; notify(); } },
@@ -692,7 +694,10 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         if (actions.snapshot().result && previous?.decision && next.decision) {
           const signature = value => JSON.stringify({ schedule: value.decision.plan?.schedule ?? null,
             phase: value.decision.phase ?? null, trial: value.decision.plan?.userTrial?.id ?? null });
-          if (signature(previous) !== signature(next)) actions.markStale();
+          const captured = actions.snapshot().result.current;
+          const capturedSignature = JSON.stringify({ schedule: captured?.schedule ?? null,
+            phase: captured?.phase ?? null, trial: captured?.approvalId ?? null });
+          if (signature(previous) !== signature(next) && signature(next) !== capturedSignature) actions.markStale();
         }
         if (Object.hasOwn(next, 'heatingScenario')) actions.updateTrial(next.heatingScenario);
         if (dialog.open) render(actions.snapshot());

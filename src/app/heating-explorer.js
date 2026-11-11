@@ -222,9 +222,21 @@ export class HeatingExplorer {
       this.engine.store.setState(this.key, trial);
       this.engine.store.setState(`pending-plan:${this.engine.config.input}`, plan);
       this.engine.store.event('heating-scenario-approved', context, now);
+      this.engine.store.afterCommit(() => {
+        this.engine.pendingPlan = plan;
+        // Publish accepted intent without inventing a new observation clock or
+        // claiming that the scheduled treatment has already been dispatched.
+        const selected = applyExplorerOverrides(this.input, preview.limits);
+        const comfort = { ...this.input.settings.comfort, targetC: plan.targetC };
+        this.capture({ ...this.input, settings: { ...this.input.settings, comfort },
+          normalReferenceSource: this.input.normalReferenceSource === 'configured' ? 'configured' : 'retained',
+          currentSettings: { ...selected.settings, comfort: { ...selected.settings.comfort, targetC: plan.targetC } },
+          currentConfig: selected.config },
+        { plan, action: 'normal', phase: 'normal', reasons: ['accepted-cycle-scheduled'] });
+        this.previews.clear();
+        this.engine.requestUpdate?.();
+      });
     });
-    this.engine.pendingPlan = plan;
-    this.previews.clear();
     return { activeTrial: this.publicTrial() };
   }
   finish(status, reason, additions = {}) {

@@ -154,6 +154,8 @@ try {
         if (explorerFixture.stale && path.endsWith('/simulate')) return new Response(JSON.stringify({error:'Synthetic stale snapshot'}), {status:409});
         if (path.endsWith('/apply')) {
           explorerFixture.value.activeTrial = { id:'synthetic-cycle',status:'pending',approvedAt:${now},latestStartAt:${now + hour},expiresAt:${now + 12 * hour},limits:{maxReductionHours:6}};
+          explorerFixture.value.current = { ...structuredClone(explorerFixture.value.scenario),
+            approvalId:'synthetic-cycle', constraints:explorerFixture.value.current.constraints };
           return Response.json({activeTrial:explorerFixture.value.activeTrial});
         }
         if (path.endsWith('/cancel')) {
@@ -187,7 +189,8 @@ try {
       value.automation.home.enabled = true;
       value.override = null;
       delete value.decision.manualHold;
-      value.decision.plan = {schedule:explorerFixture.value.current.schedule};
+      value.decision.plan = {schedule:explorerFixture.value.current.schedule,
+        ...(explorerFixture.value.current.approvalId ? {userTrial:{id:explorerFixture.value.current.approvalId}} : {})};
       value.decision.phase = 'normal';
       if (explorerFixture.planner) {
         const planner = explorerFixture.planner;
@@ -643,13 +646,10 @@ try {
   await evaluate(`explorerFixture.role='admin';await explorerFixture.poll();document.getElementById('heating-explorer-apply').click()`);
   await until(`document.querySelector('.confirmation-dialog')?.open`);
   await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click()`);
-  await until(`document.getElementById('heating-explorer-receipt').textContent.includes('approved')`);
+  await until(`document.getElementById('heating-explorer-receipt').textContent.includes('approved')&&!document.getElementById('heating-explorer-refresh').disabled&&document.getElementById('heating-explorer-trial-record').open`);
   assert.deepEqual(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).map(r=>r.body)`), [{previewId:'synthetic-reviewed-preview'}]);
   assert.equal(await evaluate(`document.getElementById('heating-explorer-trial-record').open`), true, 'A new active approval opens its own record');
-  assert.match(await evaluate(`document.getElementById('heating-explorer-trial-caption').textContent`), /separate from the selected plan in this capture/);
-  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`), true, 'Approval requires a new capture before comparing a changed current plan');
-  await evaluate(`explorerFixture.value.current.approvalId='synthetic-cycle';document.getElementById('heating-explorer-refresh').click()`);
-  await until(`!document.getElementById('heating-explorer-refresh').disabled`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`), false, 'Approval automatically updates the selected plan without a manual refresh');
   assert.match(await evaluate(`document.getElementById('heating-explorer-current-source').textContent`), /Captured from the cycle approved/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-trial-caption').textContent`), /belongs to the selected plan captured above/);
   await evaluate(`globalThis.savedApprovalRecord=explorerFixture.value.activeTrial;explorerFixture.value.activeTrial=null;document.getElementById('heating-explorer-refresh').click()`);

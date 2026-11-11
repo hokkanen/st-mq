@@ -8,6 +8,7 @@ import { CONTROL_DEFAULTS, validateSettings } from '../src/app/config.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { createAppServer } from '../src/app/server.js';
 import { webRequestAllowed } from '../chart/web-access.js';
+import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 
 const HOUR = 3_600_000;
 function fixture(t) {
@@ -52,6 +53,64 @@ test('invalid planning clocks cannot provide fresh comparison snapshots', async 
     r.service.input.now = clock;
     await assert.rejects(r.service.view(), /fresh heating planning snapshot/);
   }
+});
+
+test('approval publishes the selected plan after commit without waiting for another controller tick', async t => {
+  const r = fixture(t), run = r.worker.run.bind(r.worker);
+  let updates = 0;
+  r.engine.requestUpdate = () => { updates++; };
+  r.worker.run = async (input, limits) => ({ ...await run(input, limits),
+    current: { schedule: input.currentPlan?.schedule ?? null, approvalId: input.currentPlan?.userTrial?.id ?? null,
+      config: input.currentConfig, settings: input.currentSettings } });
+  const original = structuredClone(r.service.input), preview = await r.preview({ maxReductionHours: 8, maxDropC: 2 });
+  r.advance(9000);
+  const approved = r.service.apply({ previewId: preview.previewId });
+  const refreshed = await r.service.view();
+  assert.equal(refreshed.current.approvalId, approved.activeTrial.id);
+  assert.deepEqual(refreshed.current.schedule, r.service.trial().plan.schedule);
+  assert.equal(refreshed.current.config.maxReductionHours, 8);
+  assert.equal(refreshed.current.settings.comfort.maxDropC, 2);
+  assert.equal(r.service.input.config.maxReductionHours, original.config.maxReductionHours);
+  assert.equal(r.service.input.settings.comfort.maxDropC, original.settings.comfort.maxDropC);
+  assert.equal(r.service.input.now, original.now, 'Approval cannot refresh observation evidence');
+  assert.equal(updates, 1, 'Use the existing controller update path for dispatch and dashboard publication');
+  assert.equal(r.engine.store.learningJournal({ input: 'simulated' }).length, 0);
+});
+
+test('the real comparison worker immediately returns the approved schedule and its separate effective limits', async t => {
+  const r = fixture(t), input = heatingExplorerFixture({ maxDropC: 1.5 });
+  r.advance(input.now - r.now);
+  r.engine.settings = validateSettings(input.settings);
+  r.engine.control = { ...CONTROL_DEFAULTS, ...input.config };
+  r.engine.checkpoint = input.checkpoint;
+  r.service.worker = new HeatingExplorerWorker();
+  r.service.capture({ ...input, config: r.engine.control }, { plan: null, action: 'normal', phase: 'normal', reasons: [] });
+  const before = structuredClone(r.service.input), preview = await r.preview({ maxReductionHours: 6, maxDropC: 2 });
+  assert.equal(preview.application.allowed, true);
+  const approved = r.service.apply({ previewId: preview.previewId }), next = await r.service.view();
+  assert.equal(next.current.approvalId, approved.activeTrial.id);
+  assert.deepEqual(next.current.schedule, r.service.trial().plan.schedule);
+  assert.equal(next.current.limits.maxReductionHours, 6);
+  assert.equal(next.current.limits.maxDropC, 2);
+  assert.equal(next.controls.find(row => row.key === 'maxReductionHours').value, 4);
+  assert.equal(next.controls.find(row => row.key === 'maxReductionHours').effectiveValue, 6);
+  assert.deepEqual(r.service.input.observations, before.observations);
+  assert.equal(r.service.input.now, before.now);
+});
+
+test('rolled-back approval leaves the selected capture, pending intent and reviewed preview intact', async t => {
+  const r = fixture(t), preview = await r.preview(), original = structuredClone(r.service.input);
+  let updates = 0;
+  r.engine.requestUpdate = () => { updates++; };
+  assert.throws(() => r.store.transaction(() => {
+    r.service.apply({ previewId: preview.previewId });
+    throw new Error('synthetic transaction failure');
+  }), /synthetic transaction failure/);
+  assert.equal(r.service.trial(), null);
+  assert.equal(r.engine.pendingPlan, undefined);
+  assert.deepEqual(r.service.input, original);
+  assert.equal(updates, 0);
+  assert.equal(r.service.apply({ previewId: preview.previewId }).activeTrial.status, 'pending');
 });
 
 test('HTTP distinguishes a stale controller snapshot from other unavailable comparisons', async t => {

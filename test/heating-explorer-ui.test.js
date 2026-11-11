@@ -267,20 +267,44 @@ test('failed refresh retains the draft while withdrawing previous execution elig
   assert(!state.snapshot().message.includes('sensitive'));
 });
 
-test('only the reviewed preview is submitted and approval receipts survive refreshed conditions', async () => {
-  const requests = []; let clock = now;
+test('approval automatically loads its selected plan while preserving the receipt and edited limits', async () => {
+  const requests = []; let clock = now, approved = false;
+  const trial = { id: 'synthetic-trial', status: 'pending' };
   const state = createHeatingExplorerState({ clock: () => clock, request: async (path, body) => {
     requests.push({ path, body });
-    if (path.endsWith('/apply')) return { activeTrial: { id: 'synthetic-trial', status: 'pending' } };
-    return makeResult({ previewId: 'synthetic-preview', expiresAt: now + 2 * 86400_000 });
+    if (path.endsWith('/apply')) { approved = true; return { activeTrial: trial }; }
+    return makeResult({ previewId: approved ? null : 'synthetic-preview', expiresAt: now + 2 * 86400_000,
+      ...(approved ? { current: { approvalId: trial.id }, activeTrial: trial } : {}) });
   } });
-  await state.load(); assert.equal(await state.apply(), true);
-  assert.deepEqual(requests[1], { path: '/api/heating/explorer/apply', body: { previewId: 'synthetic-preview' } });
+  await state.load(); state.edit('maxReductionHours', 8); await state.compare();
+  assert.equal(await state.apply(), true);
+  assert.deepEqual(requests[2], { path: '/api/heating/explorer/apply', body: { previewId: 'synthetic-preview' } });
+  assert.deepEqual(requests[3], { path: '/api/heating/explorer', body: undefined });
   assert.equal(state.snapshot().result.activeTrial.status, 'pending');
+  assert.equal(state.snapshot().result.current.approvalId, trial.id);
+  assert.equal(state.snapshot().limits.maxReductionHours, 8);
+  assert.equal(state.snapshot().stale, false);
   assert.equal(await state.apply(), false, 'a completed submission cannot be sent again');
-  await state.load();
   assert.match(state.snapshot().receipt.message, /approved/);
   clock = now + 86400_000; assert.equal(state.snapshot().receipt, null);
+});
+
+test('a failed automatic read retains successful approval and fences the old capture against another approval', async () => {
+  let approved = false;
+  const state = createHeatingExplorerState({ clock: () => now, request: async path => {
+    if (path.endsWith('/apply')) { approved = true; return { activeTrial: { id: 'synthetic-trial', status: 'pending' } }; }
+    if (approved) throw Object.assign(new Error('synthetic read failure'), { status: 503 });
+    return makeResult({ previewId: 'synthetic-preview', current: { approvalId: null } });
+  } });
+  await state.load();
+  assert.equal(await state.apply(), true, 'A failed read must not turn a committed approval into a failed command');
+  assert.equal(state.snapshot().result.activeTrial.id, 'synthetic-trial');
+  assert.equal(state.snapshot().result.current.approvalId, null);
+  assert.equal(state.snapshot().stale, true);
+  assert.equal(state.snapshot().error, true);
+  assert.match(state.snapshot().receipt.message, /approved/);
+  assert.equal(state.snapshot().receipt.error, undefined);
+  assert.equal(await state.apply(), false);
 });
 
 test('uncertain approval cannot be blindly retried and does not claim success', async () => {

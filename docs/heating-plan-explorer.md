@@ -27,8 +27,11 @@ The window follows one reading order:
 The selected plan and its context stay fixed across comparisons. An approval
 record explicitly says whether it belongs to that captured plan, using the actual
 approval identity. A newer record or an ended approval does not silently relabel
-the capture. Refresh after approval, cancellation or an ended captured cycle
-before comparing again. Expanding a record or switching to it preserves drafts.
+the capture. Approval automatically loads the newly selected plan while keeping
+edited limits and the approval receipt. If that read fails, the approval remains
+saved and the old capture stays visibly stale; retry the read rather than
+approving again. Refresh after cancellation or an ended captured cycle before
+comparing again. Expanding a record or switching to it preserves drafts.
 
 The normal-temperature reference reports its actual origin alongside the value:
 learned, provisional learned, explicitly configured, retained for an accepted
