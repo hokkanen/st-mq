@@ -1273,6 +1273,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     }
   }
   return { status, supportsIdentification: true, waitForIdentificationAdmission,
+    independentOfEconomicPlan({ enabled, chargeNow, connectedAt, identificationId }) {
+      if (!time(connectedAt) || enabled !== desired.enabled || chargeNow !== chargeNowActive() || connectedAt !== state.session?.connectedAt)
+        return false;
+      return chargeNowActive() || desired.enabled !== true || Boolean(identification
+        && identification.id === identificationId && (identification.phase === 'pausing'
+          ? clock() < identification.pauseUntil : identification.mode !== 'probe' || clock() < identification.probeUntil));
+    },
     waitForVehicleAdmission(admission) {
       return admission?.pending === true && admission.failed !== true && (waitForIdentificationAdmission()
         || admittedStartContext !== null && !snapshot?.transactionConfirmed && (!identification || chargeNowActive() || desired.enabled !== true));

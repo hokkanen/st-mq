@@ -127,6 +127,27 @@ test('a queued BMW report cannot cancel independent Charge now startup, but fail
   assert.equal(f.permission, null, 'Actual admission failure still cancels selected work');
 });
 
+for (const mode of ['probe', 'charge-now'])
+test(`a background economic publication cannot cancel the independent ${mode} Start`, async t => {
+  const f = await fixture(t); f.reconnect();
+  if (mode === 'probe') f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
+  await f.update();
+  if (mode === 'charge-now') {
+    const view = f.runtime.status().chargers.find(row => row.id === 'charger1');
+    await f.runtime.chargeNow('charger1', { association: view.association,
+      sessionId: view.request.sessionId, revision: view.request.revision });
+  }
+  const original = f.permission;
+  f.runtime.fenceChangedCommands(f.now, 'charger1');
+  f.item.plan = { ...f.item.plan, startAt: RELEASE_AT + MINUTE,
+    periods: [{ startAt: RELEASE_AT + MINUTE, endAt: null }] };
+  f.runtime.fenceChangedCommands(f.now);
+  assert.equal(f.permission, original, 'A changed price proposal cannot revoke independently admitted Start');
+  assert.equal(f.startAllowed, true);
+  f.beginTransaction(); await f.update();
+  assert.equal(f.item.controller.status().snapshot.transactionConfirmed, true);
+});
+
 // Production runtime, BMW ingress, OCPP adapter and controller. Only the wire,
 // clock and economic plan are synthetic; transaction confirmation is supplied
 // only after asserting the controller has actually authorized the initial start.

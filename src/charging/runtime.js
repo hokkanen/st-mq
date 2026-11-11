@@ -3206,7 +3206,10 @@ export class ChargingRuntime {
       // native operation. Only the still-current accepted Stop may finish
       // independently of a changed proposal; explicit/native guards remain.
       const ownPublication = id === sourceId && (!sourceWaiter || item.planWait === sourceWaiter);
-      if (!changed || ownPublication || item.awaitingPlan || identifyingPause || item.controller?.ownsDueStop?.()
+      const independentNativePlan = item.controller?.independentOfEconomicPlan?.({
+        enabled: item.controls.enabled, chargeNow: item.request?.chargeNow === true,
+        connectedAt: item.request ? sessionConnectedAt(item.request) : null, identificationId: item.identification?.id });
+      if (!changed || ownPublication || item.awaitingPlan || identifyingPause || independentNativePlan || item.controller?.ownsDueStop?.()
         || !item.controller || item.backendTransition || this.closed) continue;
       item.controller.invalidate?.(); item.lastReconcileAt = null;
       if (item.reconcileFlight) { item.reconcileAgain = true; continue; }
