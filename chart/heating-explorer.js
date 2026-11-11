@@ -90,8 +90,9 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       } else {
         const activeTrial = result?.activeTrial;
         result = capturedTrialRevision === trialRevision ? next : { ...next, activeTrial };
-        stale = capturedFreshnessRevision !== freshnessRevision && (expectedSelection !== selectionSignature(result.current)
-          || capturedTrialRevision !== trialRevision && JSON.stringify(next.activeTrial) !== JSON.stringify(activeTrial));
+        stale = next.application?.needsRefresh === true || capturedFreshnessRevision !== freshnessRevision
+          && (expectedSelection !== selectionSignature(result.current)
+            || capturedTrialRevision !== trialRevision && JSON.stringify(next.activeTrial) !== JSON.stringify(activeTrial));
         dirty = false;
         if (reset) {
           baseline = structuredClone(next);
@@ -102,7 +103,8 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
           }
           dirty = edited.size > 0;
         }
-        message = reset ? draft?.size ? 'Conditions refreshed. Your edited limits are kept; compare again.' : ''
+        message = next.application?.needsRefresh ? 'Conditions changed during calculation. Update & compare keeps your edited limits.'
+          : reset ? draft?.size ? 'Conditions refreshed. Your edited limits are kept; compare again.' : ''
           : 'Comparison ready. Live settings are unchanged.';
       }
       return true;
@@ -136,13 +138,18 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
     },
     async compare() {
       if (busy || !result) return false;
-      if (snapshot().stale && !await run(endpoint, undefined, { reset: true, preserveDraft: true })) return false;
-      if (!result || snapshot().stale) return false;
-      const changes = Object.fromEntries((baseline?.controls ?? result.controls)
-        .filter(control => limits[control.key] !== control.value
-          && (!['maxTrialCostCents', 'learningPriorityPriceCents'].includes(control.key) || limits.learningTrials === true))
-        .map(control => [control.key, limits[control.key]]));
-      return run(`${endpoint}/simulate`, { snapshotId: result.snapshotId, limits: changes });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (snapshot().stale && !await run(endpoint, undefined, { reset: true, preserveDraft: true })) return false;
+        if (!result) return false;
+        if (snapshot().stale) continue;
+        const changes = Object.fromEntries((baseline?.controls ?? result.controls)
+          .filter(control => limits[control.key] !== control.value
+            && (!['maxTrialCostCents', 'learningPriorityPriceCents'].includes(control.key) || limits.learningTrials === true))
+          .map(control => [control.key, limits[control.key]]));
+        if (!await run(`${endpoint}/simulate`, { snapshotId: result.snapshotId, limits: changes })) return false;
+        if (!result?.application?.needsRefresh) return true;
+      }
+      return false;
     },
     async apply() {
       if (!result?.previewId || !result.application?.allowed || dirty || snapshot().stale) return Promise.resolve(false);

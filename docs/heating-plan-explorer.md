@@ -33,7 +33,9 @@ saved and the old capture stays visibly stale; retry the read rather than
 approving again. Cancellation also automatically updates the selection. Reopening
 a stale capture updates it while preserving edited limits. **Update & compare**
 refreshes stale conditions and calculates the draft in one action. Expanding a
-record or switching to it preserves drafts.
+record or switching to it preserves drafts. If source evidence changes while a
+comparison runs, calculation obtains a new capture and retries once with the
+same edited limits. A changed opportunity still needs a separate explicit approval.
 
 The normal-temperature reference reports its actual origin alongside the value:
 learned, provisional learned, explicitly configured, retained for an accepted

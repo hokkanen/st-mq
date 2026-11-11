@@ -178,13 +178,15 @@ export class HeatingExplorer {
     const { executablePlan, ...visible } = result;
     const scope = this.approvalScope(executablePlan);
     const trial = this.trial(), approvalId = ACTIVE.has(trial?.status) ? trial.id : null;
+    const sourceChanged = snapshot.binding !== this.binding(), approvalChanged = snapshot.approvalId !== approvalId;
+    const expired = snapshot.expiresAt <= this.engine.clock();
     const reason = this.availableReason({ replacePending: true })
-      ?? (snapshot.approvalId !== approvalId ? 'The approved cycle changed. Update conditions and compare again.' : null)
-      ?? (snapshot.binding !== this.binding() ? 'Configuration or source evidence changed. Refresh the plan.' : null)
+      ?? (approvalChanged ? 'The approved cycle changed. Update conditions and compare again.' : null)
+      ?? (sourceChanged ? 'Configuration or source evidence changed. Refresh the plan.' : null)
       ?? (!preview ? 'Compare a scenario before applying it.' : null)
       ?? (!executablePlan ? 'This comparison has no executable cycle within current safety and evidence limits.' : null)
       ?? scope.reason
-      ?? (snapshot.expiresAt <= this.engine.clock() ? 'This preview expired. Refresh the plan.' : null);
+      ?? (expired ? 'This preview expired. Refresh the plan.' : null);
     const previewId = preview ? randomUUID() : null;
     if (preview) {
       while (this.previews.size >= 16) this.previews.delete(this.previews.keys().next().value);
@@ -193,6 +195,7 @@ export class HeatingExplorer {
     }
     return { ...visible, snapshotId: snapshot.id, expiresAt: snapshot.expiresAt, previewId,
       application: { allowed: !reason, reason, replacesApprovalId: trial?.status === 'pending' ? trial.id : null,
+        needsRefresh: sourceChanged || approvalChanged || expired,
         latestStartAt: scope.latestStartAt, expiresAt: scope.expiresAt }, activeTrial: this.publicTrial() };
   }
   approvalScope(plan) {

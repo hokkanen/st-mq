@@ -241,6 +241,27 @@ test('a read that already contains the latest polled selection stays usable inst
   assert.deepEqual(state.snapshot().result.current, selected);
 });
 
+test('one Calculate action refreshes a source-invalidated comparison and recalculates the preserved draft once', async () => {
+  const requests = []; let reads = 0, comparisons = 0;
+  const state = createHeatingExplorerState({ clock: () => now, request: async (path, body) => {
+    requests.push({ path, body });
+    if (path.endsWith('/simulate')) {
+      comparisons++;
+      return makeResult({ snapshotId: body.snapshotId, previewId: 'synthetic-reviewed',
+        application: { allowed: comparisons > 1, needsRefresh: comparisons === 1 } });
+    }
+    return makeResult({ snapshotId: 'synthetic-capture-' + ++reads, previewId: null });
+  } });
+  await state.load(); state.edit('maxReductionHours', 8);
+  assert.equal(await state.compare(), true);
+  assert.equal(reads, 2); assert.equal(comparisons, 2);
+  assert.equal(state.snapshot().stale, false);
+  assert.equal(state.snapshot().limits.maxReductionHours, 8);
+  assert.equal(requests[3].body.snapshotId, 'synthetic-capture-2');
+  assert.deepEqual(requests[3].body.limits, { maxReductionHours: 8 });
+  assert(!requests.some(request => request.path.endsWith('/apply')), 'Recalculation cannot silently approve a changed opportunity');
+});
+
 test('a late read cannot restore private comparison data after sign-out', async () => {
   let finish;
   const state = createHeatingExplorerState({ clock: () => now, request: () => new Promise(resolve => { finish = resolve; }) });
@@ -263,7 +284,7 @@ test('edited and expired previews cannot be applied and expiration does not shif
   assert.equal(await state.apply(), false);
   assert.equal(await state.compare(), false);
   assert.equal(state.snapshot().result.snapshotAt, now);
-  assert.equal(requests.length, 3, 'An expired capture attempts a fresh read, never another expired simulation');
+  assert.equal(requests.length, 4, 'An expired capture has one bounded read retry, never another expired simulation');
 });
 
 test('failed refresh retains the draft while withdrawing previous execution eligibility', async () => {

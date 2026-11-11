@@ -55,6 +55,18 @@ test('invalid planning clocks cannot provide fresh comparison snapshots', async 
   }
 });
 
+test('a source-invalidated capture explicitly requires a fresh calculation even when its frozen comparison is cached', async t => {
+  const r = fixture(t), preview = await r.preview();
+  r.engine.checkpoint.model = { ...r.engine.checkpoint.model, sourceRevision: 'synthetic-new-model' };
+  const stale = await r.service.simulate({ snapshotId: preview.snapshotId, limits: { maxReductionHours: 8 } });
+  assert.equal(stale.application.allowed, false);
+  assert.equal(stale.application.needsRefresh, true);
+  assert.match(stale.application.reason, /source evidence changed/);
+  const next = await r.preview();
+  assert.equal(next.application.needsRefresh, false);
+  assert.equal(next.application.allowed, true);
+});
+
 test('approval publishes the selected plan after commit without waiting for another controller tick', async t => {
   const r = fixture(t), run = r.worker.run.bind(r.worker);
   let updates = 0;
