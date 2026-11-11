@@ -645,7 +645,11 @@ try {
   assert.equal(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).length`),0,'Losing admin access while reviewing prevents submission');
   await evaluate(`explorerFixture.role='admin';await explorerFixture.poll();document.getElementById('heating-explorer-apply').click()`);
   await until(`document.querySelector('.confirmation-dialog')?.open`);
-  await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click()`);
+  const readsBeforeApproval = await evaluate(`explorerFixture.requests.filter(r=>r.path==='/api/heating/explorer').length`);
+  await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:last-child').click();document.getElementById('heating-explorer-close').click()`);
+  await until(`explorerFixture.requests.some(r=>r.path.endsWith('/apply'))&&explorerFixture.requests.filter(r=>r.path==='/api/heating/explorer').length>${readsBeforeApproval}`);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-dialog').open`),false,'Closing after confirmation neither drops approval nor reopens the window');
+  await evaluate(`document.getElementById('home-planned-change').click()`);
   await until(`document.getElementById('heating-explorer-receipt').textContent.includes('approved')&&!document.getElementById('heating-explorer-refresh').disabled&&document.getElementById('heating-explorer-trial-record').open`);
   assert.deepEqual(await evaluate(`explorerFixture.requests.filter(r=>r.path.endsWith('/apply')).map(r=>r.body)`), [{previewId:'synthetic-reviewed-preview'}]);
   assert.equal(await evaluate(`document.getElementById('heating-explorer-trial-record').open`), true, 'A new active approval opens its own record');

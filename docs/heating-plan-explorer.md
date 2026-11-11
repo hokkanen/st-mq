@@ -104,6 +104,8 @@ An illustration of using the full duration limit has its own disclosure and cann
 be approved. After a successful approval, the window opens and focuses the newly
 approved cycle's record. Active and historical record contents use the same layout;
 polling preserves the reader's chosen disclosure state for that approval.
+Closing the plan window after confirming approval does not withdraw that action
+or reopen the window when its response arrives. Reopening shows the saved result.
 
 The main controls remain visible on narrow and wide screens. Less frequently
 changed budget and economic controls are under **Advanced settings**, initially

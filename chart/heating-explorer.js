@@ -691,7 +691,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const replacing = !!state.result.application?.replacesApprovalId;
       const accepted = await confirm({ document, title: replacing ? 'Replace the approved heating cycle?' : 'Approve this heating cycle?',
         message: heatingApprovalText(state.result), action: replacing ? 'Replace approved cycle' : 'Approve one cycle' });
-      if (accepted && dialog.open && status?.webAccess?.role === 'admin'
+      if (accepted && status?.webAccess?.role === 'admin'
         && actions.snapshot().result?.previewId === previewId && await actions.apply()) {
         await afterMutation();
         if (dialog.open) viewApproval();
