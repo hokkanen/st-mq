@@ -551,12 +551,18 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         if (req.method === 'POST' && url.pathname === '/api/heating/explorer/apply')
           return await mutate(async (current, input, commit) => {
             if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
-            return json(200, await commit(() => current.heatingExplorer.apply(input)));
+            const receipt = await commit(() => current.heatingExplorer.apply(input));
+            try { await current.update?.(); }
+            catch { return json(200, { ...receipt, reconciliationPending: true }); }
+            return json(200, { activeTrial: current.heatingExplorer.publicTrial() });
           });
         if (req.method === 'POST' && url.pathname === '/api/heating/explorer/cancel')
           return await mutate(async (current, input, commit) => {
             if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
-            return json(200, await commit(() => current.heatingExplorer.cancel(input)));
+            const receipt = await commit(() => current.heatingExplorer.cancel(input));
+            try { await current.update?.(); }
+            catch { return json(200, { ...receipt, reconciliationPending: true }); }
+            return json(200, { activeTrial: current.heatingExplorer.publicTrial() });
           });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });

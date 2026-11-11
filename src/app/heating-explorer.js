@@ -127,11 +127,13 @@ export class HeatingExplorer {
       health: input.checkpoint?.health }, currentPlan: decision.plan, currentDecision: { action: decision.action,
       phase: decision.phase, reasons: decision.reasons }, blockedReason };
   }
-  availableReason() {
+  availableReason({ replacePending = false } = {}) {
     const e = this.engine;
     if (!e.canControl() || e.suspended || e.config.input === 'offline') return 'The active controller is required to apply a trial.';
     if (e.cycles.active()) return 'Wait for the current cycle and recovery to finish.';
-    if (ACTIVE.has(this.trial()?.status)) return 'A one-cycle scenario is already approved. Cancel it before selecting another.';
+    const trial = this.trial();
+    if (ACTIVE.has(trial?.status) && !(replacePending && trial.status === 'pending'))
+      return 'A one-cycle scenario is already running. Wait for its recovery before selecting another.';
     if (e.dispatchPending || e.heatingTestBusy || e.automationChangePending) return 'Wait for the current heating operation to finish.';
     if (this.input?.blockedReason && this.input.blockedReason !== 'heating-paused') return `Current heating is held: ${this.input.blockedReason}.`;
     const executor = e.executor.status();
@@ -146,7 +148,9 @@ export class HeatingExplorer {
     for (const [id, value] of this.snapshots) if (value.expiresAt <= now) this.snapshots.delete(id);
     for (const [id, value] of this.previews) if (value.expiresAt <= now) this.previews.delete(id);
     while (this.snapshots.size >= 8) this.snapshots.delete(this.snapshots.keys().next().value);
+    const trial = this.trial();
     const id = randomUUID(), value = { id, input: structuredClone(this.input), binding: this.binding(),
+      approvalId: ACTIVE.has(trial?.status) ? trial.id : null,
       expiresAt: Math.min(now + PREVIEW_MS, this.input.now + PREVIEW_MS), cache: new Map() };
     this.snapshots.set(id, value); return value;
   }
@@ -173,7 +177,10 @@ export class HeatingExplorer {
     const result = await task;
     const { executablePlan, ...visible } = result;
     const scope = this.approvalScope(executablePlan);
-    const reason = this.availableReason() ?? (snapshot.binding !== this.binding() ? 'Configuration or source evidence changed. Refresh the plan.' : null)
+    const trial = this.trial(), approvalId = ACTIVE.has(trial?.status) ? trial.id : null;
+    const reason = this.availableReason({ replacePending: true })
+      ?? (snapshot.approvalId !== approvalId ? 'The approved cycle changed. Update conditions and compare again.' : null)
+      ?? (snapshot.binding !== this.binding() ? 'Configuration or source evidence changed. Refresh the plan.' : null)
       ?? (!preview ? 'Compare a scenario before applying it.' : null)
       ?? (!executablePlan ? 'This comparison has no executable cycle within current safety and evidence limits.' : null)
       ?? scope.reason
@@ -181,11 +188,12 @@ export class HeatingExplorer {
     const previewId = preview ? randomUUID() : null;
     if (preview) {
       while (this.previews.size >= 16) this.previews.delete(this.previews.keys().next().value);
-      this.previews.set(previewId, { snapshot, plan: executablePlan, limits: normalized,
+      this.previews.set(previewId, { snapshot, plan: executablePlan, limits: normalized, approvalId,
         expiresAt: snapshot.expiresAt, allowed: !reason });
     }
     return { ...visible, snapshotId: snapshot.id, expiresAt: snapshot.expiresAt, previewId,
-      application: { allowed: !reason, reason, latestStartAt: scope.latestStartAt, expiresAt: scope.expiresAt }, activeTrial: this.publicTrial() };
+      application: { allowed: !reason, reason, replacesApprovalId: trial?.status === 'pending' ? trial.id : null,
+        latestStartAt: scope.latestStartAt, expiresAt: scope.expiresAt }, activeTrial: this.publicTrial() };
   }
   approvalScope(plan) {
     if (!plan?.schedule) return { reason: null, latestStartAt: null, expiresAt: null };
@@ -201,7 +209,9 @@ export class HeatingExplorer {
     const now = this.engine.clock();
     if (!preview || preview.expiresAt <= now) throw failure('This preview expired. Refresh and simulate before applying.', 410);
     if (preview.snapshot.binding !== this.binding()) throw failure('Configuration or source evidence changed. Refresh the plan.');
-    const unavailable = this.availableReason();
+    const previous = this.trial(), approvalId = ACTIVE.has(previous?.status) ? previous.id : null;
+    if (preview.approvalId !== approvalId) throw failure('The approved cycle changed. Update conditions and compare again.');
+    const unavailable = this.availableReason({ replacePending: true });
     if (unavailable) throw failure(unavailable);
     if (!preview.allowed || !preview.plan) throw failure('This scenario cannot be applied within current safety and evidence limits.');
     if (!this.input || now - this.input.now > INPUT_MAX_AGE_MS) throw failure('A fresh controller snapshot is required.');
@@ -219,6 +229,7 @@ export class HeatingExplorer {
     const trial = { version: 1, ...context, status: 'pending', binding: preview.snapshot.binding,
       scopeBinding: this.scopeBinding(), plan };
     this.engine.store.transaction(() => {
+      if (approvalId) this.finish('cancelled', 'Replaced by a newly approved cycle.');
       this.engine.store.setState(this.key, trial);
       this.engine.store.setState(`pending-plan:${this.engine.config.input}`, plan);
       this.engine.store.event('heating-scenario-approved', context, now);
@@ -249,15 +260,24 @@ export class HeatingExplorer {
       this.engine.store.setState(this.key, next);
       this.engine.store.event(`heating-scenario-${status}`, { id: trial.id, reason, cycleId: trial.cycleId ?? null }, now);
       if (this.engine.pendingPlan?.userTrial?.id === trial.id) this.engine.store.setState(`pending-plan:${this.engine.config.input}`, null);
+      this.engine.store.afterCommit(() => {
+        if (this.engine.pendingPlan?.userTrial?.id === trial.id) this.engine.pendingPlan = null;
+        if (!this.engine.cycles.active() && this.input?.currentPlan?.userTrial?.id === trial.id)
+          this.capture({ ...this.input, currentConfig: this.input.config, currentSettings: this.input.settings },
+            { plan: null, action: 'normal', phase: 'normal', reasons: ['admin-cancelled-scenario'] });
+        this.previews.clear();
+      });
     });
-    if (this.engine.pendingPlan?.userTrial?.id === trial.id) this.engine.pendingPlan = null;
   }
   cancel(payload) {
-    object(payload, []);
+    object(payload, ['approvalId']);
+    if (typeof payload.approvalId !== 'string') throw failure('The approval to cancel is required.', 400);
     const trial = this.trial();
+    if (!trial || payload.approvalId !== trial.id) throw failure('The approved cycle changed. Update conditions before cancelling.');
     if (trial && ACTIVE.has(trial.status)) {
       if (this.engine.cycles.active()?.plan.userTrial?.id === trial.id) this.engine.cycles.shorten(this.engine.clock(), 'admin-cancelled-scenario');
       this.finish('cancelled', 'Cancelled by admin; ordinary restoration and recovery remain active.');
+      this.engine.store.afterCommit(() => this.engine.requestUpdate?.());
     }
     return { activeTrial: this.publicTrial() };
   }

@@ -42,6 +42,8 @@ export function heatingEvidenceText(evidence = {}) {
   pending.length ? `Validation still being collected: ${pending.join(', ')}.` : ''].filter(Boolean).join(' ');
 }
 const validTrial = trial => ['pending', 'running'].includes(trial?.status);
+const selectionSignature = value => JSON.stringify({ schedule: value?.schedule ?? null,
+  phase: value?.phase ?? null, trial: value?.approvalId ?? null });
 const errorMessage = error => error?.status === 401 ? 'Your session ended. Sign in again to continue.'
   : error?.status === 503 && error?.code === 'heating_snapshot_unavailable'
     ? 'The controller has not updated heating conditions. Check Recording status, then refresh conditions.'
@@ -58,6 +60,8 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
   let generation = 0;
   let freshnessRevision = 0, trialRevision = 0;
   let receipt = null;
+  let confirmedTrial = null;
+  let expectedSelection = null;
   const edited = new Set();
   const snapshot = () => ({ result, limits: { ...limits }, busy, message, error, dirty,
     receipt: actionReceiptRecent(receipt?.at, clock()) ? receipt : null,
@@ -74,15 +78,21 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       const next = await request(path, body);
       if (generation !== ownGeneration) return false;
       if (mutation) {
-        result = { ...result, activeTrial: next.activeTrial, application: { allowed: false, reason: 'Refresh conditions to see the selected plan after this change.' } };
+        confirmedTrial = next.activeTrial;
+        ++trialRevision; ++freshnessRevision;
+        result = { ...result, previewId: null, activeTrial: next.activeTrial,
+          application: { allowed: false, reason: 'Updating the selected plan…' } };
         message = path.endsWith('/cancel') ? 'Cycle approval cancelled. Any required recovery and restoration still continue.'
           : 'Heating cycle approved. Its reviewed limits apply only to that cycle. The controller rechecks current conditions before execution.';
+        if (next.reconciliationPending) message += ' The controller update is still pending; the saved action succeeded.';
         receipt = { at: clock(), message }; message = '';
         dirty = true; stale = true;
       } else {
         const activeTrial = result?.activeTrial;
         result = capturedTrialRevision === trialRevision ? next : { ...next, activeTrial };
-        stale = capturedFreshnessRevision !== freshnessRevision; dirty = false;
+        stale = capturedFreshnessRevision !== freshnessRevision && (expectedSelection !== selectionSignature(result.current)
+          || capturedTrialRevision !== trialRevision && JSON.stringify(next.activeTrial) !== JSON.stringify(activeTrial));
+        dirty = false;
         if (reset) {
           baseline = structuredClone(next);
           limits = Object.fromEntries((next.controls ?? []).map(control => [control.key, control.value])); edited.clear();
@@ -124,8 +134,10 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       message = 'Preview reset to the captured baseline. Live settings are unchanged.'; error = false;
       edited.clear(); notify();
     },
-    compare() {
-      if (!result || snapshot().stale) return Promise.resolve(false);
+    async compare() {
+      if (busy || !result) return false;
+      if (snapshot().stale && !await run(endpoint, undefined, { reset: true, preserveDraft: true })) return false;
+      if (!result || snapshot().stale) return false;
       const changes = Object.fromEntries((baseline?.controls ?? result.controls)
         .filter(control => limits[control.key] !== control.value
           && (!['maxTrialCostCents', 'learningPriorityPriceCents'].includes(control.key) || limits.learningTrials === true))
@@ -138,17 +150,28 @@ export function createHeatingExplorerState({ request, clock = Date.now, onChange
       if (approved && result) await run(endpoint, undefined, { reset: true, preserveDraft: true });
       return approved;
     },
-    cancel: () => validTrial(result?.activeTrial) ? run(`${endpoint}/cancel`, {}, { mutation: true }) : Promise.resolve(false),
-    markStale() { if (result) { ++freshnessRevision; stale = true; notify(); } },
+    async cancel() {
+      if (busy || !validTrial(result?.activeTrial)) return false;
+      const cancelled = await run(`${endpoint}/cancel`, { approvalId: result.activeTrial.id }, { mutation: true });
+      if (cancelled && result) await run(endpoint, undefined, { reset: true, preserveDraft: true });
+      return cancelled;
+    },
+    markStale(selected) {
+      if (result) { expectedSelection = selected ? selectionSignature(selected) : null; ++freshnessRevision; stale = true; notify(); }
+    },
     updateTrial(trial) {
+      const current = result?.activeTrial;
+      const changedAt = value => Math.max(value?.approvedAt ?? 0, value?.startedAt ?? 0, value?.endedAt ?? 0);
+      if (current && (trial && changedAt(trial) < changedAt(current)
+        || !trial && confirmedTrial?.id === current.id)) return;
       if (result && JSON.stringify(trial) !== JSON.stringify(result.activeTrial)) {
         ++trialRevision;
-        if (trial?.id && trial.id === result.current?.approvalId && !validTrial(trial)) { ++freshnessRevision; stale = true; }
+        if (trial?.id !== current?.id || trial?.status !== current?.status) { ++freshnessRevision; stale = true; }
         result = { ...result, activeTrial: trial }; notify();
       }
     },
     tick: notify,
-    clear() { ++generation; result = null; baseline = null; limits = {}; edited.clear(); busy = false; message = ''; error = false; dirty = false; stale = false; receipt = null; notify(); },
+    clear() { ++generation; result = null; baseline = null; limits = {}; edited.clear(); busy = false; message = ''; error = false; dirty = false; stale = false; receipt = null; confirmedTrial = null; expectedSelection = null; notify(); },
   };
 }
 
@@ -161,6 +184,7 @@ export function heatingApprovalText(result) {
     : Number.isFinite(learning?.remainingAutomaticAllowanceCents) && Number.isFinite(budget)
       ? Math.min(budget, learning.remainingAutomaticAllowanceCents) : null;
   return [
+    result.application?.replacesApprovalId ? 'This replaces the previously approved cycle that has not started. The previous approval ends only if this new approval succeeds.' : '',
     `The reviewed limits apply only to this cycle${result.application?.expiresAt ? ` and expire by ${atTime(result.application.expiresAt)}` : ''}.`,
     Number.isFinite(benefit) ? `Estimated ${benefit < 0 ? 'extra cost' : 'saving'} against Normal heating: ${money(Math.abs(benefit))}.` : '',
     Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `Maximum predicted drop below Normal: ${decimal(scenario.outcomes.maxIndoorDropC)} °C.` : '',
@@ -589,8 +613,8 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
         : budgetEdited ? 'The edited budget supplies a separate allowance for this reviewed cycle.' : 'An unchanged budget retains the captured automatic allowance.',
     ].filter(Boolean).join(' ');
     $('heating-explorer-snapshot').textContent = `${state.stale ? 'Plan capture needs refreshing' : 'Plan captured'} · ${atTime(result.snapshotAt)} · Europe/Helsinki`;
-    $('heating-explorer-calculate').disabled = busy || state.stale;
-    $('heating-explorer-calculate').textContent = busy ? 'Working' : 'Compare scenario';
+    $('heating-explorer-calculate').disabled = busy;
+    $('heating-explorer-calculate').textContent = busy ? 'Working' : state.stale ? 'Update & compare' : 'Compare scenario';
     $('heating-explorer-reset').disabled = busy || !state.dirty && !result.previewId && !state.error;
     for (const button of $('heating-explorer-opportunities').querySelectorAll('button')) button.disabled = busy;
     $('heating-explorer-dirty').hidden = !state.dirty || !result.previewId;
@@ -603,9 +627,10 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const admin = status?.webAccess?.role === 'admin';
     const canApply = admin && !busy && !state.dirty && !state.stale && !!result.previewId && result.application?.allowed === true;
     $('heating-explorer-apply').disabled = !canApply;
+    $('heating-explorer-apply').textContent = result.application?.replacesApprovalId ? 'Replace approved cycle' : 'Approve one cycle';
     $('heating-explorer-apply').hidden = !admin;
     $('heating-explorer-application-help').textContent = [!admin ? 'Family can explore. Admin sign-in is required to apply a scenario.' : '',
-      state.stale ? 'Refresh conditions and compare again before approval.'
+      state.stale ? 'Use Update & compare to refresh conditions and calculate your edited limits before approval.'
         : state.dirty ? 'Compare your edited limits before approval.' : result.application?.reason ?? ''].filter(Boolean).join(' ');
     const trial = result.activeTrial;
     $('heating-explorer-cancel').hidden = !admin || !validTrial(trial);
@@ -634,7 +659,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     }
     const saved = actions.snapshot();
     render(saved);
-    if (!saved.result) await actions.load();
+    if (!saved.result || saved.stale) await actions.load({ preserveDraft: true });
   }
   const close = () => { if (dialog.open) dialog.close(); };
   opener.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); void open(); });
@@ -656,8 +681,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     approving = true;
     closeStatusDetails(document);
     try {
-      const accepted = await confirm({ document, title: 'Approve this heating cycle?',
-        message: heatingApprovalText(state.result), action: 'Approve one cycle' });
+      const replacing = !!state.result.application?.replacesApprovalId;
+      const accepted = await confirm({ document, title: replacing ? 'Replace the approved heating cycle?' : 'Approve this heating cycle?',
+        message: heatingApprovalText(state.result), action: replacing ? 'Replace approved cycle' : 'Approve one cycle' });
       if (accepted && dialog.open && status?.webAccess?.role === 'admin'
         && actions.snapshot().result?.previewId === previewId && await actions.apply()) {
         await afterMutation();
@@ -697,7 +723,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
           const captured = actions.snapshot().result.current;
           const capturedSignature = JSON.stringify({ schedule: captured?.schedule ?? null,
             phase: captured?.phase ?? null, trial: captured?.approvalId ?? null });
-          if (signature(previous) !== signature(next) && signature(next) !== capturedSignature) actions.markStale();
+          if (signature(previous) !== signature(next) && signature(next) !== capturedSignature)
+            actions.markStale({ schedule: next.decision.plan?.schedule ?? null, phase: next.decision.phase ?? null,
+              approvalId: next.decision.plan?.userTrial?.id ?? null });
         }
         if (Object.hasOwn(next, 'heatingScenario')) actions.updateTrial(next.heatingScenario);
         if (dialog.open) render(actions.snapshot());

@@ -65,7 +65,8 @@ test('ending the captured approved cycle withdraws comparison freshness while re
   assert.equal(state.snapshot().stale, true);
   assert.deepEqual(state.snapshot().result.current, selected);
   assert.equal(state.snapshot().limits.maxReductionHours, 8);
-  assert.equal(await state.compare(), false);
+  assert.equal(await state.compare(), true, 'Calculation refreshes an ended capture before comparing the preserved draft');
+  assert.equal(state.snapshot().limits.maxReductionHours, 8);
 });
 test('a stale controller snapshot directs the user to recording health without exposing raw errors', async () => {
   const state = createHeatingExplorerState({ request: async () => {
@@ -227,6 +228,19 @@ test('a completed Refresh clears an earlier stale indication when no newer plan 
   assert.equal(state.snapshot().stale, false);
 });
 
+test('a read that already contains the latest polled selection stays usable instead of requiring another calculation', async () => {
+  let release, calls = 0;
+  const selected = { phase: 'normal', approvalId: 'synthetic-current', schedule: { reductionStart: now, reductionEnd: now + 3600000 } };
+  const state = createHeatingExplorerState({ clock: () => now, request: async () => ++calls === 1 ? makeResult()
+    : new Promise(resolve => { release = resolve; }) });
+  await state.load();
+  const reading = state.load();
+  state.markStale(selected);
+  release(makeResult({ current: selected })); await reading;
+  assert.equal(state.snapshot().stale, false);
+  assert.deepEqual(state.snapshot().result.current, selected);
+});
+
 test('a late read cannot restore private comparison data after sign-out', async () => {
   let finish;
   const state = createHeatingExplorerState({ clock: () => now, request: () => new Promise(resolve => { finish = resolve; }) });
@@ -249,7 +263,7 @@ test('edited and expired previews cannot be applied and expiration does not shif
   assert.equal(await state.apply(), false);
   assert.equal(await state.compare(), false);
   assert.equal(state.snapshot().result.snapshotAt, now);
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 3, 'An expired capture attempts a fresh read, never another expired simulation');
 });
 
 test('failed refresh retains the draft while withdrawing previous execution eligibility', async () => {
@@ -332,17 +346,41 @@ test('a stale server rejection retains the frozen comparison and requests refres
 });
 
 test('cancel is limited to a pending or running cycle and leaves restoration visible', async () => {
-  const requests = [];
+  const requests = []; let cancelled = false;
   const state = createHeatingExplorerState({ clock: () => now, request: async (path, body) => {
     requests.push({ path, body });
-    return path.endsWith('/cancel') ? { activeTrial: { status: 'cancelled' } }
-      : makeResult({ activeTrial: { status: 'running' } });
+    if (path.endsWith('/cancel')) cancelled = true;
+    return path.endsWith('/cancel') ? { activeTrial: { id: 'synthetic-cycle', status: 'cancelled' } }
+      : makeResult({ activeTrial: { id: 'synthetic-cycle', status: cancelled ? 'cancelled' : 'running' } });
   } });
   assert.equal(await state.cancel(), false);
   await state.load(); assert.equal(await state.cancel(), true);
-  assert.deepEqual(requests[1], { path: '/api/heating/explorer/cancel', body: {} });
+  assert.deepEqual(requests[1], { path: '/api/heating/explorer/cancel', body: { approvalId: 'synthetic-cycle' } });
+  assert.deepEqual(requests[2], { path: '/api/heating/explorer', body: undefined });
   assert.match(state.snapshot().receipt.message, /recovery and restoration still continue/);
   assert.equal(await state.cancel(), false);
+});
+
+test('late dashboard polls cannot undo a confirmed approval or cancellation', async () => {
+  const approved = { id: 'synthetic-new', status: 'pending', approvedAt: now };
+  let current = null;
+  const state = createHeatingExplorerState({ clock: () => now, request: async path => {
+    if (path.endsWith('/apply')) current = approved;
+    if (path.endsWith('/cancel')) current = { ...approved, status: 'cancelled', endedAt: now + 1 };
+    return /\/(apply|cancel)$/.test(path) ? { activeTrial: current }
+      : makeResult({ previewId: current ? null : 'synthetic-preview', activeTrial: current });
+  } });
+  await state.load(); await state.apply();
+  state.updateTrial(null);
+  state.updateTrial({ id: 'synthetic-old', status: 'cancelled', approvedAt: now - 1000, endedAt: now - 500 });
+  assert.deepEqual(state.snapshot().result.activeTrial, approved);
+  await state.cancel(); state.updateTrial(approved);
+  assert.equal(state.snapshot().result.activeTrial.status, 'cancelled');
+  assert.equal(state.snapshot().result.previewId, null);
+});
+
+test('replacement confirmation explicitly revokes only the unused approval after the new approval succeeds', () => {
+  assert.match(heatingApprovalText({ application: { replacesApprovalId: 'synthetic-old' } }), /replaces.*not started.*only if this new approval succeeds/);
 });
 
 test('comparison cards preserve negative savings and unknown average predictions', () => {

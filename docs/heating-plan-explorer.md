@@ -30,8 +30,10 @@ approval identity. A newer record or an ended approval does not silently relabel
 the capture. Approval automatically loads the newly selected plan while keeping
 edited limits and the approval receipt. If that read fails, the approval remains
 saved and the old capture stays visibly stale; retry the read rather than
-approving again. Refresh after cancellation or an ended captured cycle before
-comparing again. Expanding a record or switching to it preserves drafts.
+approving again. Cancellation also automatically updates the selection. Reopening
+a stale capture updates it while preserving edited limits. **Update & compare**
+refreshes stale conditions and calculates the draft in one action. Expanding a
+record or switching to it preserves drafts.
 
 The normal-temperature reference reports its actual origin alongside the value:
 learned, provisional learned, explicitly configured, retained for an accepted
@@ -259,7 +261,14 @@ uses the existing configuration source and **Apply reviewed configuration**.
 
 An unused approval cannot silently transfer to another opportunity. Cancellation
 ends the authorized scope; an active cycle follows the normal restoration and
-recovery path. Changing the saved Automatic / Paused choice does not cancel this
+recovery path. Cancellation does not pause Automatic or remove ordinary
+scheduling: an unused approval returns to selection under the configured limits.
+That automatic plan can use similar times, but does not retain the cancelled
+approval's identity or one-cycle preferences. A newly calculated scenario can explicitly **Replace approved
+cycle** while the previous approval has not started. Confirmation identifies that
+replacement; the old approval ends only when the new one commits successfully.
+A changed approval or a cycle that started during review rejects the replacement.
+Changing the saved Automatic / Paused choice does not cancel this
 independent reviewed cycle; use its cancellation action to end it. Closing the browser does not cancel a cycle or erase restoration
 obligations. Restart preserves the approval and its original expiry. The existing executor
 reconciles outstanding physical obligations before the currently due feasible
@@ -284,8 +293,9 @@ journal records retain their provenance and reconstruction meaning; see
 `GET /api/heating/explorer` captures a fresh comparison. Family and admin can call
 `POST /api/heating/explorer/simulate` with `{snapshotId, limits}`; only the documented
 policy fields are accepted. Admin-only `POST /api/heating/explorer/apply` accepts
-the server's `previewId`, and `POST /api/heating/explorer/cancel` accepts an empty
-object. A client-supplied schedule or model cannot authorize control.
+the server's `previewId`, and `POST /api/heating/explorer/cancel` accepts
+`{approvalId}` for the exact record being cancelled. A late cancellation cannot
+cancel a newer approval. A client-supplied schedule or model cannot authorize control.
 
 `current.constraints` describes the captured selected plan's effective policy and
 evidence, independently of scenario `constraints`. `current.approvalId` identifies

@@ -663,7 +663,7 @@ try {
   await evaluate(`explorerFixture.value.activeTrial.status='running';document.getElementById('heating-limit-maxDropC').value='1.75';document.getElementById('heating-limit-maxDropC').dispatchEvent(new Event('input',{bubbles:true}))`);
   await until(`await explorerFixture.poll();return document.getElementById('heating-explorer-trial-status').textContent === 'In progress'`);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxDropC').value`),'1.75','Actual cycle polling preserves the hypothetical draft');
-  assert.match(await evaluate(`document.getElementById('heating-explorer-application-help').textContent`), /Compare your edited limits/);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-application-help').textContent`), /Update & compare.*edited limits/);
   await evaluate(`document.getElementById('heating-explorer-trial-limits').open=true;await explorerFixture.poll();await new Promise(resolve=>setTimeout(resolve,1100))`);
   assert.equal(await evaluate(`document.getElementById('heating-explorer-trial-limits').open`), true, 'Cycle details preserve disclosure state during polling and ticks');
   await evaluate(`document.getElementById('heating-explorer-cancel').click()`);
@@ -715,14 +715,16 @@ try {
   assert.match(await evaluate(`document.getElementById('heating-explorer-application-help').textContent`), /Family can explore/);
   await evaluate(`explorerFixture.stale=true;document.getElementById('heating-explorer-form').requestSubmit()`);
   await until(`document.getElementById('heating-explorer-message').textContent.includes('Refresh conditions')`);
-  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),true);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),false);
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').textContent`),'Update & compare');
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Stale comparison preserves draft');
   await evaluate(`explorerFixture.stale=false;explorerFixture.refreshFailure=true;document.getElementById('heating-explorer-refresh').click()`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
   assert.match(await evaluate(`document.getElementById('heating-explorer-message').textContent`),/unavailable/);
   assert.doesNotMatch(await evaluate(`document.getElementById('heating-explorer-message').textContent`),/Synthetic private backend detail/);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Failed refresh retains the draft');
-  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),true,'Failed refresh keeps old preview fenced');
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-calculate').disabled`),false,'A failed read can be retried with Update & compare');
+  assert.equal(await evaluate(`document.getElementById('heating-explorer-apply').disabled`),true,'Failed refresh keeps old preview fenced');
   await evaluate(`explorerFixture.refreshFailure=false;document.getElementById('heating-explorer-refresh').click()`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled&&!document.getElementById('heating-explorer-calculate').disabled`);
   assert.equal(await evaluate(`document.getElementById('heating-limit-maxReductionHours').value`),'6','Successful retry retains the draft');

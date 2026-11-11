@@ -113,6 +113,100 @@ test('rolled-back approval leaves the selected capture, pending intent and revie
   assert.equal(r.service.apply({ previewId: preview.previewId }).activeTrial.status, 'pending');
 });
 
+test('pending cancellation immediately removes its captured selection and requests reconciliation after commit', async t => {
+  const r = fixture(t), preview = await r.preview();
+  const approved = r.service.apply({ previewId: preview.previewId }).activeTrial;
+  const clock = r.service.input.now;
+  let updates = 0;
+  r.engine.requestUpdate = () => { updates++; };
+  assert.throws(() => r.service.cancel({}), /approval to cancel/);
+  assert.throws(() => r.store.transaction(() => {
+    r.service.cancel({ approvalId: approved.id });
+    throw new Error('synthetic rollback');
+  }), /synthetic rollback/);
+  assert.equal(r.service.publicTrial().status, 'pending');
+  assert.equal(r.engine.pendingPlan.userTrial.id, approved.id);
+  assert.equal(r.service.input.currentPlan.userTrial.id, approved.id);
+  assert.equal(updates, 0);
+  r.service.cancel({ approvalId: approved.id });
+  assert.equal(r.engine.pendingPlan, null);
+  assert.equal(r.service.input.currentPlan, null);
+  assert.equal(r.service.input.currentConfig.maxReductionHours, 12);
+  assert.equal(r.service.input.now, clock);
+  assert.equal(updates, 1);
+  assert.equal(r.service.cancel({ approvalId: approved.id }).activeTrial.status, 'cancelled');
+});
+
+test('replacement is atomic, bound to the reviewed pending approval and protected against a late cancellation', async t => {
+  const r = fixture(t), first = await r.preview();
+  const original = r.service.apply({ previewId: first.previewId }).activeTrial;
+  const replacement = await r.preview({ maxDropC: 2 });
+  assert.equal(replacement.application.allowed, true);
+  assert.equal(replacement.application.replacesApprovalId, original.id);
+  assert.throws(() => r.store.transaction(() => {
+    r.service.apply({ previewId: replacement.previewId });
+    throw new Error('synthetic failed replacement');
+  }), /synthetic failed replacement/);
+  assert.equal(r.service.publicTrial().id, original.id);
+  assert.equal(r.engine.pendingPlan.userTrial.id, original.id);
+  const next = r.service.apply({ previewId: replacement.previewId }).activeTrial;
+  assert.notEqual(next.id, original.id);
+  assert.equal(next.limits.maxDropC, 2);
+  assert.equal(r.engine.pendingPlan.userTrial.id, next.id);
+  assert.throws(() => r.service.cancel({ approvalId: original.id }), /approved cycle changed/);
+  assert.equal(r.service.publicTrial().id, next.id);
+  const cancelled = r.store.db.prepare("SELECT payload FROM events WHERE type='heating-scenario-cancelled'").all();
+  assert.equal(cancelled.length, 1);
+  assert.equal(JSON.parse(cancelled[0].payload).id, original.id);
+});
+
+test('replacement cannot revoke a cycle that started while the new scenario was being reviewed', async t => {
+  const r = fixture(t), first = await r.preview();
+  const original = r.service.apply({ previewId: first.previewId }).activeTrial;
+  const replacement = await r.preview({ maxDropC: 2 });
+  const cycle = { id: 'simulated-running-cycle', startedAt: r.now, plan: r.engine.pendingPlan };
+  r.setActive(cycle); r.service.started(cycle);
+  assert.throws(() => r.service.apply({ previewId: replacement.previewId }), /current cycle and recovery/);
+  assert.equal(r.service.publicTrial().id, original.id);
+  assert.equal(r.service.publicTrial().status, 'running');
+  assert.equal((await r.preview()).application.allowed, false);
+});
+
+test('HTTP cancellation waits for ordinary scheduling outside the approval transaction and preserves automatic permission', async t => {
+  const r = fixture(t), first = await r.preview(), original = r.service.apply({ previewId: first.previewId }).activeTrial;
+  const baseSettings = structuredClone(r.engine.settings), baseControl = structuredClone(r.engine.control);
+  const natural = { schedule: { preheatStart: r.now + HOUR, preheatEnd: r.now + HOUR,
+    reductionStart: r.now + HOUR, reductionEnd: r.now + 2 * HOUR }, config: baseControl };
+  const run = r.worker.run.bind(r.worker);
+  r.worker.run = async (input, limits) => ({ ...await run(input, limits), current: {
+    schedule: input.currentPlan?.schedule ?? null, approvalId: input.currentPlan?.userTrial?.id ?? null } });
+  let entered, release;
+  const reconciling = new Promise(resolve => { entered = resolve; });
+  r.engine.update = async () => {
+    assert.equal(r.store.transactionDepth, 0, 'Control reconciliation cannot hold the approval write transaction');
+    assert.equal(r.service.publicTrial().status, 'cancelled');
+    entered(); await new Promise(resolve => { release = resolve; });
+    r.engine.pendingPlan = natural;
+    r.service.capture({ ...r.service.input, currentConfig: baseControl, currentSettings: baseSettings },
+      { plan: natural, phase: 'normal', action: 'normal', reasons: ['accepted-cycle-scheduled'] });
+  };
+  r.engine.status = () => ({ now: r.now });
+  const server = createAppServer({ engine: r.engine, store: r.store, token: 'synthetic-admin', chartService: { overview() {} } });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = fetch(`http://127.0.0.1:${server.address().port}/api/heating/explorer/cancel`, { method: 'POST',
+    headers: { Authorization: 'Bearer synthetic-admin', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approvalId: original.id }) });
+  await reconciling; release();
+  assert.equal((await response).status, 200);
+  const selected = (await r.service.view()).current;
+  assert.deepEqual(selected.schedule, natural.schedule);
+  assert.equal(selected.approvalId, null);
+  assert.deepEqual(r.engine.settings, baseSettings);
+  assert.deepEqual(r.engine.control, baseControl);
+  assert.equal(r.engine.automationEnabled('home'), true);
+});
+
 test('HTTP distinguishes a stale controller snapshot from other unavailable comparisons', async t => {
   const r = fixture(t); r.engine.status = () => ({ now: r.now });
   const server = createAppServer({ engine: r.engine, store: r.store, token: 'synthetic-admin', chartService: { overview() {} } });
@@ -191,7 +285,7 @@ test('one reviewed schedule is durable and one-shot; cancellation shortens the a
   r.engine.checkpoint.journalCursor++;
   assert.equal(r.service.reconcile(r.now).status, 'running', 'normal learning progress does not erase scoped consent');
   r.advance(5 * 60_000);
-  assert.equal(r.service.cancel({}).activeTrial.status, 'cancelled');
+  assert.equal(r.service.cancel({ approvalId: trial.id }).activeTrial.status, 'cancelled');
   assert.equal(cycle.executionSchedule.reductionEnd, r.now); assert.equal(cycle.plan.userTrial.id, trial.id);
   assert.equal(r.service.reconcile(r.now), null);
   assert.equal(r.store.learningJournal({ input: 'simulated' }).length, 0, 'approval itself is never a training observation');
@@ -268,8 +362,9 @@ test('family can inspect and simulate, but only admin can approve or cancel, inc
   assert.equal(simulation.status, 200); const preview = await simulation.json();
   assert.equal((await request('/api/heating/explorer/apply', 'family', { previewId: preview.previewId })).status, 403);
   assert.equal((await request('/api/heating/explorer/cancel', 'family', {})).status, 403);
-  assert.equal((await request('/api/heating/explorer/apply', 'admin', { previewId: preview.previewId })).status, 200);
-  assert.equal((await request('/api/heating/explorer/cancel', 'admin', {})).status, 200);
+  const approved = await request('/api/heating/explorer/apply', 'admin', { previewId: preview.previewId });
+  assert.equal(approved.status, 200);
+  assert.equal((await request('/api/heating/explorer/cancel', 'admin', { approvalId: (await approved.json()).activeTrial.id })).status, 200);
   assert.equal(webRequestAllowed({ role: 'family' }, '/api/heating/explorer/simulate', {}), true);
   assert.equal(webRequestAllowed({ role: 'family' }, '/api/heating/explorer/apply', {}), false);
 });
@@ -286,7 +381,7 @@ test('unrelated telemetry and same-value report timestamps do not invalidate exp
 test('starting command acknowledgement after cancellation records exposure but immediately ends its action schedule', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });
   const plan = r.engine.pendingPlan;
-  r.service.cancel({});
+  r.service.cancel({ approvalId: r.service.publicTrial().id });
   const cycle = { id: 'delayed-cycle', plan, startedAt: r.now }; r.setActive(cycle);
   r.service.started(cycle);
   assert.equal(cycle.executionSchedule.reductionEnd, r.now);
@@ -327,7 +422,7 @@ test('reviewed cycle authority remains separate from automatic control permissio
   const plan=r.engine.pendingPlan;
   assert.equal(r.service.authorizes(plan),true);
   assert.ok(r.service.reconcile(r.now));
-  r.service.cancel({});
+  r.service.cancel({ approvalId: r.service.publicTrial().id });
   assert.equal(r.service.authorizes(plan),false);
   assert.equal(r.engine.automationEnabled(),false);
 });
