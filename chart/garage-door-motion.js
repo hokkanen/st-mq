@@ -63,6 +63,15 @@ export function createGarageDoorMotion() {
         if (command) command.cancelled = true;
         return unknown();
       }
+      // An observed native Close already reached its closed contact. Its retained
+      // receipt is history, not a closing clock for a later external opening.
+      // If this view missed that closed edge, also retire its old closing estimate.
+      // Observed Open still owns a live estimate: it only confirms not-closed.
+      if (command && native && operation.action === 'close' && operation.status === 'observed') {
+        if (!command.cancelled && state === 'Open' && position === 'open' && trajectory?.estimated && trajectory.to === 0) setPosition(1);
+        command.cancelled = true;
+      }
+      if (command && ['failed', 'unconfirmed'].includes(operation.status)) command.cancelled = true;
       const motion = moving === true && ['Opening', 'Closing'].includes(state) ? state : null;
       const duration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds * 1000 : 0;
       const next = { state, position, motion, coverState, duration };
@@ -76,7 +85,6 @@ export function createGarageDoorMotion() {
         && (['published', 'observed'].includes(operation.status) || native && operation.action === 'open' && operation.status === 'publishing')
         && Number.isFinite(statusNow) && Number.isFinite(clockAt)
         && clockAt >= operation.requestedAt && clockAt <= statusNow;
-      if (command && ['failed', 'unconfirmed'].includes(operation.status)) command.cancelled = true;
       if (acknowledged && !command.cancelled && command.startedAt === undefined) {
         command.startedAt = lastNow - (statusNow - clockAt);
         command.from = sample(command.startedAt).from ?? startingContact;

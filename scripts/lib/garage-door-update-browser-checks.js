@@ -85,6 +85,36 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
       assert.equal(await evaluate(`document.querySelector('#garage-doors-dialog .garage-door-row[data-side="${side}"]').dataset.state`), 'closed');
       await until('Boolean(window.equipmentUiFixture.watchPending)');
     }
+    // A view initialized after RF opening must ignore historical Close clocks.
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.retainedCloses={};
+      for(const d of f.devices.filter(d=>d.kind==='door')) {
+        const r=Object.values(d.readings)[0];
+        f.retainedCloses[d.id]={...d.cover.operation,observedAt:r.observedAt,observedReceivedAt:r.receivedAt,observedAdmittedAt:r.receivedAt};
+        d.cover.operation=null;d.available=false;d.cover.available=false;
+      }f.sendDoorUpdate();return true;})()`);
+    await until(`[...document.querySelectorAll('#garage-doors-shortcut .garage-door-row')].every(n=>n.dataset.state==='unknown')`);
+    await until('Boolean(window.equipmentUiFixture.watchPending)');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now+=120000;
+      for(const d of f.devices.filter(d=>d.kind==='door')) {
+        d.cover.operation=f.retainedCloses[d.id];d.available=true;d.cover.available=true;
+        for(const r of Object.values(d.readings)){r.value=d.id==='door1'?1:0;r.coverState=r.value?'open':'closed';r.observedAt=f.now;r.receivedAt=f.now;}
+      }delete f.retainedCloses;f.sendDoorUpdate();return true;})()`);
+    await until(`document.querySelector('${bay('right')}').dataset.state==='open'`);
+    await evaluate("document.getElementById('garage-doors-shortcut').click();true");
+    await until("document.getElementById('garage-doors-dialog').open");
+    for (const scope of ['#garage-doors-shortcut', '#garage-doors-dialog']) {
+      assert.equal(await evaluate(`new DOMMatrix(getComputedStyle(document.querySelector('${scope} .garage-door-row[data-side="right"] .garage-door-leaf')).transform).m42`), -96,
+        'A retained completed Close cannot leave an externally opened door drawn closed');
+      assert.equal(await evaluate(`document.querySelector('${scope} .garage-door-row[data-side="left"]').dataset.state`), 'closed');
+    }
+    await evaluate("document.getElementById('garage-doors-back').click();true");
+    await until('Boolean(window.equipmentUiFixture.watchPending)');
+    await evaluate(`(() => {const f=window.equipmentUiFixture;f.now+=1000;
+      for(const d of f.devices.filter(d=>d.kind==='door'))
+        for(const r of Object.values(d.readings)){r.value=0;r.coverState='closed';r.observedAt=f.now;r.receivedAt=f.now;}
+      f.sendDoorUpdate();return true;})()`);
+    await until(`[...document.querySelectorAll('.garage-door-row[data-side]')].every(n=>n.dataset.state==='closed')`);
+    await until('Boolean(window.equipmentUiFixture.watchPending)');
     // No source report arrives at the estimated fully-open instant. Both
     // surfaces must finish their labels/arrows without a dashboard poll.
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedTravel=f.status.garage;f.status.garage={...f.status.garage,doorTravelSeconds:1};return true;})()`);

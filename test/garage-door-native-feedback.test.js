@@ -129,3 +129,73 @@ test('a confirming open contact starts travel even while transport completion is
   assertTravel(response.travel, 0.25, 1, 13500);
   assert.equal(response.view.state, 'Opening'); assert.equal(response.view.disabled, true);
 });
+
+for (const initialState of ['missing', 'closed', 'open'])
+  test(`a completed native Close cannot override external Open after an initially ${initialState} view`, () => {
+    const door = device('close'), motion = createGarageDoorMotion();
+    const completed = operation('close', { status: 'observed', observedAt: epoch + 18000,
+      observedReceivedAt: epoch + 18100, observedAdmittedAt: epoch + 18100 });
+    door.cover.operation = null;
+    if (initialState !== 'missing') {
+      Object.assign(door.readings.fixture_open, { value: initialState === 'closed' ? 0 : 1,
+        coverState: initialState, observedAt: epoch + 120000, receivedAt: epoch + 120000 });
+      render(motion, door, 120000);
+    }
+    door.cover.operation = completed;
+    Object.assign(door.readings.fixture_open, { value: 1, coverState: 'open',
+      observedAt: epoch + 121000, receivedAt: epoch + 121050 });
+    const first = render(motion, door, 121050);
+    assert.equal(first.view.tone, 'open'); assert.equal(first.view.action, 'close');
+    if (initialState === 'closed') assertTravel(first.travel, 0, 1, 18000);
+    else assert.deepEqual(first.travel, { from: 1, to: 1, durationMs: 0, estimated: false });
+    const repeated = render(motion, door, 145000);
+    assert.equal(repeated.travel.from, 1); assert.equal(repeated.travel.to, 1);
+
+    // A new dashboard Close must descend from the displayed open position,
+    // retaining orange until a new closed contact confirms the endpoint.
+    const next = epoch + 150000;
+    door.cover.operation = { ...operation('close'), requestedAt: next, dispatchedAt: next + 10,
+      deviceReceipt: { action: 'close', executed: true, sourceTime: next,
+        receivedAt: next + 100, admittedAt: next + 100 } };
+    assertTravel(render(motion, door, 150100).travel, 1, 0, 18000);
+    const halfway = render(motion, door, 159100);
+    assertTravel(halfway.travel, 0.5, 0, 9000); assert.equal(halfway.view.tone, 'moving');
+    Object.assign(door.readings.fixture_open, { value: 0, coverState: 'closed',
+      observedAt: next + 20000, receivedAt: next + 20100 });
+    Object.assign(door.cover.operation, { status: 'observed', observedAt: next + 20000,
+      observedReceivedAt: next + 20100, observedAdmittedAt: next + 20100 });
+    const closed = render(motion, door, 170100);
+    assert.deepEqual(closed.travel, { from: 0, to: 0, durationMs: 0, estimated: false });
+    assert.equal(closed.view.tone, 'closed');
+  });
+
+test('a retained completed Close allows repeated external opening edges on both doors', () => {
+  const doors = [device('close', { id: 'fixture-left' }), device('close', { id: 'fixture-right' })];
+  for (const door of doors) {
+    const motion = createGarageDoorMotion();
+    Object.assign(door.cover.operation, { status: 'observed', observedAt: epoch + 18000,
+      observedReceivedAt: epoch + 18100, observedAdmittedAt: epoch + 18100 });
+    for (const start of [120000, 180000]) {
+      Object.assign(door.readings.fixture_open, { value: 0, coverState: 'closed',
+        observedAt: epoch + start, receivedAt: epoch + start });
+      assert.equal(render(motion, door, start).travel.to, 0);
+      Object.assign(door.readings.fixture_open, { value: 1, coverState: 'open',
+        observedAt: epoch + start + 1000, receivedAt: epoch + start + 1000 });
+      assertTravel(render(motion, door, start + 1000).travel, 0, 1, 18000);
+      assertTravel(render(motion, door, start + 10000).travel, 0.5, 1, 9000);
+    }
+  }
+});
+
+test('a completed Close retires its estimate even when the view misses the closed contact before RF reopening', () => {
+  const door = device('close'), motion = createGarageDoorMotion();
+  assertTravel(render(motion, door, 4600).travel, 0.75, 0, 13500);
+  // The master observed closure, then the RF remote reopened the door between
+  // dashboard updates. The latest contact is Open; the old command is complete.
+  Object.assign(door.cover.operation, { status: 'observed', observedAt: epoch + 18000,
+    observedReceivedAt: epoch + 18100, observedAdmittedAt: epoch + 18100 });
+  Object.assign(door.readings.fixture_open, { observedAt: epoch + 20000, receivedAt: epoch + 20050 });
+  const reopened = render(motion, door, 20100);
+  assert.equal(reopened.view.state, 'Open');
+  assert.deepEqual(reopened.travel, { from: 1, to: 1, durationMs: 0, estimated: false });
+});

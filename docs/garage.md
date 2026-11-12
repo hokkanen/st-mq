@@ -73,6 +73,10 @@ at different physical times despite immediate replies. MQTT publication alone
 cannot start either native estimate. A missing or negative device reply cannot
 start closing; fresh contact evidence can still establish an opening. Movement
 is never retried automatically.
+Once a native Close is confirmed by the closed contact, its retained receipt
+cannot start another closing estimate. A later RF-remote opening follows fresh
+contact evidence; a newly initialized view with only not-closed evidence shows
+Open without reconstructing travel from that completed Close.
 Other integrations retain their reported-motion and publication timing rules.
 Unchanged reports cannot confirm a new direction or restart its timer.
 The dispatch contact is retained with a native operation so opening or closing
