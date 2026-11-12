@@ -163,3 +163,41 @@ test('a genuinely cheaper exit is available without a new start penalty or arbit
   assert.equal(result.end, true);
   assert.ok(result.stoppedCostCents < result.continuedCostCents);
 });
+
+test('a paid preheat trial retains feasible heat exposure while ordinary cost optimization can shorten it', () => {
+  const { input, args, plan, schedule } = fixture();
+  assert.equal(continuationInput(input, { ...plan, trial: true }).trial, true);
+  args.intervals.forEach(row => { row.price = 10; });
+  args.approvedExtraCostCents = 100;
+  const ordinary = reviseHeatingCycle({ args, schedule });
+  assert.ok(ordinary.schedule.preheatEnd < schedule.preheatEnd);
+  const trial = reviseHeatingCycle({ args: { ...args, trial: true }, schedule });
+  assert.equal(trial.schedule.preheatEnd - Math.max(args.now, trial.schedule.preheatStart),
+    schedule.preheatEnd - Math.max(args.now, schedule.preheatStart));
+  assert.equal(trial.schedule.reductionStart, schedule.reductionStart);
+  assert.equal(trial.schedule.reductionEnd, schedule.reductionEnd);
+  assert.equal(trial.end, false, 'the already accepted trial value is retained');
+});
+
+test('trial preheat still repairs an infeasible duration and permits a genuinely cheaper full exit', () => {
+  const { args, schedule } = fixture();
+  args.trial = true;
+  args.config.maxPreheatHours = .25;
+  const repaired = reviseHeatingCycle({ args, schedule });
+  assert.ok(repaired.schedule.preheatEnd - Math.max(args.now, repaired.schedule.preheatStart) <= .25 * HOUR);
+  args.config.maxPreheatHours = 2;
+  args.intervals.forEach((row, i) => { row.price = i < 4 ? 1000 : 1; });
+  const exited = reviseHeatingCycle({ args, schedule });
+  assert.equal(exited.end, true);
+});
+
+test('a trial can move its full remaining preheat to a cheaper window directly before reduction', () => {
+  const { args, schedule } = fixture();
+  args.trial = true;
+  args.config.maxPreheatHours = 1;
+  args.intervals.forEach((row, i) => { row.price = i < 4 ? 20 : i < 8 ? -10 : 100; });
+  const result = reviseHeatingCycle({ args, schedule });
+  assert.equal(result.schedule.preheatEnd, schedule.reductionStart);
+  assert.equal(result.schedule.preheatStart, schedule.reductionStart - HOUR);
+  assert.equal(result.schedule.reductionEnd, schedule.reductionEnd);
+});

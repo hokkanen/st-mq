@@ -48,7 +48,7 @@ export class HeatingPlanning {
   continue(args, schedule, owner, preheatHours = 0) {
     if (this.closed || !this.engine.canControl()) return null;
     const binding = JSON.stringify([owner, schedule]);
-    const scope = JSON.stringify([args.model, args.config, args.targetC, args.maxDropC, args.maxRiseC,
+    const scope = JSON.stringify([args.model, args.config, args.targetC, args.maxDropC, args.maxRiseC, args.trial,
       args.occupancy, args.equipment.externalChangeRevision, args.equipment.roomSettingC,
       args.equipment.roomSettingMaximumC]);
     const source = JSON.stringify(args.intervals.map(row => [row.end, row.price, row.outdoorC, row.solarRadiationWm2]));
@@ -63,6 +63,12 @@ export class HeatingPlanning {
       if (result.schedule.preheatStart < args.now && result.schedule.preheatStart > job.at)
         return null;
       if (!result.end) {
+        // A worker can propose stopping at its calculation clock. Adoption
+        // cannot rewrite the prefix executed while that calculation was pending.
+        const executedUntil = Math.min(args.now, schedule.preheatEnd);
+        if (schedule.preheatStart < executedUntil && result.schedule.preheatStart <= schedule.preheatStart
+          && result.schedule.preheatEnd < executedUntil)
+          result.schedule = { ...result.schedule, preheatEnd: executedUntil };
         const remainingMs = Math.max(0, args.config.maxPreheatHours - preheatHours) * 3_600_000;
         if (result.schedule.preheatEnd - Math.max(args.now, result.schedule.preheatStart) > remainingMs)
           result.schedule = { ...result.schedule,

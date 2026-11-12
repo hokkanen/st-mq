@@ -489,6 +489,14 @@ configured duration, including across pauses and restart. Floor windows obtain
 separate leases through confirmed release/acquisition; no native lease is extended
 by changing its original meaning.
 
+A feasible accepted preheat learning trial retains its remaining preheat
+duration when comparing cheaper timings. Cost-only shortening cannot remove the
+experiment's learning input. Comfort, configured duration limits, native authority
+and complete-cycle economic exits still apply; an infeasible remaining window
+can still be shortened or moved. Delayed worker results cannot backdate a preheat
+stop decision into the executed prefix; native release keeps its separate readback
+time.
+
 Comparisons run every fifteen minutes or after meaningful changed numerical
 sources, thermal state or policy, at most once per minute. Results must match
 current owner, schedule, model, configuration, sources and thermal state and be no
@@ -673,6 +681,11 @@ Resuming eligibility does not force a circulation pulse. The deadline does not
 restart on each controller update. Restoration obligations survive interruption;
 loss of control can require earlier full restoration. Separate transports do not
 guarantee atomic compressor switching.
+
+Before an accepted future reduction, a new automatic circulation pulse must fit
+its full configured run and the existing ON/OFF confirmation budgets before the
+reduction starts. Otherwise it is deferred. Already active runs and independent
+manual circulation requests retain their own duration and restoration duties.
 
 For hot water before the deadline, use **Paused**, which selects
 Normal heating and restores the captured native DHW settings. Start a timed

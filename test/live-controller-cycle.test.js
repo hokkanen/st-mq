@@ -190,8 +190,9 @@ test('a confirmed preheat trial stops its boost at a delivered-heat limit and pr
 
 });
 
-function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:') } = {}) {
-  let now = Date.parse('2026-09-07T21:00Z'), acknowledge;
+function setup(t, { automationEnabled = true, delayed = false, store = new Store(':memory:'),
+  initialAt = Date.parse('2026-09-07T21:00Z') } = {}) {
+  let now = initialAt, acknowledge;
   const commands = [], config = { input:'mqtt', settings:validateSettings({comfort:{targetC:21,maxDropC:2,maxRiseC:2}}), control:{...CONTROL_DEFAULTS,learningTrials:false} };
   const transport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) }, publish: batch => {
     commands.push([...batch]);
@@ -235,6 +236,24 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
       return {values,receive,h66}; }
   };
 }
+
+for (const secondsUntilReduction of [60, 600, 619, 620, 660])
+test(`new automatic circulation respects the accepted reduction in ${secondsUntilReduction} seconds`, async t => {
+  const r = setup(t, { initialAt: Date.parse('2026-09-07T12:00Z') });
+  const plan = r.plan();
+  Object.assign(plan.schedule, { preheatStart: r.now - 60_000, preheatEnd: r.now - 60_000,
+    reductionStart: r.now + secondsUntilReduction * 1000, reductionEnd: r.now + HOUR });
+  r.engine.cycles.start(plan, { timestamp: r.now, indoorC: 21.2, phase: 'normal' }, r.now, { executed: true });
+  r.engine.pendingPlan = null;
+  r.engine.heatingPlanning.continue = () => null;
+  const circulation = [];
+  r.transport.publishDhwr = async on => { circulation.push(on); return { sent: true, confirmed: true }; };
+  const status = r.engine.tick(); await r.settle();
+  assert.equal(status.decision.phase, 'normal');
+  assert.equal(status.decision.dhwr.requested, secondsUntilReduction >= 620);
+  assert.deepEqual(circulation, secondsUntilReduction >= 620 ? [true] : []);
+  assert.equal(r.engine.cycles.active().plan.schedule.reductionStart, plan.schedule.reductionStart);
+});
 
 test('controller execution errors retain safe dispatch codes without exposing raw error messages', async t => {
   for (const code of ['MQTT_STORAGE_FAILED', 'MQTT_STORAGE_PENDING', 'unrecognized-private-code']) {
@@ -770,7 +789,7 @@ test('admin scenario consent uses effective limits for exactly the reviewed cycl
   assert.deepEqual(r.engine.settings, settings); assert.deepEqual(r.engine.control, config);
   const journal = r.store.learningJournal({ input: 'mqtt' });
   assert.ok(journal.every(row => row.kind !== 'episode'), 'no completed training outcome is fabricated at approval or command time');
-  explorer.cancel({});
+  explorer.cancel({ approvalId: explorer.publicTrial().id });
   const recovery = r.engine.tick(); await r.settle();
   assert.equal(recovery.decision.phase, 'recovery');
   assert.equal(explorer.publicTrial().status, 'cancelled');
@@ -844,7 +863,7 @@ test('a reviewed cycle runs while Home is paused and disabled, then cancellation
   assert.deepEqual(r.store.getState('automation:mqtt'),saved);
   r.advance(60_000);r.engine.tick();await r.settle();
   assert.equal(r.engine.status().decision.phase,'reduction',JSON.stringify(r.engine.status().decision));
-  explorer.cancel({});r.engine.tick();await r.settle();
+  explorer.cancel({ approvalId: explorer.publicTrial().id });r.engine.tick();await r.settle();
   assert.equal(r.engine.executor.status().legacyOutstanding,false);
   assert.ok(r.commands.some(commands=>commands.includes('normal')));
   assert.deepEqual(r.store.getState('automation:mqtt'),saved);
@@ -865,7 +884,7 @@ test('changing Automatic to Pause preserves an independently approved running cy
   assert.equal(r.engine.cycles.active()?.id,id);
   assert.equal(explorer.publicTrial().status,'running');
   assert.equal(r.engine.executor.status().phase,'reduction');
-  explorer.cancel({});r.engine.tick();await r.settle();
+  explorer.cancel({ approvalId: explorer.publicTrial().id });r.engine.tick();await r.settle();
   assert.equal(r.engine.executor.status().legacyOutstanding,false);
   assert.equal(r.engine.automationStatus().home.enabled,false);
 });
@@ -894,7 +913,7 @@ test('reviewed trial permission stays in plan configuration while the explorer c
   assert.equal(explorer.input.currentConfig.maxTrialCostCents, 151);
   assert.equal(explorer.input.trialBudgetRemainingCents, 0, 'A manual allowance cannot become the automatic baseline');
   assert.equal(r.engine.control.learningTrials, false);
-  explorer.cancel({}); r.engine.tick(); await r.settle();
+  explorer.cancel({ approvalId: explorer.publicTrial().id }); r.engine.tick(); await r.settle();
   assert.equal(explorer.input.currentConfig.learningTrials, false);
   assert.equal(explorer.input.trialBudgetRemainingCents, 0);
 });

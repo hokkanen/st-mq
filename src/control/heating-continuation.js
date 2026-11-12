@@ -56,6 +56,7 @@ export function continuationInput(input, plan, schedule = plan.schedule) {
     config: input.config ?? plan.config, equipment, occupancy: input.settings?.occupancy ?? plan.occupancy,
     maxDropC: input.settings?.comfort?.maxDropC ?? plan.maxDropC,
     maxRiseC: input.settings?.comfort?.maxRiseC ?? plan.maxRiseC,
+    trial: plan.trial === true,
     approvedExtraCostCents: plan.trial
       ? Math.max(0, (plan.prediction?.costCents ?? 0) - (plan.referencePrediction?.costCents ?? 0))
       : Math.max(0, -(plan.config?.minimumHomeBenefitCents ?? 0)),
@@ -112,8 +113,13 @@ export function reviseHeatingCycle({ args, schedule, preheatHours = 0 }) {
       && preheatHours + (candidate.preheatEnd - Math.max(args.now, candidate.preheatStart)) / HOUR <= args.config.maxPreheatHours
       && !prediction.trajectory.some(row => row.indoorC > args.targetC + args.maxRiseC);
   let best = optionalHeatFits(schedule, incumbent) ? { schedule, prediction: incumbent } : null;
+  // A feasible paid experiment retains its preheat exposure. Cheaper timing
+  // may move the remaining heat, but cost alone cannot erase its learning input.
+  const retainedPreheat = args.trial && best
+    ? Math.max(0, schedule.preheatEnd - Math.max(args.now, schedule.preheatStart)) : 0;
   const noPreheat = withoutFurtherPreheat(schedule, args.now);
   const consider = candidate => {
+    if (Math.max(0, candidate.preheatEnd - Math.max(args.now, candidate.preheatStart)) < retainedPreheat) return;
     const prediction = evaluate(candidate);
     // Central bounds constrain optional future heat, not the useful reduction
     // of an already warm house. Cold reduction is owned by the live stop test.

@@ -1875,7 +1875,11 @@ export class Engine {
     // A new pulse holds tariff reduction until circulation finishes. Let the
     // pending economic search decide first; an already running pulse keeps its
     // independent deadline and restoration duty.
-    const pulse = !override && !decision.reasons.includes('heating-planning-in-progress')
+    // Reserve the existing ON/OFF confirmation budgets as well as the promised
+    // run. An independent or already active pulse keeps its own service duty.
+    const pulseFits = !cycleSchedule || cycleSchedule.reductionStart <= now
+      || now + this.executor.pulseMs + 2 * this.executor.deliveryBoundMs <= cycleSchedule.reductionStart;
+    const pulse = pulseFits && !override && !decision.reasons.includes('heating-planning-in-progress')
       && (['normal', 'preheat'].includes(decision.phase)
       || decision.phase === 'recovery' && !decision.recoveryHoldActive) && dhwrEligible(now,lastPulseAt,'normal');
     decision.commands = decision.phase === 'reduction' ? ['reduction'] : pulse ? ['circulation','normal'] : ['normal'];

@@ -42,6 +42,25 @@ for (const changedField of ['indoorC', 'reserveC', 'slabC']) test(`continuation 
   assert.deepEqual(plan.schedule, r.requests[0].input.continuation.schedule);
 });
 
+for (const delay of [30_000, 120_000])
+test(`a delayed preheat stop preserves its executed prefix and original deadline (${delay}ms)`, async t => {
+  const r = rig(t), plan = chooseCycle(r.input).plan;
+  const start = r.input.now;
+  const schedule = { ...plan.schedule, preheatStart: start, preheatEnd: start + 60_000,
+    reductionStart: start + 15 * 60_000 };
+  const original = structuredClone(schedule);
+  const args = continuationInput(r.input, { ...plan, schedule });
+  assert.equal(r.planner.continue(args, schedule, 'accepted-owner'), null);
+  r.requests[0].resolve({ continuation: { schedule: { ...schedule, preheatEnd: start }, end: false,
+    continuedCostCents: 10, stoppedCostCents: 11 } });
+  await r.planner.continuation.promise;
+  const result = r.planner.continue({ ...args, now: start + delay }, schedule, 'accepted-owner');
+  assert.equal(result.schedule.preheatEnd, Math.min(start + delay, original.preheatEnd));
+  assert.deepEqual(schedule, original, 'original accepted timing remains intact');
+  assert.equal(result.schedule.reductionStart, original.reductionStart);
+  assert.equal(result.schedule.reductionEnd, original.reductionEnd);
+});
+
 test('background search returns Normal immediately and revalidates its plan with current measurements', async t => {
   const r = rig(t);
   let updates = 0;
