@@ -1995,7 +1995,11 @@ export class Engine {
       execution = this.committedControl(dispatch);
     } else execution = dispatch();
     if (execution?.then) {
+      // Rejection supplies no delivery receipt. A later publication failure
+      // must preserve any delivery outcome already reported by the executor.
+      let receivedSent = null;
       this.dispatchPending = execution.then(result => {
+        receivedSent = typeof result.sent === 'boolean' ? result.sent : null;
         const at = this.clock(), receipt = { at, executorStatus: this.executor.status(), floorMode: this.floorOverrideMode(at) };
         return this.runWrite(() => {
           const previous = copyOwnedValue({ applied: this.applied, checkpoint: this.checkpoint,
@@ -2012,7 +2016,7 @@ export class Engine {
         this.store.event('control-execution-failed',{input,phase:decision.phase,...(code ? { code } : {}),reason},this.clock());
         // A failed or unconfirmed command does not revoke accepted intent.
         // Native restoration/readback owns reconciliation before the next attempt.
-        if (this.latestStatus?.now === now) this.latestStatus.execution = { status:'failed', sent:false, actual:null,
+        if (this.latestStatus?.now === now) this.latestStatus.execution = { status:'failed', sent:receivedSent, actual:null,
           ...(code ? { code } : {}), reason: code ? reason : 'Command or readback failed; retrying restoration' };
       }, { priority: 'control' })).catch(error => {
         this.store.writeHealth.failure(error);

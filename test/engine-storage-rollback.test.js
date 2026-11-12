@@ -143,7 +143,43 @@ test('revocation cancels queued execution publication without waiting for a fore
   assert.equal(store.getState('new-runtime'), true, 'revocation does not close shared storage');
 });
 
-test('failed execution publication rolls back provisional model and control presentation', async t => {
+for (const code of ['SHELLY_READBACK_TIMEOUT', 'H66_READBACK_TIMEOUT'])
+test(`automatic ${code} preserves unknown delivery and its specific cause`, async t => {
+  const { store, engine } = fixture(t, 'mqtt');
+  let reject;
+  engine.automationEnabled = () => true;
+  engine.executor.execute = () => new Promise((_, fail) => { reject = fail; });
+  await engine.update();
+  const applied = structuredClone(engine.applied);
+  reject(Object.assign(new Error('fixture-private-readback-failure'), { code }));
+  await engine.dispatchPending;
+  assert.equal(engine.latestStatus.execution.status, 'failed');
+  assert.equal(engine.latestStatus.execution.sent, null, 'a missing receipt cannot establish non-dispatch');
+  assert.equal(engine.latestStatus.execution.actual, null);
+  assert.equal(engine.latestStatus.execution.code, code);
+  assert.deepEqual(engine.applied, applied, 'a failed command cannot establish an applied phase');
+  const events = store.events().filter(row => row.type === 'control-execution-failed');
+  assert.equal(events.length, 1);
+  assert.equal(events[0].payload.code, code);
+  assert.doesNotMatch(JSON.stringify(events), /fixture-private-readback-failure/);
+});
+
+test('an old automatic failure cannot replace a newer execution view', async t => {
+  const { engine, advance } = fixture(t, 'mqtt');
+  let reject;
+  engine.automationEnabled = () => true;
+  engine.executor.execute = () => new Promise((_, fail) => { reject = fail; });
+  await engine.update();
+  advance();
+  await engine.update();
+  const newer = structuredClone(engine.latestStatus.execution);
+  reject(Object.assign(new Error('fixture-readback-timeout'), { code: 'SHELLY_READBACK_TIMEOUT' }));
+  await engine.dispatchPending;
+  assert.deepEqual(engine.latestStatus.execution, newer);
+});
+
+for (const sent of [true, false, null])
+test(`failed execution publication preserves delivery ${sent} and rolls back provisional presentation`, async t => {
   const { store, engine } = fixture(t, 'mqtt');
   let complete;
   engine.automationEnabled = () => true;
@@ -153,10 +189,11 @@ test('failed execution publication rolls back provisional model and control pres
     latestStatus: engine.latestStatus, explorer: engine.heatingExplorer.input });
   const restore = failCommit(store);
   try {
-    complete({ status: 'mqtt', sent: true, phase: 'normal' });
+    complete({ status: 'mqtt', sent, phase: 'normal' });
     await engine.dispatchPending;
   } finally { restore(); }
   assert.equal(engine.latestStatus.execution.status, 'failed', 'the failed publication remains visible');
+  assert.equal(engine.latestStatus.execution.sent, sent, 'publication failure cannot invent a different delivery outcome');
   assert.deepEqual({ applied: engine.applied, checkpoint: engine.checkpoint,
     latestStatus: { ...engine.latestStatus, execution: before.latestStatus.execution },
     explorer: engine.heatingExplorer.input }, before);
