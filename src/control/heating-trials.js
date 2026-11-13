@@ -4,6 +4,31 @@ const HOUR = 3_600_000;
 const finite = Number.isFinite;
 const median = values => values.length ? [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] : null;
 
+/** A covered Normal suffix after recovery, reconstructed from committed inputs.
+ * Compressor-off and DHW operation are normal service and may count. */
+export function normalOperationHours(samples, now, after) {
+  const spans = samples.slice(-12).flatMap(sample => {
+    const at = typeof sample.timestamp === 'number' ? sample.timestamp : Date.parse(sample.timestamp);
+    if (!finite(at) || at > now || !finite(sample.indoorC) || sample.indoorEstimated || sample.valid === false) return [];
+    return (sample.inputSegments ?? []).filter(row => row.phase === 'normal' && !row.episodeId
+      && !(row.quality ?? []).length && finite(row.outdoorC) && finite(row.powerKw))
+      .map(row => ({ start: Math.max(row.start, after, now - HOUR), end: Math.min(row.end, now) }))
+      .filter(row => row.end > row.start);
+  }).sort((a, b) => b.end - a.end);
+  let start = now;
+  for (const row of spans) {
+    if (row.end < start) break;
+    start = Math.min(start, row.start);
+  }
+  return (now - start) / HOUR;
+}
+
+export function automaticTrialBlock(config, equipment) {
+  if ((equipment.learningTrialsToday ?? 0) >= config.learningTrialTargetPerDay)
+    return 'daily-learning-trial-target-reached';
+  return equipment.learningTrialNormalReady === false ? 'learning-trial-needs-normal-hour' : null;
+}
+
 /** A bounded planning summary of committed Normal inputs, never new training
  * evidence. DHW, gaps, interventions and significant wood heat break cycles. */
 export function heatingDemandHistory(samples = [], now) {

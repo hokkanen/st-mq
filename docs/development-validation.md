@@ -4,6 +4,21 @@ This reference describes available checks, their coverage and limits. Use
 [focused test selection](#selecting-and-reusing-validation) for local verification;
 [release qualification](#release-validation-and-known-limits) applies to releases.
 
+## Heating trial pacing and temperature coverage
+
+`test/heating-trials.test.js` covers hard automatic attempt limits, covered Normal
+spacing, interrupted attempts, explicit one-cycle funding, restart and Finnish
+midnight/DST boundaries. `test/heating-continuation.test.js` and
+`test/app-heating-planning.test.js` cover funded experimental value, genuine
+comparative exits and rejection of stale worker results after allowance changes.
+`test/control-cycle.test.js` covers 10-, 30- and 31-minute temperature-only
+outages, measured recovery confirmation and identical coverage reconstruction.
+`test/periodic-indoor-learning.test.js` distinguishes a returned genuine endpoint
+from an unavailable fitting window without inflating outage duration. Existing
+cycle, budget and reconstruction suites retain missing physical-input, rollback,
+source-correction and immutable-history coverage. These are synthetic checks;
+they do not establish a deployed controller's physical performance.
+
 ## Coverage reference
 
 The Meross protocol, recovery and history suites exercise signed channel-specific

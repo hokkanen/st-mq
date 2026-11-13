@@ -51,13 +51,14 @@ configuration:
           Away periods have no comfort-drop limit. Away and Pause deadlines
           are dashboard controls, not configuration defaults.
       learning_trial_target_per_day:
-        name: Daily learning trial target
+        name: Daily automatic trial limit
         description: >-
-          Seek 1–4 useful heating trial opportunities per Finnish calendar day
-          (default 2). Duration follows observed space-heating cycles and forecast
-          demand within comfort and duration limits. Equipment readiness, cost
-          allowance, recovery and cooldown still apply. Attempts and completed
-          cycles do not establish accepted model learning.
+          Allow at most 1–4 automatic heating trial attempts per Finnish calendar
+          day (default 4), including interrupted attempts. Another automatic trial
+          requires one continuous observed Normal hour after recovery; recovery
+          does not count. Duration follows heating demand within configured limits.
+          Equipment readiness, comfort and cost allowance still apply. Attempts
+          and completed cycles do not establish accepted model learning.
       indoor_sensor_weights:
         name: Indoor average weights
         description: >-

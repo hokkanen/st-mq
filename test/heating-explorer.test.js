@@ -183,11 +183,15 @@ test('reviewed policy can permit an experiment without positive predicted saving
 
 test('an explicit one-cycle learning allowance is separate from an exhausted automatic allowance',()=>{
   const input=heatingExplorerFixture({price:2,hours:12});
+  input.equipment.learningTrialsToday = 4;
+  input.equipment.learningTrialNormalReady = false;
   input.prices.forEach(row=>{row.allInCentsPerKWh=2;});
   const proposed=applyExplorerOverrides(input,{learningTrials:true,maxTrialCostCents:151,maxDropC:3,maxRiseC:3,maxUnobservedReductionHours:4});
   assert.equal(proposed.trialBudgetRemainingCents,151);
   assert.equal(proposed.config.learningTrials,true);
   assert.equal(proposed.config.maxUnobservedReductionHours,4);
+  assert.equal(proposed.equipment.learningTrialNormalReady, true);
+  assert.equal(proposed.equipment.learningTrialsToday, 0);
   assert.equal(input.trialBudgetRemainingCents,0);
   assert.equal(input.config.learningTrials,false);
   assert.ok(exploreHeatingPlan(proposed,{},options).executablePlan);

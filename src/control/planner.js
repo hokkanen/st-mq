@@ -6,7 +6,7 @@ import { estimateHeatPumpPerformance, hydronicGain, planningSupplyC } from '../d
 import { heatingStrategy, heatingEconomics } from '../domain/heating-strategy.js';
 import { CONTROL_DEFAULTS } from '../app/config.js';
 import { fireplaceInfluence, fireplaceRate } from '../domain/fireplace.js';
-import { trialOpportunity, trialInformation } from './heating-trials.js';
+import { trialOpportunity, trialInformation, automaticTrialBlock } from './heating-trials.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { homePlanningState } from '../domain/home-model.js';
 
@@ -662,6 +662,8 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   config = {}, thermalState, equipment = {}, trialBudgetRemainingCents = 0 }) {
   const c = { ...CONTROL_DEFAULTS, ...config }, model = checkpoint?.model;
   const rejected = reason => ({ valid:false, reason });
+  const trialBlock = automaticTrialBlock(c, equipment);
+  if (plan?.trial && plan.userTrial?.limits?.maxTrialCostCents === undefined && trialBlock) return rejected(trialBlock);
   if (!plan?.schedule || plan.schedule.reductionEnd <= now) return rejected('scheduled-cycle-expired');
   if (Array.isArray(equipment.fireplaceEvents)) equipment = { ...equipment,
     fireplaceRelevant: fireplaceInfluence(equipment.fireplaceEvents, now, {
@@ -744,8 +746,8 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const baseline = evaluation(null), candidates = [];
   const away = settings.occupancy.mode === 'away';
   const readiness = learningReadiness(checkpoint, c, equipment);
-  const targetReached = (equipment.learningTrialsToday ?? 0) >= c.learningTrialTargetPerDay;
-  const canTrial = readiness.trialReady && number(trialBudgetRemainingCents) && trialBudgetRemainingCents >= 0;
+  const trialBlock = automaticTrialBlock(c, equipment);
+  const canTrial = !trialBlock && readiness.trialReady && number(trialBudgetRemainingCents) && trialBudgetRemainingCents >= 0;
   const configuredMaximum = reductionDurationCeiling(c, settings, equipment);
   const testedMaximum = validatedReductionHours(model);
   const economicMaximum = readiness.initialReady ? configuredMaximum : readiness.actionValidated ? Math.min(configuredMaximum, testedMaximum) : 0;
@@ -925,11 +927,10 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     diagnostics.trialBlockedReason = !small.length ? 'trial-comfort-or-forecast-limited'
       : !useful.length ? 'no-useful-space-heating-window'
         : !selectedTrial ? 'trial-incremental-cost-exceeds-allowance' : null;
-    const learningUrgent=!readiness.actionValidated;
     if (selectedTrial && (!chosen || selectedTrial.benefit>=chosen.benefit
-      ||cheapLearning&&(!targetReached||learningUrgent))) {chosen=selectedTrial;trial=true;}
+      ||cheapLearning)) {chosen=selectedTrial;trial=true;}
   }
-  if (!chosen) return { ...normal(diagnostics.trialBlockedReason ?? 'normal-operation-preferred'), readiness,
+  if (!chosen) return { ...normal(trialBlock ?? diagnostics.trialBlockedReason ?? 'normal-operation-preferred'), readiness,
     diagnostics, evaluation: { baselineCostCents: baseline.costCents, candidates: candidates.length, search } };
   const reference = null, referenceResult = baseline;
   const phase = phaseAt(chosen.schedule, now);

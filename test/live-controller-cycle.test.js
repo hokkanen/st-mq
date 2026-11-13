@@ -55,6 +55,8 @@ test('a completed live receipt publishes the bounded cycle summary instead of wo
     const episode = r.engine.status().learning.episode, current = r.engine.cycles.active();
     assert.equal(episode.id, cycle.id);
     assert.equal(episode.status, current.status);
+    assert.equal(r.engine.status().learning.trials.attempted, current.plan.trial ? 1 : 0,
+      "The status includes the cycle acknowledged during this control update");
     assert.deepEqual(episode.actual, current.actual);
     assert.equal(episode.referenceLabel, current.plan.referenceLabel);
     for (const key of ['plan', 'modelConfig', 'observations', 'lastSample', 'observerState', 'originalPrediction'])

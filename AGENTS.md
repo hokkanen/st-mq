@@ -157,7 +157,10 @@ Do not create unsafe conditions to obtain training evidence. Home uses one learn
 occupied reference and a fixed weighted indoor average, bounded control-only room
 estimates and native Away protection under the owner-approved 2026-10-07 policies.
 The owner-approved 2026-11-04 amendment applies configured comfort limits from
-startup without a separate provisional-reference drop cap or learning cooldown.
+startup without a separate provisional-reference drop cap. Under the owner-approved
+2026-11-13 amendment, automatic trials obey a hard daily attempt limit and require
+one observed Normal hour after the preceding cycle; temperature-only gaps up to
+30 minutes preserve otherwise supported cycle evidence without creating measurements.
 The owner-approved 2026-11-06 continuation policy keeps accepted intent by default,
 uses delivered-heat predictions without extra stop padding for active thermal
 limits, and requires a complete comparative justification for economic exits.

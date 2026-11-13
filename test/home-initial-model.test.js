@@ -262,7 +262,7 @@ test('cheap preheating experiments can run before any thermal or reduction valid
   assert.ok(r.plan.trialAllowanceCents<=150);
   assert.equal(revalidatePlan({...x,plan:r.plan}).valid,true);
   x.equipment.learningTrialsToday=20;
-  assert.equal(revalidatePlan({...x,plan:r.plan}).valid,true,'A daily target is not a lifetime exploration cap');
+  assert.equal(revalidatePlan({...x,plan:r.plan}).reason,'daily-learning-trial-target-reached','Unvalidated learning cannot bypass the daily attempt limit');
 });
 
 test('zero experimental budget permits useful free trials but never paid experimentation',()=>{

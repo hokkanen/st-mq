@@ -290,12 +290,13 @@ export function learningDisplay(learning = {}, context = {}) {
   }
   const outcomes = learning.outcomes;
   const trials = learning.trials;
-  if (trials) record('Daily learning trials', `${number(trials.attempted, 0)} attempted / ${number(trials.target, 0)} sought`,
+  if (trials) record('Daily learning trials', `${number(trials.attempted, 0)} attempted / ${number(trials.target, 0)} maximum`,
     `Today in Finland: ${number(trials.completed, 0)} completed, ${number(trials.incomplete, 0)} incomplete, ${number(trials.assessed, 0)} with a comparable space-heating assessment. `
     + `Observed compressor runtime across these trials: ${number(trials.observedCompressorRunHours, 2)} hours; this includes recovery and is not proof of displaced heating. `
     + (finite(trials.remainingCents) ? `Available allowance for a new automatic trial: €${number(trials.remainingCents / 100)}. ` : 'Automatic trial allowance is unavailable. ')
     + (trials.blockingReason ? `Current decision: ${heatingReasonText(trials.blockingReason)} ` : '')
-    + 'An active cycle blocks another experiment even when the daily allowance is not spent. Duration follows recorded Normal space-heating cycles and forecast demand within configured limits. The daily target is an objective; further useful trials can run within the allowance. Completed recovery permits another independent cycle without a fixed learning cooldown. An attempt or completed cycle does not establish accepted model learning.');
+    + (finite(trials.normalHours) ? `Observed Normal operation since the preceding cycle: ${number(trials.normalHours, 2)} / ${number(trials.normalRequiredHours ?? 1, 0)} hour required. ` : '')
+    + 'The daily limit counts automatic attempts, including interrupted trials. Another automatic trial requires one continuous observed Normal hour after recovery. Recovery does not count. Duration follows recorded Normal space-heating cycles and forecast demand within configured limits. An attempt or completed cycle does not establish accepted model learning.');
   if (outcomes) record('Attempted cycles', `${number(outcomes.completed, 0)} completed / ${number(outcomes.attempted, 0)} attempted`, `Recent attempted cycles (latest 100): ${number(outcomes.attempted, 0)}; completed ${number(outcomes.completed, 0)}, incomplete ${number(outcomes.incomplete, 0)}${finite(outcomes.aborted) ? `, aborted ${outcomes.aborted}` : ''}, in progress ${number(outcomes.inProgress, 0)}. ${number(outcomes.assessed, 0)} have a comparable space-heating assessment.${finite(outcomes.observedCostCents) ? ` Covered cycle electricity cost estimate: €${number(outcomes.observedCostCents / 100)}; source-map or nominal-power estimates are used unless metered.` : ''}${finite(outcomes.missingHours) && outcomes.missingHours > 0 ? ` ${number(outcomes.missingHours, 1)} hours without cost coverage are excluded.` : ''} Completed-subset benefits exclude unfinished attempts; hot-water service changes prevent a whole-cycle savings claim.`);
   const configured = learning.parameters;
   if (typeof configured?.learningTrials === 'boolean') basis('Learning trial budget', configured.learningTrials
@@ -339,6 +340,9 @@ export function learningDisplay(learning = {}, context = {}) {
       detail: explanation, calculation: outcomeCalculation(key), evidence: `${basis}${referenceSupport ? ` ${referenceSupport}` : ''}${available && finite(metric.uncertainty) ? ` · Model cost uncertainty about ±${number(metric.uncertainty)} €/cycle; not a statistical confidence interval.` : ''}` };
   });
   const episode = learning.episode;
+  if (episode?.temperatureCoverage?.missingMs > 0) record('Cycle temperature coverage',
+    `${number(episode.temperatureCoverage.missingMs / 60_000, 1)} minutes unavailable`,
+    `Longest temperature-only gap: ${number(episode.temperatureCoverage.maximumGapMs / 60_000, 1)} minutes. Gaps up to 30 minutes retain otherwise supported cycle evidence. Missing temperatures stay unobserved; recovery confirmation requires a continuous measured hour.`);
   if (episode) record('Current cycle', words(episode.phase ?? episode.status ?? 'in progress'), `Current cycle: ${words(episode.phase ?? episode.status ?? 'in progress')}. Space-heating benefit is assessed only after recovery is complete; an unfinished cycle does not enter the averages.`);
   // Keep evidence and policy separate in the UI; the text collections also
   // support summaries without changing the provenance of individual rows.

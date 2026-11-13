@@ -268,11 +268,13 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
     return value;
   };
   const weights = indoorWeights(config);
+  const indoorEndpoints = [];
   const indoorSensors = Object.fromEntries(Object.entries(weights).map(([signal, weight]) => {
     const reading = lastIndoorReading(store, { signal, at, input });
     const coverage = reading ? indoorReportCoverage(store, { reading, from, at, includeIntervals: true }) : null;
     lineage[signal] = { observations: [...new Set([...(reading ? [reading.id] : []), ...(coverage?.observations ?? [])])],
       coverage: coverage?.coverage ?? [] };
+    indoorEndpoints.push({ weight, value: reading && !reading.stale && coverage?.available !== false ? reading.value : null });
     return [signal, { value: reading && !reading.stale && (coverage === null || coverage.complete) ? reading.value : null, weight,
       observedAt: reading?.sourceTime ?? null, held: reading?.held ?? false,
       needsAttention: reading?.needsAttention ?? false, attentionReasons: reading?.attentionReasons ?? [],
@@ -364,7 +366,8 @@ export function committedLearningSample({ store, input, at, config = {}, windowM
   const routed = inputSegments.every(row => Number.isFinite(row.thermalCompressorDuty) && Number.isFinite(row.thermalAuxKw));
   lineage.control_context = { journal: contexts.filter(row => row.at < at).map(row => row.id) };
   const sample = { sensorInputVersion: 1, timestamp: at, windowStart: from, windowEnd: at, durationHours, inputSegments,
-    indoorC: indoor.value, indoorSensors, measurementEpochAt: sensorEpochAt || null,
+    indoorC: indoor.value, indoorEndpointC: indoorEndpoints.every(row => Number.isFinite(row.value))
+      ? indoorEndpoints.reduce((sum, row) => sum + row.value * row.weight, 0) : null, indoorSensors, measurementEpochAt: sensorEpochAt || null,
     outdoorC: outdoor.mean, solarRadiationWm2: radiation.value,
     supplyC: mean('supplyC'), brineC: mean('brineC'), hydronicHeatKw: mean('hydronicHeatKw'),
     hydronicHeatKwh: mean('hydronicHeatKw') === null ? null : mean('hydronicHeatKw') * durationHours,

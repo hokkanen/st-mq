@@ -228,7 +228,7 @@ export function trialBudgetCalculation() {
   ], ['Admission and additional funding require room within the per-cycle cap. Automatic trials also need sufficient unreserved daily allowance; the cycle and daily ledger update atomically. A trial spanning midnight remains funded by its Finnish start day. Unknown exposure cannot authorize a new trial; an existing trial retains its accepted schedule and last valid estimates.',
     'An explicitly edited, reviewed one-cycle budget is separate from the automatic daily ledger. An unchanged budget, permission-only edit or priority-only edit retains automatic restrictions. The daily learning target prioritizes useful opportunities and does not guarantee a trial or cap all further learning.',
     'Known exposure above the funded reservation is tracked separately and reduces later automatic allowance on its start day. A separately reviewed allowance does not consume the automatic daily ledger. An overrun alone does not establish that ending the cycle costs less; cancellation needs a complete economic comparison or an independent protection or authority reason.',
-    'Price threshold, daily target, cost allowance and evidence readiness are separate checks. A learning trial can have lower estimated savings than an economic alternative under the existing opportunity-cost rules. These budgets are not a bill guarantee.']);
+    'Price threshold, daily attempt limit, Normal-hour spacing, cost allowance and evidence readiness are separate checks. A learning trial can have lower estimated savings than an economic alternative under the existing opportunity-cost rules. These budgets are not a bill guarantee.']);
 }
 
 export function inputCalculation(key) {
@@ -280,7 +280,7 @@ export function validationCalculation(key) {
       'E is space-heating electrical energy in kWh. Cycles need at least 0.1 kWh executed energy for this comparison; multiply by 100 for percent.'),
     equation('Frozen cost prediction', 'error_C = mean_cycles |C_frozen − C_executed| / max(5, |C_executed|)',
       'C is space-heating cost in cents. The 5-cent denominator floor avoids unstable percentages around zero cost.'),
-  ], ['These summaries use at most 30 eligible completed episodes, with the original model, forecast and unchanged schedule. The largest cycle error in minimum indoor temperature is also checked. Recorded electricity may still be estimated from equipment states and nominal powers; forecast accuracy does not establish counterfactual savings.']);
+  ], ['These summaries use at most 30 eligible completed episodes, with the original model, forecast and unchanged schedule. Temperature errors and minimum-temperature comparisons use matching genuine observed endpoints; missing intervals and unobserved extrema are not scored. Recorded electricity may still be estimated from equipment states and nominal powers; forecast accuracy does not establish counterfactual savings.']);
   if (key === 'uncertainty' || key === 'Forward uncertainty') return calculation([
     equation('Forward temperature allowance', 'U(h) = U_observed(h) + g × Q × ε_source × √h / 4 + U_floor + U_action + U_solar + r̄ × h × δf',
       'U is in °C and h is hours. g is hydronic response, Q is compressor thermal kW, ε_source is the source-map allowance, r̄ is fireplace release in kg/h and δf is its gain allowance in °C/kg. The square-root terms are fixed engineering growth rules.'),

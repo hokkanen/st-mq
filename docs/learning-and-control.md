@@ -604,6 +604,11 @@ rebuild through the existing paged cycle worker, without a second evidence archi
 or a whole-cycle traversal on each control tick. Unknown or stale cost, routing,
 price or stored-heat evidence retains the accepted schedule; it does not authorize
 a new trial or a new economic cancellation.
+Economic continuation uses the funded complete-cycle reservation, rather than
+the original nominal cost premium. Additional funded exposure updates that allowance
+through the same ledger. Unknown complete-cycle exposure retains accepted intent;
+a full continued-versus-stopped comparison must exceed the funded learning allowance
+to justify an economic exit. Both alternatives include restoration and recovery.
 The reservation and daily ledger commit
 together, including at initial cycle recording. An automatic trial spanning
 midnight remains funded by its Finnish start day. An explicitly edited reviewed
@@ -619,11 +624,14 @@ restoration checks still apply independently.
 
 Disabling learning
 trials disables additional experimentation; ordinary economic plans still use
-the initial or learned model. The daily target prioritizes informative learning
-and is not a cap: cheap useful opportunities may continue within the allowance.
-Completed recovery permits a new independent cycle without a fixed six-hour wait.
-Incomplete attempts impose no fixed learning cooldown; actual adapter restoration
-and current readiness remain separate requirements.
+the initial or learned model. The configured daily trial count is a hard limit
+on automatic attempts in Europe/Helsinki, including interrupted attempts. Missing
+validation and cheap prices cannot bypass it. Separately funded reviewed one-cycle
+experiments retain their explicit scope. After any preceding Home cycle completes,
+another automatic trial requires one continuous hour of covered, measured Normal
+operation. Recovery, temperature outages and unavailable operating inputs do not
+count; the compressor need not run. Recorded history supplies both counts and
+Normal coverage across restart, midnight and master/slave handover.
 Preheat trials are eligible from startup through the configured preheat ceiling;
 there is no separate initial-duration cap. Selection prioritizes treatment types
 with less response evidence, then predicted thermal/compressor contrast and cost.

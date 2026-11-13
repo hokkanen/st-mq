@@ -88,7 +88,7 @@ function statusWithoutCharging(status) {
 function cycleStatus(cycle) {
   return cycle ? { id: cycle.id, status: cycle.status, startedAt: cycle.startedAt,
     actual: cycle.actual, stableSince: cycle.stableSince, referenceLabel: cycle.plan.referenceLabel,
-    adjustments: cycle.adjustments, exposureEstimate: cycle.exposureEstimate } : null;
+    temperatureCoverage: cycle.temperatureCoverage, adjustments: cycle.adjustments, exposureEstimate: cycle.exposureEstimate } : null;
 }
 
 function validatePhaseSnapshot(value) {
@@ -1663,7 +1663,7 @@ export class Engine {
     const observedStateAt = Date.parse(checkpoint.state?.observedAt);
     const cycleSample = withFireplaceInputs(yield { kind: 'sample', options: { at: now, config: this.control,
       measurementEpochAt: checkpoint.measurementEpochAt,
-      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000,
+      windowMs: !this.cycles.active() ? LEARNING_WINDOW_MS : Math.min(LEARNING_WINDOW_MS, Math.max(60_000,
         now - (this.cycles.active()?.lastSample?.timestamp ?? now), now - (previousControlState?.at ?? now),
         Number.isFinite(observedStateAt) ? now - observedStateAt : 0)) } }, fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
@@ -1698,7 +1698,8 @@ export class Engine {
     this.lastSample = sample;
     equipment.comfortReferenceProvisional = this.settings.comfort.targetC == null
       && (checkpoint.comfortReference?.provisional === true || !Number.isFinite(checkpoint.baselineC));
-    const trialProgress = this.cycles.trialProgress(now);
+    const trialProgress = this.cycles.trialProgress(now, { samples: [...(checkpoint.samples ?? []), cycleSample] });
+    equipment.learningTrialNormalReady = trialProgress.normalReady;
     equipment.learningTrialsToday = trialProgress.attempted;
     equipment.learningTrialsDate = trialProgress.date;
     // A compact planning-only view; raw samples never cross the planner worker.
@@ -2048,6 +2049,7 @@ export class Engine {
       originalSchedule: decision.plan.schedule, model:undefined, intervals:undefined,
       prediction:{...decision.plan.prediction,trajectory:undefined},referencePrediction:{...decision.plan.referencePrediction,trajectory:undefined} } : null;
     const episodeStatus = cycleStatus(this.cycles.active());
+    const reportedTrialProgress = this.cycles.trialProgress(now, { samples: [...(checkpoint.samples ?? []), cycleSample] });
     this.latestStatus = { now,input,environment:this.environment(),automation:this.automationStatus(),
       runtimeTiming:this.runtimeTiming?.() ?? null, heatingScenario: this.heatingExplorer.publicTrial(),
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
@@ -2060,7 +2062,7 @@ export class Engine {
       learning:{status:checkpoint.health.status,adaptive:visibleCheckpoint,metrics,episode:episodeStatus,
         readiness:learningReadiness(checkpoint,this.control,{...equipment,trialBudgetRemainingCents:planningBudget}),
         outcomes:this.cycles.outcomes(),
-        trials: { ...this.cycles.trialProgress(now), blockingReason: decision.plan?.trial ? null : decision.reasons[0],
+        trials: { ...reportedTrialProgress, blockingReason: reportedTrialProgress.blockingReason ?? (decision.plan?.trial ? null : decision.reasons[0]),
           opportunity: decision.plan?.trialOpportunity ?? null },
         parameters:this.control,background:this.store.getState('learning:health')},
       savings:{status:'estimated',explanation:'Completed-cycle differences use a modelled alternative. Daily chart timing benchmarks keep the observed energy fixed.'} };
@@ -2094,7 +2096,8 @@ export class Engine {
     }
     const args = continuationInput({ now, observations, ...outlook, checkpoint,
       settings, config: planningConfig, thermalState: planningState, equipment },
-      { ...cycle.plan, executionStartedAt: cycle.startedAt, continuation: cycle.continuation }, schedule);
+      { ...cycle.plan, fundedTrialAllowanceCents: cycle.trialBudget?.reservedCents,
+        executionStartedAt: cycle.startedAt, continuation: cycle.continuation }, schedule);
     if (args.retained) reasons.push('continuing-with-retained-estimates');
     // Only complete observed updates replace the retained planning basis.
     if (args.freshComparison) {
@@ -2106,6 +2109,12 @@ export class Engine {
       const cost = trialCostExposure({ ...args, schedule, model: cycle.plan.model,
         config: cycle.modelConfig, costContext: this.cycles.trialExposureContext(now) });
       this.cycles.observeTrialExposure(cost.costExposureCents, now);
+      if (!Number.isFinite(cost.costExposureCents)) {
+        args.freshComparison = false;
+        args.retained = true;
+        reasons.push('continuing-with-retained-estimates');
+      }
+      args.approvedExtraCostCents = this.cycles.active()?.trialBudget?.reservedCents ?? null;
     }
     const limit = ['preheat', 'reduction'].includes(phase) ? deliveredHeatLimit(args, schedule) : null;
     const preheatHours = cycle.actual.preheatHours

@@ -164,6 +164,25 @@ test('a genuinely cheaper exit is available without a new start penalty or arbit
   assert.ok(result.stoppedCostCents < result.continuedCostCents);
 });
 
+test('trial continuation uses its funded allowance rather than the original nominal premium', () => {
+  const { input, args, schedule, plan } = fixture();
+  const trial = { ...plan, trial: true, trialAllowanceCents: 8,
+    prediction: { costCents: 102 }, referencePrediction: { costCents: 100 } };
+  assert.equal(continuationInput(input, trial).approvedExtraCostCents, 8);
+  assert.equal(continuationInput(input, { ...trial, fundedTrialAllowanceCents: 9 }).approvedExtraCostCents, 9);
+  assert.equal(continuationInput(input, { ...trial, fundedTrialAllowanceCents: 0 }).approvedExtraCostCents, 0);
+  args.intervals.forEach((row, i) => { row.price = i < 8 ? -100 : 1; });
+  const reduction = { ...schedule, preheatStart: args.now, preheatEnd: args.now,
+    reductionStart: args.now, roomBoostC: 0 };
+  const ordinary = reviseHeatingCycle({ args, schedule: reduction });
+  const difference = ordinary.continuedCostCents - ordinary.stoppedCostCents;
+  assert.ok(difference > 0);
+  assert.equal(reviseHeatingCycle({ args: { ...args, trial: true, approvedExtraCostCents: difference + .1 }, schedule: reduction }).end, false);
+  assert.equal(reviseHeatingCycle({ args: { ...args, trial: true, approvedExtraCostCents: difference - .1 }, schedule: reduction }).end, true);
+  assert.equal(reviseHeatingCycle({ args: { ...args, trial: true, approvedExtraCostCents: null }, schedule: reduction }).end, false,
+    'Unknown funding retains accepted intent instead of inventing a zero allowance');
+});
+
 test('a paid preheat trial retains feasible heat exposure while ordinary cost optimization can shorten it', () => {
   const { input, args, plan, schedule } = fixture();
   assert.equal(continuationInput(input, { ...plan, trial: true }).trial, true);

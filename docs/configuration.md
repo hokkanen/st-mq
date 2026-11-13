@@ -731,7 +731,7 @@ applies; the shorter of this ceiling and the occupied or away ceiling governs.
 Garage has no savings strategy or economic temperature changes.
 
 `controller.learning_trials` enables bounded learning experiments.
-`controller.learning_trial_target_per_day` selects 1–4 priority daily opportunities
+`controller.learning_trial_target_per_day` sets a hard limit of 1–4 automatic trial attempts
 (default 4), using Finnish calendar days. At cheap prices, informative admitted trials can take priority within the
 allowance, including foregone estimated economic benefit. At higher prices,
 profitable operation takes priority. `controller.learning_priority_price_cents`
@@ -739,7 +739,7 @@ profitable operation takes priority. `controller.learning_priority_price_cents`
 equipment readiness, forecast coverage and completed recovery still govern each
 attempt. Trial duration follows recorded space-heating cycles and forecast demand
 within the configured reduction ceiling; increasing the ceiling does not force
-a longer trial. The target prioritizes planning; it does not cap cheap useful opportunities or change thermal fitting or model state.
+a longer trial. Interrupted attempts count toward the limit, and incomplete validation never bypasses it. Another automatic trial requires one continuous hour of observed Normal operation after the preceding Home cycle completes; recovery does not count. An explicitly edited reviewed one-cycle budget remains separate from automatic trial pacing.
 
 `controller.trial_budget_cents_per_day` and `controller.max_trial_cost_cents`
 bound screened incremental exposure, not total electricity used during recovery

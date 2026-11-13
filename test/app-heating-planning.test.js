@@ -42,6 +42,16 @@ for (const changedField of ['indoorC', 'reserveC', 'slabC']) test(`continuation 
   assert.deepEqual(plan.schedule, r.requests[0].input.continuation.schedule);
 });
 
+test('a continuation result cannot cancel with an obsolete funded trial allowance', async t => {
+  const r = rig(t), plan = chooseCycle(r.input).plan;
+  const args = { ...continuationInput(r.input, plan), trial: true, approvedExtraCostCents: 2 };
+  r.planner.continue(args, plan.schedule, 'accepted-owner');
+  r.requests[0].resolve({ continuation: { schedule: plan.schedule, end: true,
+    continuedCostCents: 10, stoppedCostCents: 5 } });
+  await r.planner.continuation.promise;
+  assert.equal(r.planner.continue({ ...args, approvedExtraCostCents: 8 }, plan.schedule, 'accepted-owner'), null);
+});
+
 for (const delay of [30_000, 120_000])
 test(`a delayed preheat stop preserves its executed prefix and original deadline (${delay}ms)`, async t => {
   const r = rig(t), plan = chooseCycle(r.input).plan;

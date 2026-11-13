@@ -897,7 +897,7 @@ export class Store {
   }
 
   /** Dashboard/control summaries avoid materializing complete observation tapes. */
-  cycleSummaries({ input, limit = 100, completedOnly = false, since = null } = {}) {
+  cycleSummaries({ input, limit = 100, completedOnly = false, since = null, automaticTrialsOnly = false } = {}) {
     return this.db.prepare(`SELECT id,status,started_at AS startedAt,ended_at AS endedAt,
       CASE WHEN NOT ${cycleAssessmentExcluded('learning_cycles.id')}
         THEN json_extract(payload,'$.assessment.profitCents') END AS profitCents,
@@ -912,6 +912,8 @@ export class Store {
       trial,
       json_extract(payload,'$.actual.compressorRunHours') AS compressorRunHours
       FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
+      ${automaticTrialsOnly ? `AND trial=1 AND NOT EXISTS(SELECT 1 FROM learning_cycle_definitions d WHERE d.id=learning_cycles.id
+        AND json_type(d.payload,'$.plan.userTrial.limits.maxTrialCostCents') IS NOT NULL)` : ''}
       ${since === null ? '' : 'AND started_at>=?'}
       ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'),
         ...(since === null ? [] : [instant(since, 'cycle summary start')]), limitValue(limit))

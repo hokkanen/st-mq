@@ -32,6 +32,7 @@ export class HeatingPlanning {
       roomSettingC: input.equipment?.roomSettingC,
       roomSettingMaximumC: input.equipment?.roomSettingMaximumC,
       learningTrialsToday: input.equipment?.learningTrialsToday,
+      learningTrialNormalReady: input.equipment?.learningTrialNormalReady,
       learningTrialsDate: input.equipment?.learningTrialsDate,
     })).digest('hex');
   }
@@ -48,7 +49,7 @@ export class HeatingPlanning {
   continue(args, schedule, owner, preheatHours = 0) {
     if (this.closed || !this.engine.canControl()) return null;
     const binding = JSON.stringify([owner, schedule]);
-    const scope = JSON.stringify([args.model, args.config, args.targetC, args.maxDropC, args.maxRiseC, args.trial,
+    const scope = JSON.stringify([args.model, args.config, args.targetC, args.maxDropC, args.maxRiseC, args.trial, args.approvedExtraCostCents,
       args.occupancy, args.equipment.externalChangeRevision, args.equipment.roomSettingC,
       args.equipment.roomSettingMaximumC]);
     const source = JSON.stringify(args.intervals.map(row => [row.end, row.price, row.outdoorC, row.solarRadiationWm2]));

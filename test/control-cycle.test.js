@@ -5,6 +5,7 @@ import { CycleTracker } from '../src/app/cycles.js';
 import { initialAdaptiveModel, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
 import { evaluateCycle, chooseCycle, revalidatePlan } from '../src/control/planner.js';
 import { initialHomeState } from '../src/domain/home-model.js';
+import { rebuildCycleWorking } from '../src/app/cycle-evaluation.js';
 
 const HOUR = 3600000, start = Date.parse('2026-01-01T00:00:00Z');
 const intervals = (hours = 8, { outdoorC = 0, solarRadiationWm2 = 0, price = i => i < 2 ? 100 : 5 } = {}) =>
@@ -278,7 +279,7 @@ test('temperature outages retain real energy accounting and conservative fallbac
   assert.equal(tracker.metrics(21).profit.count, 0);
 });
 
-test('a returning sensor cannot turn an earlier estimated interval into observed validation', t => {
+test('a brief returning sensor outage preserves the cycle without fabricating observations', t => {
   const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
   tracker.start(plan, neutralSample(start), start);
   tracker.record(neutralSample(start + HOUR / 4, { indoorC: null }), start + HOUR / 4,
@@ -288,15 +289,80 @@ test('a returning sensor cannot turn an earlier estimated interval into observed
     const at = start + quarter * HOUR / 4;
     episode = tracker.record(neutralSample(at), at) ?? episode;
   }
-  assert.equal(episode.complete, false);
-  assert.equal(episode.recoveryComplete, false);
+  assert.equal(episode.complete, true);
+  assert.equal(episode.recoveryComplete, true);
   const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
-  assert.equal(cycle.estimatedIndoorUsed, true);
-  assert.equal(cycle.actual.temperatureMissingHours, 0.5);
+  assert.equal(cycle.temperatureCoverage.maximumGapMs, HOUR / 4);
+  assert.equal(cycle.actual.temperatureMissingHours, 0.25);
   assert.ok([...store.cycleEvidence(cycle.id)].slice(1).every(row => row.indoorC === 21.5));
   assert.equal([...store.cycleEvidence(cycle.id)][0].indoorC, null);
-  assert.equal(store.learningJournal({ input: 'synthetic' }).length, 0);
-  assert.equal(tracker.metrics(21).recoveryError.count, 0);
+  assert.equal(store.learningJournal({ input: 'synthetic' }).some(entry => entry.kind === 'episode'), true);
+  assert.equal(tracker.metrics(21).recoveryError.count, 1);
+});
+
+for (const minutes of [10, 30, 31]) test(`${minutes}-minute temperature-only outage retains its true duration across reconstruction`, t => {
+  const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  // The completed window contains a real outage followed by a genuine endpoint.
+  // Its availability spans prevent rounding the outage to the whole window.
+  const returnedAt = start + (minutes + 1) * 60_000;
+  const sensors = { room: { weight: 1, value: null, reportCoverageComplete: false,
+    reportIntervals: [{ start: returnedAt - 60_000, end: returnedAt, endpoint: true }] } };
+  tracker.record(neutralSample(returnedAt, { indoorC: null, indoorEndpointC: 21.5, indoorSensors: sensors,
+    inputSegments: [{ ...neutralSample(returnedAt), start, end: returnedAt, phase: 'reduction' }] }), returnedAt);
+  const active = tracker.active();
+  assert.equal(active.temperatureCoverage.maximumGapMs, minutes * 60_000);
+  assert.equal(active.actual.temperatureMissingHours, minutes / 60);
+  const replay = rebuildCycleWorking(store, { id: active.id, count: active.observationCount });
+  assert.deepEqual(replay.temperatureCoverage, active.temperatureCoverage);
+  assert.deepEqual(replay.observer, active.observerState);
+  tracker.adoptWorking(replay);
+  let episode;
+  for (let i = 1; i <= 12 && tracker.active(); i++) {
+    const at = returnedAt + i * HOUR / 4;
+    episode = tracker.record(neutralSample(at), at) ?? episode;
+  }
+  const saved = store.cycles({ input: 'synthetic', completedOnly: true })[0];
+  assert.equal(saved.temperatureCoverage.maximumGapMs, minutes * 60_000);
+  assert.equal(episode.complete, minutes <= 30);
+  assert.equal([...store.cycleEvidence(saved.id)][0].indoorC, null,
+    'An endpoint cannot fill preceding unobserved segments');
+  assert.ok([...store.cycleEvidence(saved.id)].some(row => row.temperatureAvailable === false));
+  if (minutes <= 30) {
+    assert.ok(store.learningJournal({ input: 'synthetic' }).some(entry => entry.kind === 'episode'));
+    assert.equal(saved.assessment.temperatureCoverage.missingMs, minutes * 60_000);
+  } else assert.equal(saved.assessment.basis, 'unassessed-indoor-observation-gap');
+});
+
+test('a temperature outage during recovery resets the measured confirmation hour', t => {
+  const { tracker, plan } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  for (let minute = 15; minute <= 75; minute += 15) tracker.record(neutralSample(start + minute * 60_000), start + minute * 60_000);
+  const missingAt = start + 85 * 60_000;
+  tracker.record(neutralSample(missingAt, { indoorC: null }), missingAt, { controlIndoor: fallbackIndoor(missingAt) });
+  assert.equal(tracker.active().stableSince, null);
+  for (let minute = 95; minute <= 140; minute += 15) tracker.record(neutralSample(start + minute * 60_000), start + minute * 60_000);
+  assert.ok(tracker.active(), 'The preceding measured recovery time cannot bridge the outage');
+  assert.equal(tracker.record(neutralSample(start + 155 * 60_000), start + 155 * 60_000).complete, true);
+});
+
+test('isolated brief outages retain separate durations and do not discard the complete cycle', t => {
+  const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  for (const minute of [10, 20, 30, 40]) {
+    const at = start + minute * 60_000, missing = minute === 10 || minute === 30;
+    tracker.record(neutralSample(at, { indoorC: missing ? null : 21.5 }), at,
+      missing ? { controlIndoor: fallbackIndoor(at) } : {});
+  }
+  let episode;
+  for (let minute = 55; minute <= 160 && tracker.active(); minute += 15) {
+    const at = start + minute * 60_000;
+    episode = tracker.record(neutralSample(at), at) ?? episode;
+  }
+  const saved = store.cycles({ input: 'synthetic', completedOnly: true })[0];
+  assert.equal(episode.complete, true);
+  assert.equal(saved.temperatureCoverage.missingMs, 20 * 60_000);
+  assert.equal(saved.temperatureCoverage.maximumGapMs, 10 * 60_000);
 });
 
 test('fallback recovery uses the lower uncertainty bound and resets its hold when support expires', t => {

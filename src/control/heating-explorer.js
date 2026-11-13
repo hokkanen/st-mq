@@ -84,7 +84,8 @@ export function applyExplorerOverrides(input, overrides = {}) {
       if (key === 'preheatRoomBoostC') result.settings.preheatRoomBoostC = value;
       if (key === 'maxTrialCostCents') {
         result.trialBudgetRemainingCents = value;
-        result.equipment = { ...result.equipment, trialBudgetRemainingCents: value };
+        result.equipment = { ...result.equipment, trialBudgetRemainingCents: value,
+          learningTrialsToday: 0, learningTrialNormalReady: true };
       }
     }
   }

@@ -5,6 +5,8 @@ import { evaluateCycle, phaseAt, trialCostScenarios } from '../control/planner.j
 import { advanceReference, observedState, rebuildCycleWorking, assessCycle,
   initialTrialCostPrefix, advanceTrialCostPrefix } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
+import { normalOperationHours } from '../control/heating-trials.js';
+import { indoorAvailability, measuredIndoorEndpoint, initialTemperatureCoverage, advanceTemperatureCoverage, temperatureCoverageUsable, TRIAL_TEMPERATURE_GAP_MS } from '../domain/temperature-coverage.js';
 import { CONTROL_DEFAULTS } from './config.js';
 import { sealCycleWorking, validateCycleWorking, cycleWorkingIntact } from '../domain/cycle-working-state.js';
 
@@ -50,7 +52,7 @@ export class CycleTracker {
   trialExposureContext(now) {
     const cycle = this.active();
     if (!cycle?.plan.trial || cycle.lastSample.timestamp !== now || cycle.actual.missingHours > 0
-      || cycle.actual.routeMissingHours > 0 || cycle.actual.temperatureMissingHours > 0) return null;
+      || cycle.actual.routeMissingHours > 0 || !temperatureCoverageUsable(cycle.temperatureCoverage)) return null;
     const saved = this.readWorking(cycle);
     if (!this.trialPrefixMatches(cycle, saved) || !this.trialCostPrefix.available
       || !Array.isArray(this.trialCostPrefix.scenarios) || this.trialCostPrefix.scenarios.length !== 3
@@ -69,7 +71,7 @@ export class CycleTracker {
   workingJob() {
     const cycle = this.active(); if (!cycle) return null;
     const saved = this.readWorking(cycle);
-    if (saved?.count === cycle.observationCount && (!cycle.plan.trial || this.trialPrefixMatches(cycle, saved))
+    if (cycle.temperatureCoverage?.through === cycle.lastSample.timestamp && saved?.count === cycle.observationCount && (!cycle.plan.trial || this.trialPrefixMatches(cycle, saved))
       && saved.revision === (this.fireplaceContext?.fireplaceRevision ?? 0)
       && isDeepStrictEqual(saved.observer,cycle.observerState)
       && isDeepStrictEqual(saved.reference?.continuation?.state ?? null,cycle.referenceState ?? null)
@@ -92,8 +94,10 @@ export class CycleTracker {
       if (!cycle || result.id !== cycle.id || result.count !== cycle.observationCount) throw new Error('Cycle reconstruction became stale');
       const reference = result.reference?.continuation?.state ?? null;
       if (!isDeepStrictEqual(cycle.observerState,result.observer)
-        || !isDeepStrictEqual(cycle.referenceState ?? null,reference)) cycle.stableSince = null;
+        || !isDeepStrictEqual(cycle.referenceState ?? null,reference)
+        || !isDeepStrictEqual(cycle.temperatureCoverage,result.temperatureCoverage)) cycle.stableSince = null;
       cycle.observerState = result.observer; cycle.referenceState = reference;
+      cycle.temperatureCoverage = result.temperatureCoverage;
       const saved = this.saveWorking(cycle,result); this.save(cycle);
       this.rememberTrialPrefix(result.trialCostPrefix ?? null, saved.digest);
     });
@@ -189,12 +193,18 @@ export class CycleTracker {
     });
     return true;
   }
-  trialProgress(now) {
+  trialProgress(now, { samples = [] } = {}) {
     // A Finnish day is at most 25 hours. Seek a bounded recent suffix instead
     // of repeatedly extracting fields from large old recovery-cycle payloads.
-    const rows = this.store.cycleSummaries({ input: this.input, limit: 100, since: now - 26 * HOUR });
+    const rows = this.store.cycleSummaries({ input: this.input, limit: 100, since: now - 26 * HOUR, automaticTrialsOnly: true });
     const date = dateKey(now), today = rows.filter(row => row.trial && row.startedAt <= now && dateKey(row.startedAt) === date);
-    return { date, target: this.config.learningTrialTargetPerDay, attempted: today.length,
+    const latest = this.store.cycleSummaries({ input: this.input, limit: 1 })[0];
+    const normalHours = latest ? number(latest.endedAt) ? normalOperationHours(samples, now, latest.endedAt) : 0 : normalOperationHours(samples, now, now - HOUR);
+    const normalReady = !latest || normalHours >= 1;
+    const blockingReason = today.length >= this.config.learningTrialTargetPerDay ? 'daily-learning-trial-target-reached'
+      : latest && !number(latest.endedAt) ? 'complete-cycle-in-progress'
+        : !normalReady ? 'learning-trial-needs-normal-hour' : null;
+    return { normalHours, normalRequiredHours: latest ? 1 : 0, normalReady, blockingReason, date, target: this.config.learningTrialTargetPerDay, attempted: today.length,
       completed: today.filter(row => row.status === 'completed').length,
       incomplete: today.filter(row => row.status === 'incomplete').length,
       assessed: today.filter(row => number(row.profitCents)).length,
@@ -215,7 +225,8 @@ export class CycleTracker {
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
       ...(executionSchedule ? { executionSchedule: structuredClone(executionSchedule) } : {}),
       executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observationCount: 0, phases: [], lastSample: sampleEndpoint(sample), lastForecastVersion: sample.provenance?.forecastVersion ?? null,
-      observerState: { ...plan.initialState }, referenceState: null, estimatedIndoorUsed: plan.equipment?.indoorEstimated === true,
+      observerState: { ...plan.initialState }, referenceState: null,
+      temperatureCoverage: initialTemperatureCoverage(now, plan.equipment?.indoorEstimated !== true && number(measuredIndoorEndpoint(sample))),
       actual: { preheatHours: 0, costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
         compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0,
@@ -294,7 +305,7 @@ export class CycleTracker {
     const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
     if (!number(dt)) return null;
     const a = cycle.actual;
-    cycle.estimatedIndoorUsed ||= controlIndoor?.estimated === true;
+    const temperatureSpans = indoorAvailability(sample, previous.timestamp, now);
     let cursor = previous.timestamp;
     while (cursor < now) {
       // The sample describes the completed interval ending now. Its power must
@@ -311,6 +322,7 @@ export class CycleTracker {
       const price = currentQuote?.price ?? frozen?.price;
       const boundaries = [schedule.preheatStart,schedule.preheatEnd,schedule.reductionStart,schedule.reductionEnd,
         ...(sample.inputSegments??[]).flatMap(s => [s.start,s.end]),
+        ...temperatureSpans.flatMap(s => [s.start, s.end]),
         ...(sample.priceIntervals??[]).filter(i => number(i.price)).flatMap(i => [i.start,i.end]),
         ...[sample,previous].filter(s => number(s.priceCents)).flatMap(s => [s.priceStart,s.priceEnd]),
         ...cycle.plan.intervals.flatMap(i => [i.start,i.end])].filter(t => number(t) && t > cursor);
@@ -318,9 +330,9 @@ export class CycleTracker {
       const hours = (end - cursor) / HOUR;
       if (phase === 'preheat') a.preheatHours = (a.preheatHours ?? 0) + hours;
       // Meter/equipment coverage remains useful when a temperature is missing.
-      // Temperature gaps separately prevent calibration and outcome validation.
-      if (!number(previous.indoorC) || !number(sample.indoorC) || sample.indoorEstimated || previous.indoorEstimated)
-        a.temperatureMissingHours = (a.temperatureMissingHours ?? 0) + hours;
+      // Temperature-only gaps do not erase covered energy or response evidence.
+      const temperatureAvailable = temperatureSpans.some(span => span.start <= cursor && span.end >= end);
+      if (!temperatureAvailable) a.temperatureMissingHours = (a.temperatureMissingHours ?? 0) + hours;
       const eligible = (dt <= 0.5 || Boolean(segment)) && number(values.powerKw)
         && values.powerKw >= 0 && number(price) && (!sample.inputSegments || Boolean(segment))
         && (!number(sample.windowStart) || cursor >= sample.windowStart);
@@ -358,7 +370,7 @@ export class CycleTracker {
         supplyC: values.supplyC ?? null, brineC: values.brineC ?? null,
         floorOverrideMode: values.floorOverrideMode ?? null, treatmentKey: values.treatmentKey ?? null, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
-        phase, indoorC: sample.indoorEstimated ? null : sample.indoorC, powerKw: values.powerKw, eligible,
+        phase, temperatureAvailable, indoorC: end === now ? measuredIndoorEndpoint(sample) ?? null : null, powerKw: values.powerKw, eligible,
         ...(controlIndoor?.estimated ? { indoorControlEstimate: { value: controlIndoor.value, uncertaintyC: controlIndoor.uncertaintyC,
           anchorAt: controlIndoor.anchorAt, estimatedSensor: controlIndoor.estimatedSensor } } : {}),
         thermalCompressorDuty:values.thermalCompressorDuty??null,thermalAuxKw:values.thermalAuxKw??null,
@@ -370,6 +382,7 @@ export class CycleTracker {
       cycle.observerState = observedState(cycle,cycle.observerState,rows.at(-1),this.events(cycle));
       cursor = end;
     }
+    cycle.temperatureCoverage = advanceTemperatureCoverage(cycle.temperatureCoverage, rows);
     const previousPrefix = this.trialPrefixMatches(cycle,working) ? this.trialCostPrefix : null;
     cycle.lastSample = sampleEndpoint(sample);
     cycle.lastForecastVersion = sample.provenance?.forecastVersion ?? null;
@@ -399,10 +412,14 @@ export class CycleTracker {
     if (now < schedule.reductionEnd || referenceState.unavailable) return null;
     const reference = { endState: referenceState.continuation.state };
     const reserve = cycle.observerState?.reserveC;
-    const recoveryIndoor = number(sample.indoorC) && !sample.indoorEstimated ? sample.indoorC
+    const recoveryIndoor = number(measuredIndoorEndpoint(sample)) ? measuredIndoorEndpoint(sample)
       : controlIndoor && !controlIndoor.stale ? controlIndoor.value : null;
     const sourceUncertainty = controlIndoor?.estimated ? controlIndoor.uncertaintyC : 0;
-    const settled = number(recoveryIndoor) && number(sourceUncertainty)
+    const measuredRecovery = number(measuredIndoorEndpoint(sample)) && !controlIndoor?.estimated;
+    const waitingForTemperature = cycle.temperatureCoverage.initialMeasured
+      && cycle.temperatureCoverage.maximumGapMs <= TRIAL_TEMPERATURE_GAP_MS && !measuredRecovery;
+    const settled = !waitingForTemperature && (!temperatureCoverageUsable(cycle.temperatureCoverage) || measuredRecovery && rows.every(row => row.temperatureAvailable))
+      && number(recoveryIndoor) && number(sourceUncertainty)
       && (!controlIndoor?.estimated || now <= controlIndoor.validUntil)
       && recoveryIndoor - sourceUncertainty >= reference.endState.indoorC - 0.2
       && number(reserve) && reserve - sourceUncertainty >= reference.endState.reserveC - 0.25
@@ -414,7 +431,7 @@ export class CycleTracker {
     if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
-      if (cycle.assessmentUnavailableReason || cycle.estimatedIndoorUsed || (a.temperatureMissingHours ?? 0) > 0) {
+      if (cycle.assessmentUnavailableReason || !temperatureCoverageUsable(cycle.temperatureCoverage) || !measuredRecovery) {
         // The control operation ended conservatively. An inferred endpoint or
         // unobserved trajectory cannot establish measured recovery or savings.
         cycle.status = 'completed'; cycle.endedAt = now;

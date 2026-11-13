@@ -36,7 +36,8 @@ export function withSensorMeasurements(sample, checkpoint = {}, configuration = 
       if (!coverage.reportCoverageComplete) value = null;
     }
     if (sensorSettling || boundary && (!Number.isFinite(sensor.observedAt) || sensor.observedAt < boundary)) value = null;
-    return [signal, { ...sensor, ...coverage, value }];
+    return [signal, { ...sensor, ...coverage, value,
+      ...(boundary ? { measurementEligible: !sensorSettling && Number.isFinite(sensor.observedAt) && sensor.observedAt >= boundary } : {}) }];
   }));
   const indoorC = Object.values(indoorSensors).every(sensor => Number.isFinite(sensor.value))
     ? Object.values(indoorSensors).reduce((sum, sensor) => sum + sensor.value * sensor.weight, 0) : null;

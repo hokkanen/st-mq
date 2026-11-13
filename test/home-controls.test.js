@@ -22,9 +22,9 @@ test('a planning reference remains distinct from a learned Normal reference at s
   assert.equal(homeReferenceSummary(status), 'Planning reference · Normal temperature still learning');
   const policy = homePolicyValues({ learning: { parameters: {
     learningTrials: true, maxTrialCostCents: 150, trialBudgetCentsPerDay: 300 } } });
-  assert.match(policy.trialBudget, /the configured daily target/);
+  assert.match(policy.trialBudget, /the configured daily limit/);
   assert.doesNotMatch(policy.trialBudget, /seeking 4/);
-  assert.match(policy.trialBudget, /reservation that may grow.*without a fixed learning cooldown/);
+  assert.match(policy.trialBudget, /reservation that may grow.*one continuous observed Normal hour/);
 });
 
 test('date controls display Finnish wall time across winter, summer and midnight', () => {

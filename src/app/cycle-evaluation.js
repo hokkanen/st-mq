@@ -1,5 +1,6 @@
 import { advanceCycleEvaluation, trialCostScenarios } from '../control/planner.js';
 import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
+import { initialTemperatureCoverage, advanceTemperatureCoverage } from '../domain/temperature-coverage.js';
 import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
 
 const HOUR = 3600000, number = Number.isFinite;
@@ -87,11 +88,15 @@ export function rebuildCycleWorking(store, { id, count, fireplaceEvents = [] }) 
   const cycle = store.cycleById({ id });
   if (!cycle || cycle.observationCount !== count) throw new Error('Cycle evidence changed during reconstruction');
   let observer = { ...cycle.plan.initialState }, reference = null;
+  let temperatureCoverage = initialTemperatureCoverage(cycle.startedAt,
+    cycle.temperatureCoverage?.initialMeasured
+      ?? (cycle.plan.equipment?.indoorEstimated !== true && Number.isFinite(cycle.plan.initialState.indoorC)));
   let trialCostPrefix = cycle.plan.trial ? initialTrialCostPrefix(cycle) : null;
   let after = -1;
   for (;;) {
     const page = store.cycleEvidencePage({ id, after, through: count });
     if (!page) throw new Error('The selected cycle is unavailable');
+    temperatureCoverage = advanceTemperatureCoverage(temperatureCoverage, page.rows);
     for (const row of page.rows) observer = observedState(cycle, observer, row, fireplaceEvents);
     reference = advanceReference(cycle, page.rows, fireplaceEvents, reference);
     if (trialCostPrefix) trialCostPrefix = advanceTrialCostPrefix({ ...cycle,
@@ -100,7 +105,7 @@ export function rebuildCycleWorking(store, { id, count, fireplaceEvents = [] }) 
     if (page.complete) break;
     after = page.next;
   }
-  return { id, count, observer, reference, ...(trialCostPrefix ? { trialCostPrefix } : {}) };
+  return { id, count, observer, reference, temperatureCoverage, ...(trialCostPrefix ? { trialCostPrefix } : {}) };
 }
 
 const recoveryTotals = (target, trajectory, observations) => {
@@ -156,7 +161,7 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
         : row.floorOverrideMode === 'off';
       if (cycle.plan.schedule.floorOverride && (row.treatmentKey !== cycle.treatmentKey
         || !floorConfirmed)) floorTreatmentComparable = false;
-      if (number(row.indoorC)) observedMinimum = Math.min(observedMinimum,row.indoorC);
+
       const original = cycle.plan.intervals.find(value => value.start <= row.start && value.end >= row.end);
       if (!original) originalCoverage = false;
       else predictionIntervals.push({ start: row.start, end: row.end, outdoorC: original.outdoorC,
@@ -167,10 +172,11 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
         schedule: cycle.plan.schedule, intervals: predictionIntervals }, predictedState);
       predictedState = value.continuation; predicted = value.result;
       recoveryTotals(originalRecovery,predicted.trajectory,rows);
-      for (const step of predicted.trajectory) predictedMinimum = Math.min(predictedMinimum,step.indoorC);
       for (const row of rows) {
         const step = predicted.trajectory.find(value => value.at >= row.end && value.at-value.durationHours*HOUR < row.end);
-        if (step && number(row.indoorC)) {
+        if (step && row.indoorEndpoint !== false && row.temperatureAvailable !== false && number(row.indoorC)) {
+          observedMinimum = Math.min(observedMinimum, row.indoorC);
+          predictedMinimum = Math.min(predictedMinimum, step.indoorC);
           const hours = (row.end-row.start)/HOUR;
           trajectoryHours += hours; temperatureErrorHours += Math.abs(step.indoorC-row.indoorC)*hours;
         }
@@ -197,6 +203,7 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
         recoveryPredictionBasis: originalRecoveryAvailable ? 'Frozen model and original forecast over the observed recovery period'
           : cycle.adjustments?.length ? 'Unavailable: executed schedule changed' : 'Unavailable: original forecast did not cover the complete cycle',
         calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
+        temperatureCoverage: cycle.temperatureCoverage,
         recoveryBasis: 'Comparable room temperature and reserve reconstructed with the frozen cycle model, and selected slab when configured, held for one hour; DHW service excluded',
         referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
       const episode = { id: cycle.id, treatmentKey: cycle.treatmentKey ?? 'native', complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
@@ -215,7 +222,9 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
         forecastValidation:{roomBoostC:schedule.roomBoostC??0,preheatHours:(schedule.preheatEnd-schedule.preheatStart)/HOUR,
           eligible:Boolean(predicted && comparableSpace && trajectoryHours>0),
           temperatureMaeC:trajectoryHours?temperatureErrorHours/trajectoryHours:null,
-          minimumTemperatureErrorC:predicted?Math.abs(predictedMinimum-observedMinimum):null,
+          minimumTemperatureErrorC:predicted && trajectoryHours > 0 ? Math.abs(predictedMinimum-observedMinimum):null,
+          temperatureCoverage: cycle.temperatureCoverage,
+          temperatureBasis: 'Genuine measured endpoints only; missing intervals and unobserved extrema are not scored',
           energyRelativeError:predicted && a.spaceHeatingKwh>=.1?Math.abs(predicted.spaceHeatingKwh-a.spaceHeatingKwh)/a.spaceHeatingKwh:null,
           costRelativeError:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents)/Math.max(5,Math.abs(a.spaceHeatingCostCents)):null,
           costAbsoluteErrorCents:predicted?Math.abs(predicted.spaceHeatingCostCents-a.spaceHeatingCostCents):null,

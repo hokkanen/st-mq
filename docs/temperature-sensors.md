@@ -329,10 +329,18 @@ identified as **Partly estimated** with the missing room and baseline time. It
 cannot train thermal coefficients or the comfort reference, score observed
 prediction validation, or fill recorded temperature history. Individual room
 readings retain their original timestamps and unavailable status. Restart does not
-renew the baseline or source evidence. An already active cycle can complete its
-control recovery using the bounded estimate, but an indoor-observation gap marks
-its assessment `unassessed-indoor-observation-gap`. Such a cycle earns no learning
-or validation evidence and no claimed observed saving.
+renew the baseline or source evidence. A temperature-only outage of up to 30 minutes does not discard an otherwise
+covered cycle. The stored-heat observer continues from actual equipment and weather
+inputs; a returning genuine endpoint may re-anchor it. Availability intervals,
+rather than an entire adjoining sample window, determine each outage's duration.
+The cycle requires measured starting conditions and one uninterrupted measured
+recovery-confirmation hour; a temperature outage restarts that hour. Energy and
+response evidence remain useful. Temperature prediction errors use genuine observed
+endpoints only, with no fitting weight or claimed observed minimum across the gap.
+The gap and its duration remain visible in history and assessment coverage.
+Longer outages, missing physical inputs or recovery supported only by estimates
+retain partial/unavailable assessment. An active cycle can still complete control
+recovery conservatively without claiming assessed recovery or savings.
 
 ### Current acquisition boundary
 

@@ -58,7 +58,7 @@ export function continuationInput(input, plan, schedule = plan.schedule) {
     maxRiseC: input.settings?.comfort?.maxRiseC ?? plan.maxRiseC,
     trial: plan.trial === true,
     approvedExtraCostCents: plan.trial
-      ? Math.max(0, (plan.prediction?.costCents ?? 0) - (plan.referencePrediction?.costCents ?? 0))
+      ? plan.fundedTrialAllowanceCents ?? plan.trialAllowanceCents ?? null
       : Math.max(0, -(plan.config?.minimumHomeBenefitCents ?? 0)),
     freshComparison: fresh && measured && !evidenceMissing && !missingSolar,
     retained: !fresh || !measured || evidenceMissing || missingSolar };
@@ -150,6 +150,7 @@ export function reviseHeatingCycle({ args, schedule, preheatHours = 0 }) {
   // No feasible repair is a reason to retain intent, not to invent an exit.
   best ??= { schedule, prediction: incumbent };
   const stopped = evaluate(endTreatmentNow(schedule, args.now));
-  return { schedule: best.schedule, end: costsLess(stopped.costCents + (args.approvedExtraCostCents ?? 0), best.prediction.costCents),
+  return { schedule: best.schedule, end: (!args.trial || finite(args.approvedExtraCostCents))
+      && costsLess(stopped.costCents + (args.approvedExtraCostCents ?? 0), best.prediction.costCents),
     continuedCostCents: best.prediction.costCents, stoppedCostCents: stopped.costCents };
 }

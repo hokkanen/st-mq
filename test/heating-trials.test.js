@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { heatingDemandHistory, trialOpportunity } from '../src/control/heating-trials.js';
+import { heatingDemandHistory, trialOpportunity, normalOperationHours } from '../src/control/heating-trials.js';
 import { chooseCycle, revalidatePlan, trialEnvelope, trialCostExposure } from '../src/control/planner.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 import { controlConfiguration } from '../src/app/config.js';
@@ -34,7 +34,7 @@ test('trial windows span useful demand cycles, lengthening in milder weather wit
   assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).valid, true);
   assert.equal(mildInput.checkpoint.model.validation, null, 'Planning creates no learning evidence');
   mildInput.equipment.learningTrialsToday = 2;
-  assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).valid, true, 'The daily target cannot end useful lifelong exploration');
+  assert.equal(revalidatePlan({ ...mildInput, plan: mild.plan }).valid, true, 'Further trials remain eligible below the daily limit');
 });
 
 test('no heating opportunity is not a daily experiment, and hard ceilings still win', () => {
@@ -190,4 +190,63 @@ test('daily target and trial allowances remain configuration owned and bounded',
   assert.equal(config.maxTrialCostCents, 150);
   assert.deepEqual(learningConfiguration(config), learningConfiguration(controlConfiguration()),
     'Planning allowances do not change journal interpretation or reset learning');
+});
+
+test('automatic trial count is a hard limit even with urgent learning, free exposure and no economic alternative', () => {
+  const value = input();
+  const first = chooseCycle(value);
+  assert.equal(first.plan?.trial, true);
+  value.equipment.learningTrialsToday = controlConfiguration().learningTrialTargetPerDay;
+  assert.notEqual(chooseCycle(value).plan?.trial, true);
+  assert.equal(revalidatePlan({ ...value, plan: first.plan }).reason, 'daily-learning-trial-target-reached');
+  value.equipment.learningTrialsToday = 0;
+  value.equipment.learningTrialNormalReady = false;
+  assert.notEqual(chooseCycle(value).plan?.trial, true);
+  assert.equal(revalidatePlan({ ...value, plan: first.plan }).reason, 'learning-trial-needs-normal-hour');
+});
+
+test('Normal spacing requires contiguous observed operation after recovery, not elapsed time or compressor runtime', () => {
+  const row = { start: now - HOUR, end: now, phase: 'normal', outdoorC: 10, powerKw: 0, quality: [] };
+  const samples = [{ timestamp: now, indoorC: 21, inputSegments: [row] }];
+  assert.equal(normalOperationHours(samples, now, now - HOUR), 1);
+  assert.equal(normalOperationHours(samples, now, now - HOUR / 2), .5);
+  for (const phase of ['recovery', 'preheat', 'reduction']) {
+    assert.equal(normalOperationHours([{ ...samples[0], inputSegments: [{ ...row, phase }] }], now, now - HOUR), 0);
+  }
+  assert.equal(normalOperationHours([{ ...samples[0], indoorC: null }], now, now - HOUR), 0);
+  assert.equal(normalOperationHours([{ ...samples[0], timestamp: now + 1 }], now, now - HOUR), 0);
+  const split = [{ ...row, end: now - HOUR / 2 }, { ...row, start: now - HOUR / 4 }];
+  assert.equal(normalOperationHours([{ ...samples[0], inputSegments: split }], now, now - HOUR), .25);
+});
+
+test('pacing survives tracker recreation and excludes separately funded reviewed experiments from the automatic cap', () => {
+  const store = new Store(':memory:');
+  try {
+    for (let i = 0; i < 5; i++) store.cycle('providers', { id: `attempt-${i}`, startedAt: now - (10 - i) * HOUR,
+      endedAt: now - (9 - i) * HOUR, status: i === 0 ? 'incomplete' : 'completed',
+      plan: { trial: true, ...(i === 4 ? { userTrial: { limits: { maxTrialCostCents: 10 } } } : {}) } });
+    const tracker = new CycleTracker({ store, input: 'providers' });
+    const progress = tracker.trialProgress(now);
+    assert.equal(progress.attempted, 4);
+    assert.equal(progress.blockingReason, 'daily-learning-trial-target-reached');
+    assert.deepEqual(new CycleTracker({ store, input: 'providers' }).trialProgress(now), progress);
+    const nextDay = now + 24 * HOUR;
+    assert.equal(tracker.trialProgress(nextDay).attempted, 0);
+    assert.equal(tracker.trialProgress(nextDay).blockingReason, 'learning-trial-needs-normal-hour',
+      'A date change cannot substitute for observed Normal operation');
+  } finally { store.close(); }
+});
+
+for (const at of ['2026-03-29T20:59:00Z', '2026-10-25T21:59:00Z'])
+test(`Finnish trial counts reset at local midnight across the DST day ending ${at}`, () => {
+  const store = new Store(':memory:');
+  try {
+    const time = Date.parse(at);
+    store.cycle('providers', { id: 'dst-attempt', startedAt: time, endedAt: time + 30_000,
+      status: 'incomplete', plan: { trial: true } });
+    const tracker = new CycleTracker({ store, input: 'providers' });
+    assert.equal(tracker.trialProgress(time + 30_000).attempted, 1);
+    assert.equal(tracker.trialProgress(time + 60_000).attempted, 0);
+    assert.equal(tracker.trialProgress(time + 60_000).normalReady, false);
+  } finally { store.close(); }
 });

@@ -157,7 +157,7 @@ test('trial input readiness, allowance and accepted learning remain separate wit
   assert.doesNotMatch(row.detail, /€0.00|undefined|null/);
   assert.match(show(0).evidenceRows.find(item => item.key === row.key).detail, /Available allowance for a new automatic trial: €0.00/);
   assert.match(unknown.evidenceRows.find(item => item.key === 'Action readiness').detail, /input prerequisites: met.*Available allowance/);
-  assert.match(row.detail, /without a fixed learning cooldown.*does not establish accepted model learning/);
+  assert.match(row.detail, /one continuous observed Normal hour.*does not establish accepted model learning/);
   const budget = unknown.policyRows.find(item => item.key === 'Learning trial budget');
   assert.equal(budget.value, '150.00 ct per-cycle cap');
   assert.match(JSON.stringify(budget.calculation), /D_s = C_actual,s,prefix.*R_new = max\(R_old, X_total\).*Finnish start day.*unchanged budget/);
@@ -182,7 +182,7 @@ test('daily trials distinguish attempts, completion and assessed evidence withou
     incomplete: 1, assessed: 0, observedCompressorRunHours: .5, remainingCents: 150,
     blockingReason: 'normal-operation-preferred' } });
   const row = display.evidenceRows.find(item => item.key === 'Daily learning trials');
-  assert.equal(row.value, '2 attempted / 2 sought');
+  assert.equal(row.value, '2 attempted / 2 maximum');
   assert.match(row.detail, /1 completed, 1 incomplete, 0 with a comparable/);
   assert.match(row.detail, /includes recovery and is not proof of displaced heating/);
   assert.match(row.detail, /does not establish accepted model learning/);

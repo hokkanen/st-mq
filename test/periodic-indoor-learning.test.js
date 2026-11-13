@@ -11,6 +11,7 @@ import { addSensorChange } from '../src/app/sensor-changes.js';
 import { committedLearningSample, recordLearningContext, replayLearningJournal} from '../src/app/committed-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
 import { committedStatus } from './helpers/committed-status.js';
+import { indoorAvailability, measuredIndoorEndpoint } from '../src/domain/temperature-coverage.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const signal = 'indoor_temperature';
@@ -54,6 +55,10 @@ test('a recovered endpoint cannot make a learning window spanning a missed repor
   recorder.record(report(45));
   const outage = sample(45);
   assert.equal(outage.indoorC, null);
+  assert.equal(measuredIndoorEndpoint(outage), 21, 'The genuine returned endpoint is distinct from whole-window fitting eligibility');
+  assert.equal(indoorAvailability(outage, start + 30 * MINUTE, start + 45 * MINUTE)
+    .reduce((ms, row) => ms + row.end - row.start, 0), 2 * MINUTE,
+  'The 13-minute outage is not inflated to the 15-minute completed window');
   assert(outage.quality.includes('missing'));
   assert.equal(outage.indoorSensors.indoor_temperature.reportCoverageComplete, false);
   assert.equal(outage.indoorSensors.indoor_temperature.reportCoveredThrough, start + 32 * MINUTE);
@@ -187,7 +192,7 @@ test('a repeated timestamp cannot clear a recorded disconnection after engine re
 });
 
 test('a sensor measurement boundary records the first new report even if its value is unchanged', t => {
-  const { store } = fixture(t); let now = start;
+  const { store, sample } = fixture(t); let now = start;
   const engine = new Engine({ store, config: { input: 'providers' }, clock: () => now });
   engine.ingest(report(0));
   addSensorChange(store, 'providers', { signal, reason: 'replacement', requestId: 'invented-periodic-replacement' },
@@ -201,6 +206,8 @@ test('a sensor measurement boundary records the first new report even if its val
   const reading = lastIndoorReading(store, { signal, at: now, input: 'providers', notBefore: start + 5 * MINUTE });
   assert.equal(reading.id, replacement.id);
   assert.equal(reading.sourceTime, start + 15 * MINUTE);
+  assert.equal(measuredIndoorEndpoint(sample(30)), null, 'The returned endpoint cannot bypass sensor-change settling');
+  assert.deepEqual(indoorAvailability(sample(30), start + 15 * MINUTE, now), []);
 });
 
 test('recording existence checks retain genuine boundary evidence independently of report availability', t => {
