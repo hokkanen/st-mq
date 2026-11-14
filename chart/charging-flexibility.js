@@ -8,6 +8,8 @@ const comparisonScope = charger => charger?.flexibility?.comparisonScope ?? null
 const validComparison = value => value?.available === true && finite(value.at);
 const roundCents = cents => Math.sign(cents) * Math.round(Math.abs(cents));
 const money = cents => finite(cents) ? `€${(roundCents(cents) / 100).toFixed(2)}` : 'Unavailable';
+const householdCost = (comparison, key) => Array.isArray(comparison.chargers) && comparison.chargers.length
+  && comparison.chargers.every(row => finite(row[key])) ? comparison.chargers.reduce((sum, row) => sum + row[key], 0) : null;
 const snapshotDate = (at, timezone) => new Intl.DateTimeFormat('en-GB', { timeZone: timezone,
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(at);
 const duration = milliseconds => {
@@ -24,6 +26,7 @@ const comparisonContent = value => JSON.stringify([
     'householdUncertaintyPremiumCents', 'riskAdjustedSavingsCents'].map(key => money(value[key])),
   Math.sign(roundCents(value.savingsCents)), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
   value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage, value.sharedPlanChanged,
+  ...(value.sharedPlanChanged ? ['normalCostCents', 'deferredCostCents'].map(key => money(householdCost(value, key))) : []),
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
   (value.chargers ?? []).filter(peer => finite(peer.normalCostCents) && finite(peer.deferredCostCents)
@@ -218,14 +221,17 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     savingValue.dataset.tone = available && comparison.recommended === true ? 'saving' : 'neutral';
     const peerEffects = available ? (comparison.chargers ?? []).filter(peer => peer.id !== selected
       && finite(peer.normalCostCents) && finite(peer.deferredCostCents) && Math.round(Math.abs(peer.normalCostCents - peer.deferredCostCents)) > 0) : [];
-    combined.hidden = !peerEffects.length;
-    combined.textContent = peerEffects.map(peer => {
+    const sharedTotals = displayedActive && available && comparison.sharedPlanChanged === true;
+    combined.hidden = !peerEffects.length && !sharedTotals;
+    const peerDescription = peerEffects.map(peer => {
       const saving = peer.normalCostCents - peer.deferredCostCents;
       return `${snapshot.labels[peer.id] ?? 'The other charger'}: ${money(Math.abs(saving))} ${saving < 0 ? 'more' : 'less'} estimated, with its ready-by time unchanged.`;
-    }).join(' ') + (!combined.hidden && displayedActive && comparison.sharedPlanChanged
-      ? ` Combined remaining costs: ${money(comparison.chargers.reduce((sum, row) => sum + row.normalCostCents, 0))} with the earlier deadline; ${money(comparison.chargers.reduce((sum, row) => sum + row.deferredCostCents, 0))} with the approved deadline.`
-      : '') + (!combined.hidden && finite(comparison.householdSavingsCents)
-      ? ` Total estimated ${roundCents(comparison.householdSavingsCents) < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
+    }).join(' ');
+    combined.textContent = [peerEffects.length
+      ? `${displayedActive ? 'Keeping' : 'Allowing'} ${snapshot.label}'s extra day has this estimated effect compared with ${displayedActive ? 'canceling it' : 'keeping its current deadline'}. ${peerDescription} Each charger's card separately compares its own extra day.` : '',
+    sharedTotals ? `Combined remaining costs: ${money(householdCost(comparison, 'normalCostCents'))} with the earlier deadline; ${money(householdCost(comparison, 'deferredCostCents'))} with the approved deadline.` : '',
+    !combined.hidden && finite(comparison.householdSavingsCents)
+      ? `Total estimated ${roundCents(comparison.householdSavingsCents) < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : ''].filter(Boolean).join(' ');
     uncertainty.hidden = !available || !comparison.usesForecast;
     const riskSaving = finite(comparison?.riskAdjustedSavingsCents) ? roundCents(comparison.riskAdjustedSavingsCents) : null;
     uncertainty.textContent = uncertainty.hidden || riskSaving === null ? '' : riskSaving === 0
@@ -238,15 +244,19 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Updates automatically when the comparison changes.`
       + (comparison.priceCoverage === 'partial' ? ' Prices cover only part of the planning period. Both plans use available prices; later prices may change the saving.' : '') : '';
     const readonly = !writable || charger?.readOnly === true;
-    note.textContent = !view.visible ? 'This connection is no longer eligible. Close this comparison to review the current charging state.'
+    const guidance = !view.visible ? 'This connection is no longer eligible. Close this comparison to review the current charging state.'
       : !sameSession || !sameComparison || view.awaitingCheckpoint ? 'The charging request changed. Refresh the comparison before making another choice.'
       : readonly ? 'View only. Changes are available on the controlling computer.'
       : active ? `The +1 day marker ends at ${formatTime(displayedState.checkpointAt, snapshot.timezone, snapshot.now)}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
+      : '';
+    const comparisonNote = !sameSession || !sameComparison || !view.visible || view.awaitingCheckpoint ? ''
       : comparing ? available ? 'Updating the comparison. Showing the previous estimate.' : 'Calculating the cost comparison…'
       : state?.refreshReason ? `${reasonText(state.refreshReason)}${available ? ' Showing the previous estimate.' : ''}`
+      : view.complete && available ? 'No remaining charging energy is currently estimated. Showing the previous estimate.'
       : !available ? reasonText(comparison?.reason, comparison)
       : '';
+    note.textContent = [...new Set([guidance, comparisonNote].filter(Boolean))].join(' ');
     note.hidden = !note.textContent;
     refresh.hidden = readonly;
     refresh.disabled = busy || saving || loading || !charger?.request || !view.visible || readonly;

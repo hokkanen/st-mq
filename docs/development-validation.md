@@ -979,7 +979,9 @@ check unchanged resting height at 280–1280px in both themes, guarded keyboard
 interaction, retained comparison snapshots and adoption of changed display values,
 active-allowance savings, earlier/approved deadline labels and checkpoint highlight
 removal. Real report buttons share the comparison button's arrow geometry; checks
-also cover Help & setup alignment. `STMQ_CHROME_BIN` can
+also cover peer-cost attribution, changing combined totals with unchanged savings,
+and retained-estimate warnings on active and read-only views, plus Help & setup
+alignment. `STMQ_CHROME_BIN` can
 select a local Chrome executable. Backend regressions separate displayed
 comparison scope from live command readiness: small telemetry changes and failed
 recalculations retain the prior estimate, while replacement sessions and changed

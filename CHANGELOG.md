@@ -11,6 +11,9 @@ Versions follow Semantic Versioning.
   The comparison explains the other charger's cost and the combined result.
   Routine forecasts preserve retained allocation targets, and target changes
   refresh active comparisons even when charging periods stay the same.
+  Peer cost explanations identify which charger's extra day causes the effect.
+  Changed combined costs refresh even when savings stay equal; active and
+  read-only comparisons disclose background refresh failures and retained estimates.
 
 - Accepted Home heating schedules survive missing inputs, restart and learning
   rebuilds. Stopping preheat at the predicted limit of heat already delivered

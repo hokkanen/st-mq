@@ -116,12 +116,22 @@ cost compared with canceling only this allowance while keeping the other
 charger's choices. Household cost and forecast uncertainty are shown separately;
 an unfavorable household result does not hide this charger's amount.
 
+Each card compares its own extra day. In Charger 2's window, an extra cost for
+Charger 1 describes the effect of Charger 2's later deadline. Charger 1 can still
+show zero saving for its own extra day: canceling that separate allowance may
+leave the current plan unchanged. The combined result in each window belongs to
+that window's single choice; adding the two cards' savings does not give a
+household saving.
+
 The comparison shows when it was calculated. It updates when a replacement
 changes the displayed result; ordinary polling does not renew its timestamp.
 Use **Refresh comparison** to request a new assessment. The previous successful
 estimate remains visible during recalculation or a failed refresh, with its age
 and any refresh limitation. Card estimates also update when a replacement is
 ready; ordinary voltage/current updates do not erase them.
+An active allowance and a read-only view still show refresh limitations. When
+no remaining charging energy is estimated, the window identifies the retained
+comparison as the previous estimate; it does not claim a realized saving.
 A changed connection or charging request still requires reviewing its comparison
 before making another choice. Estimates describe a plan, not guaranteed savings.
 

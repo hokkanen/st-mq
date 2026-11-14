@@ -509,6 +509,33 @@ test('an older active allowance shows the actual approval order and an honest ca
   }
 });
 
+for (const retainedId of ['charger1', 'charger2'])
+test(`${retainedId}'s own zero saving is distinct from the cost imposed by its peer's extra day`, () => {
+  const options = planning(true), checkpointAt = options.now + 2 * HOUR, deferredReadyByAt = options.now + 4 * HOUR;
+  const peerId = retainedId === 'charger1' ? 'charger2' : 'charger1';
+  for (const charger of options.chargers) {
+    charger.requiredGridKwh = 10; charger.deadlineAt = deferredReadyByAt;
+    charger.request = { flexibility: { activeDefer: { approvedAt: options.now - (charger.id === peerId ? 2 : 1),
+      checkpointAt, deferredReadyByAt } } };
+  }
+  options.prices = options.prices.map((row, index) => ({ ...row, priceCtPerKwh: index < 3 ? 20 : 1 }));
+  options.approvedTargets = { [retainedId]: checkpointAt, [peerId]: deferredReadyByAt };
+  options.approvedPeriods = { [retainedId]: [{ startAt: options.now + HOUR, endAt: null }],
+    [peerId]: [{ startAt: options.now + 3 * HOUR, endAt: null }] };
+  const own = compareChargingFlexibility(options, { chargerId: retainedId, normalReadyByAt: checkpointAt, deferredReadyByAt });
+  const peer = compareChargingFlexibility(options, { chargerId: peerId, normalReadyByAt: checkpointAt, deferredReadyByAt });
+  assert.equal(own.available, true); assert.equal(peer.available, true);
+  assert.ok(Math.abs(own.savingsCents) < 1e-6, 'canceling its own allowance retains its earlier plan');
+  const affected = peer.chargers.find(charger => charger.id === retainedId);
+  assert.ok(affected.deferredCostCents > affected.normalCostCents, 'canceling the peer allowance instead frees cheaper periods');
+  for (const comparison of [own, peer]) {
+    assert.ok(Math.abs(comparison.householdSavingsCents - comparison.chargers.reduce((sum, row) =>
+      sum + row.normalCostCents - row.deferredCostCents, 0)) < 1e-6);
+    for (const row of comparison.chargers) assert.equal(row.deferredCostCents,
+      own.chargers.find(charger => charger.id === row.id).deferredCostCents, 'both windows price the same approved program');
+  }
+});
+
 test('predictions before the normal deadline cannot manufacture an extra-day saving', () => {
   const options = planning();
   const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 3 * HOUR,

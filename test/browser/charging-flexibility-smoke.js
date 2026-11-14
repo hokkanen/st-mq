@@ -299,6 +299,35 @@ try {
       assert.equal(await evaluate("document.activeElement === document.querySelector('#charging-flexibility-price-details > summary')"), true);
       assert.match(await evaluate("document.getElementById('charging-flexibility-uncertainty').textContent"), /€0.05 combined extra cost/);
     }
+    await evaluate(id => {
+      const c = window.fixture.charging.chargers.find(c => c.id === id), peerId = id === 'charger1' ? 'charger2' : 'charger1';
+      c.flexibility.preview = { ...c.flexibility.preview, at: c.flexibility.preview.at + 60_000,
+        normalCostCents: 100, deferredCostCents: 90, savingsCents: 10, householdSavingsCents: 0,
+        chargers: [{ id, normalCostCents: 100, deferredCostCents: 90 }, { id: peerId, normalCostCents: 100, deferredCostCents: 110 }] };
+      window.panel.update({ ...window.fixture });
+    }, id);
+    assert.match(await evaluate("document.getElementById('charging-flexibility-household').textContent"), /Keeping Charger [12]'s extra day.*Each charger's card.*its own extra day.*Combined remaining costs: €2.00.*€2.00/);
+    await evaluate(id => {
+      const c = window.fixture.charging.chargers.find(c => c.id === id);
+      c.flexibility.preview = { ...c.flexibility.preview, at: c.flexibility.preview.at + 60_000,
+        chargers: c.flexibility.preview.chargers.map(row => row.id === id ? row
+          : { ...row, normalCostCents: row.normalCostCents + 100, deferredCostCents: row.deferredCostCents + 100 }) };
+      c.flexibility.refreshReason = 'price-coverage-unavailable'; window.panel.update({ ...window.fixture });
+    }, id);
+    assert.match(await evaluate("document.getElementById('charging-flexibility-household').textContent"), /Combined remaining costs: €3.00.*€3.00/);
+    for (const width of [280, 390, 1280]) for (const theme of ['dark', 'light']) {
+      await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
+      await evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      for (const readOnly of [false, true]) {
+        await evaluate(readOnly => { window.fixture.readOnly = readOnly; window.panel.update({ ...window.fixture }); }, readOnly);
+        assert.match(await evaluate("document.getElementById('charging-flexibility-note').textContent"), /Available prices do not cover.*previous estimate/);
+        assert.equal(await evaluate("document.getElementById('charging-flexibility-apply').hidden"), readOnly);
+        assert.equal(await evaluate("document.activeElement === document.querySelector('#charging-flexibility-price-details > summary')"), true);
+        assert.equal(await evaluate("(() => { const d = document.getElementById('charging-flexibility-dialog'), r = d.getBoundingClientRect(); return d.scrollWidth <= d.clientWidth + 1 && r.width <= innerWidth && r.height <= innerHeight; })()"), true,
+          `Peer costs and retained-estimate guidance fit ${id}/${width}/${theme}/${readOnly}`);
+      }
+    }
+    await evaluate(() => { delete window.fixture.readOnly; });
     await key('Escape');
     await evaluate(id => {
       window.fixture.charging.chargers.find(c => c.id === id).flexibility = window.savedFlexibility;

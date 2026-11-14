@@ -36,6 +36,7 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const detail = [active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.' : '',
     amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
       : loading ? 'Calculating estimated savings.' : 'A cost estimate is not currently available.',
+    available && (loading || state?.refreshReason || complete) ? 'Showing the previous estimate.' : '',
     active && available ? 'Compared with canceling only this allowance; the other charger’s choices remain in effect.' : '',
     sharedPlanChanged ? 'Shared costs and forecast uncertainty are explained in the comparison.' : ''].filter(Boolean).join(' ');
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,

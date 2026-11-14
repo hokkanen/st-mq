@@ -271,6 +271,66 @@ test('the pending grant allows only cancellation and immediately loses its highl
   panel.close();
 });
 
+test('two active allowances explain which choice causes the peer cost and refresh changing combined totals', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const make = (id, costs, selectedCosts) => ({ ...flexibleCharger({ active: true, eligible: false, checkpointAt: deadlineAt,
+    preview: { ...flexibilityComparison, ...selectedCosts, at: now, sharedPlanChanged: id === 'charger2',
+      householdSavingsCents: 0, riskAdjustedSavingsCents: -5, recommended: false, chargers: costs } }),
+    ...connected(id), settings: { ...charger(id).settings, enabled: true } });
+  const first = make('charger1', [{ id: 'charger1', normalCostCents: 110, deferredCostCents: 110 },
+    { id: 'charger2', normalCostCents: 90, deferredCostCents: 90 }], { normalCostCents: 110, deferredCostCents: 110, savingsCents: 0 });
+  const second = make('charger2', [{ id: 'charger1', normalCostCents: 100, deferredCostCents: 110 },
+    { id: 'charger2', normalCostCents: 100, deferredCostCents: 90 }], { normalCostCents: 100, deferredCostCents: 90, savingsCents: 10 });
+  const panel = createChargingPanel({ document, request: async () => assert.fail('Cached comparisons need no request') });
+  panel.update(status(first, second));
+  assert.equal($('charger1-flexibility').children[1].textContent, '€0.00 est. saving');
+  assert.equal($('charger2-flexibility').children[1].textContent, '€0.10 est. saving');
+  await $('charger2-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  const asOf = $('charging-flexibility-as-of').textContent;
+  second.flexibility.preview = { ...second.flexibility.preview, at: now + 60_000,
+    chargers: [{ id: 'charger1', normalCostCents: 200, deferredCostCents: 210 },
+      { id: 'charger2', normalCostCents: 100, deferredCostCents: 90 }] };
+  panel.update(status(first, second));
+  assert.match($('charging-flexibility-household').textContent, /Combined remaining costs: €3.00.*€3.00/);
+  assert.match($('charging-flexibility-household').textContent, /Charger 2's extra day.*Charger 1: €0.10 more estimated/);
+  assert.match($('charging-flexibility-household').textContent, /Each charger's card.*its own extra day/);
+  assert.notEqual($('charging-flexibility-as-of').textContent, asOf, 'a visible total change refreshes the snapshot even with identical savings');
+  assert.equal($('charging-flexibility-saving').textContent, 'Estimated saving €0.10');
+  $('charging-flexibility-close').dispatch('click');
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  assert.equal($('charging-flexibility-saving').textContent, 'No estimated saving');
+  assert.equal($('charging-flexibility-household').hidden, true);
+  panel.close();
+});
+
+for (const role of ['master', 'slave'])
+test(`active allowance on ${role} discloses background refresh limitations while retaining its estimate and cancellation`, async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const item = flexibleCharger({ active: true, eligible: false, checkpointAt: deadlineAt });
+  const panel = createChargingPanel({ document, request: async () => assert.fail('Background updates need no browser request') });
+  const publish = () => panel.update({ ...status(item), role, readOnly: role === 'slave' });
+  publish(); await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  const asOf = $('charging-flexibility-as-of').textContent;
+  for (const [patch, expected] of [
+    [{ comparisonPending: true, refreshReason: null }, /Updating the comparison.*previous estimate/],
+    [{ comparisonPending: false, refreshReason: 'price-coverage-unavailable' }, /Available prices do not cover.*previous estimate/],
+    [{ refreshReason: 'competing-load-unavailable' }, /other charger is active.*previous estimate/],
+    [{ refreshReason: null }, /No remaining charging energy.*previous estimate/],
+  ]) {
+    Object.assign(item.flexibility, patch);
+    if (patch.refreshReason === null && !Object.hasOwn(patch, 'comparisonPending')) item.requiredGridKwh = 0;
+    publish();
+    assert.match($('charging-flexibility-note').textContent, expected);
+    assert.match($('charger1-flexibility').getAttribute('aria-label'), /previous estimate/);
+    assert.equal($('charging-flexibility-as-of').textContent, asOf, 'a failed refresh cannot renew the original clock');
+    assert.equal($('charging-flexibility-apply').hidden, role === 'slave');
+    if (role === 'master') assert.equal($('charging-flexibility-apply').disabled, false, 'cancel remains available');
+  }
+  item.requiredGridKwh = 32.888; item.flexibility.refreshReason = null; publish();
+  assert.doesNotMatch($('charging-flexibility-note').textContent, /previous estimate/);
+  panel.close();
+});
+
 test('checkpoint promotion returns to normal formatting and a fresh dialog can approve the next single day', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   const item = flexibleCharger({ normalReadyByAt: deadlineAt + 86400_000, effectiveReadyByAt: deadlineAt + 86400_000,

@@ -541,6 +541,10 @@ comparison can differ from the original grant. The active display explains such
 changes and shows the current numerical saving or extra cost, even when shared
 costs or forecast uncertainty make the household result unfavorable. Household
 effects and uncertainty stay separate from the selected charger's cash saving.
+An effect on the peer in one comparison need not match the peer's own card:
+that card changes the other allowance instead. Each comparison prices the same
+approved program against its own alternative; individual card savings are not
+an additive allocation of household savings.
 It does not reorder approvals to manufacture a saving. Proposed periods remain
 separate from installed execution.
 
@@ -620,7 +624,9 @@ grants no actuator authority.
 The dialog retains the last successful same-scope estimate while it updates or
 fails, including across closing and reopening. Once open,
 the dialog adopts completed background comparisons only when their displayed
-costs, finish times, charging durations or other comparison values change. Timestamp
+costs, finish times, charging durations or other comparison values change.
+Combined remaining costs are comparison values too: unchanged savings cannot
+hide a change in the displayed combined costs. Calculation timestamp
 churn, elapsed age and changes below displayed precision do not refresh it or cause
 another calculation. The original estimate time remains visible; explicit refresh
 is also available. A server-created estimate is not rejected because its calculation
