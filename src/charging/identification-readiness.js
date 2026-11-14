@@ -25,6 +25,7 @@ export function identificationControlBlocker({ supported, transitioning, closed,
  * A past attempt's result remains separate from these current prerequisites. */
 export const IDENTIFICATION_BLOCKERS = {
   'manual-stop': 'Pause charging is active for this connection. Choose Charge now or Use automatic before requesting identification.',
+  'device-permission-held': 'The charger withdrew charging permission. Choose Charge now or Use automatic before requesting identification.',
   'assignment-unresolved': 'Waiting for a confirmed vehicle connection before identification can start.',
   'awaiting-stop-confirmation': 'The previous identification pause still needs confirmation before another test can start.',
   'current-test-restoration-pending': 'The previous identification current setting must be restored before another test can start.',

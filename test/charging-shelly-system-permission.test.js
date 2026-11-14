@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fixture, startedFixture, ownedPauseFixture, START, DEVICE, PREFIX } from './helpers/shelly-system-fixture.js';
 import { chargerDisplay } from '../chart/charging.js';
 import { chargerSummary, chargingNotice } from '../chart/charging-summary.js';
+import { advanceIdentification } from '../src/charging/identification.js';
 
 for (const writer of [false, true]) test(`reboot compatibility evidence reaches the durable session report and replays once; writer ${writer}`, async t => {
   const f = await fixture(t, { durableStorage: true, automatic: false, vehicleFeed: false });
@@ -301,6 +302,108 @@ test('fresh Charge now supersedes an old SYS hold without consuming scheduled re
   assert.equal(f.fields.start_charging.value, true);
   assert.equal(f.item().controller.status().devicePermissionHeld, false);
   assert.equal(f.item().controller.status().compatibility.scheduledRetries, 0);
+});
+
+async function expiredProbeSysHold(t) {
+  const f = await fixture(t);
+  f.setPlanStartAt(START + 3600_000);
+  await f.update(); await f.reconnect(); await f.update();
+  const deadline = f.item().identification.probe.deadlineAt;
+  f.advance(2100); f.permission(false); f.measure(0); await f.update();
+  f.advance(deadline - f.now + 1100); await f.update(); await f.update();
+  assert.equal(f.item().controller.status().devicePermissionHeld, true);
+  assert.equal(f.item().controller.status().compatibility.incident, null,
+    'An identification Start must not borrow ordinary startup retries');
+  return f;
+}
+
+test('Use automatic supersedes an expired probe SYS hold while retaining the economic wait across restart', async t => {
+  const f = await expiredProbeSysHold(t), count = starts(f).length;
+  const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  await f.runtime.useAutomatic('charger2', { association: view.association, sessionId: view.request.sessionId,
+    revision: view.request.revision, controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token });
+  assert.equal(f.item().controller.status().devicePermissionHeld, false,
+    'Confirmed takeover must release the reviewed hold without pretending permission is true');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(starts(f).length, count, 'The future economic window must remain stopped');
+  await f.restart(); await f.update();
+  assert.equal(f.item().controller.status().devicePermissionHeld, false, 'The superseded hold must not return after restart');
+  assert.equal(starts(f).length, count);
+  f.advance(2100); f.permission(true); await f.update();
+  f.advance(1100); f.permission(false); f.measure(0); await f.update();
+  assert.equal(f.item().controller.status().devicePermissionHeld, true, 'A later native cycle retains its authority');
+});
+
+test('Charge now after an expired probe SYS hold reaches Start and retains independent startup recovery', async t => {
+  const f = await expiredProbeSysHold(t), count = starts(f).length;
+  await chargeNow(f);
+  assert.equal(starts(f).length, count + 1, 'The earlier hold must not block current preparation or the explicit Start');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.item().controller.status().devicePermissionHeld, false);
+  assert.equal(f.item().controller.status().compatibility.start.origin, 'charge-now');
+  f.advance(2100); f.permission(false); f.measure(0); await f.update();
+  const incident = f.item().controller.status().compatibility.incident;
+  assert.equal(incident.origin, 'charge-now');
+  f.advance(incident.nextAt - f.now); await f.update();
+  assert.equal(starts(f).length, count + 2);
+  assert.equal(f.item().controller.status().compatibility.chargeNowRetries, 1);
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 0);
+});
+
+test('Charge now starts and recovers while an already admitted Identify retry is waiting behind a SYS hold', async t => {
+  const f = await expiredProbeSysHold(t), count = starts(f).length;
+  f.advance(2100);
+  // A supported saved wait can predate the action-availability fix. It is not
+  // permission to bypass the hold, and a new Charge now still needs its token.
+  f.item().identification = advanceIdentification(f.item().identification, {
+    connectedAt: f.adapter.snapshot().session.connectedAt, now: f.now,
+    manualRetry: true, available: true, connected: true });
+  f.runtime.persist(); await f.update();
+  assert.equal(f.item().identification.phase, 'waiting');
+  const attempt = f.item().identification.id;
+  await chargeNow(f);
+  assert.equal(starts(f).length, count + 1, 'A waiting minimum-current comparison cannot swallow explicit Start authority');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.item().controller.status().devicePermissionHeld, false);
+  const control = f.item().controller.status();
+  assert.equal(control.compatibility.start.origin, 'charge-now');
+  const expiresAt = control.currentTest.expiresAt;
+  f.advance(2100); f.permission(false); f.measure(0); await f.update();
+  const incident = f.item().controller.status().compatibility.incident;
+  assert.equal(incident.origin, 'charge-now');
+  f.advance(incident.nextAt - f.now); await f.update();
+  assert.equal(starts(f).length, count + 2);
+  assert.equal(f.item().identification.id, attempt);
+  assert.equal(f.item().controller.status().currentTest.expiresAt, expiresAt);
+  assert.equal(f.item().controller.status().compatibility.chargeNowRetries, 1);
+  assert.equal(f.item().controller.status().compatibility.scheduledRetries, 0);
+});
+
+test('Identify explains a SYS permission hold without admitting a futile new attempt or borrowing Start authority', async t => {
+  const f = await expiredProbeSysHold(t), view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  assert.equal(view.identification.available, false);
+  assert.equal(view.identification.availabilityReason, 'device-permission-held');
+  const attempt = structuredClone(f.item().identification), count = starts(f).length;
+  await assert.rejects(f.runtime.identifyVehicle('charger2', { association: view.association,
+    sessionId: view.request.sessionId, revision: view.request.revision }), /charger.*permission/i);
+  assert.deepEqual(f.item().identification, attempt);
+  assert.equal(starts(f).length, count);
+});
+
+for (const action of ['use-automatic', 'charge-now'])
+test(`${action} cannot supersede a SYS hold without measured physical zero`, async t => {
+  const f = await expiredProbeSysHold(t), count = starts(f).length;
+  f.advance(2100); f.measure(6); await f.update();
+  if (action === 'charge-now') await assert.rejects(chargeNow(f), /unconfirmed/);
+  else {
+    const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    await assert.rejects(f.runtime.useAutomatic('charger2', { association: view.association,
+      sessionId: view.request.sessionId, revision: view.request.revision,
+      controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token }), /unconfirmed/);
+  }
+  assert.equal(f.item().controller.status().devicePermissionHeld, true);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(starts(f).length, count);
 });
 
 test('a later external Stop cancels an armed retry and survives its due time', async t => {
@@ -1045,16 +1148,25 @@ test('an initial already-false SYS setting is not a witnessed device hold on a n
   assert.equal(currentWrites(f).length, 0);
 });
 
-test('Use automatic preserves a witnessed SYS hold instead of overriding the device Stop', async t => {
+test('Use automatic retains a SYS hold until physical zero, then supersedes it for the open ordinary period', async t => {
   const f = await ordinaryFixture(t, { initiallyPermitted: true });
-  f.advance(2200); f.permission(false); await f.update();
-  const view = f.runtime.views().find(row => row.id === 'charger2');
-  await f.runtime.useAutomatic('charger2', { association: view.association, sessionId: view.request.sessionId,
-    revision: view.request.revision, controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token });
+  f.advance(2200); f.permission(false); f.measure(6); await f.update();
+  const takeover = () => {
+    const view = f.runtime.views().find(row => row.id === 'charger2');
+    return f.runtime.useAutomatic('charger2', { association: view.association, sessionId: view.request.sessionId,
+      revision: view.request.revision, controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token });
+  };
+  await assert.rejects(takeover(), /unconfirmed/);
   assert.equal(f.fields.start_charging.value, false);
   assert.equal(f.item().controller.status().devicePermissionHeld, true);
   assert.equal(f.item().controller.status().manual, null);
   assert.equal(starts(f).length, 0);
+  f.advance(1100); f.measure(0); await f.update();
+  f.advance(1100);
+  await takeover();
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.item().controller.status().devicePermissionHeld, false);
+  assert.equal(starts(f).length, 1);
 });
 
 test('unconsumed SYS true-to-false history cannot preserve owned-pause proof after observation freshness expires', async t => {

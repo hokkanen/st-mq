@@ -318,6 +318,9 @@ another Start. A false-only hold outside eligible startup recovery has no retry
 timer. Restart preserves the
 restriction until fresh device evidence resolves it; a restored record cannot
 manufacture a new physical connection, observation or control permission.
+Explicit **Use automatic** also supersedes the reviewed hold when adopting its
+current false permission into an economic wait. This does not claim a native
+Enable or measured charging; a later SYS interruption retains its restriction.
 An initially observed false setting on a new connection, with no intervening
 device Stop, is not such a hold. Normal connection authority can still start a
 charger whose native Auto charge is disabled.
@@ -350,7 +353,11 @@ zero remains necessary before raising current while stopped.
 
 For the identity-checked supported EVSE profile, a fresh SYS false within 60 seconds
 of an acknowledged ordinary scheduled/Charge now Start can arm recovery. Probe,
-identification and restoration Starts never arm it. Three retries wait 10, 30 and
+identification and restoration Starts never arm it. An independently requested
+Charge now Start remains ordinary charging while a minimum-current comparison
+observes it. Its bounded startup recovery does not renew the comparison deadline
+or override an owned identification pause or restoration duty.
+Three retries wait 10, 30 and
 60 seconds after successive confirmed failures; the incident expires after five
 minutes. Repeated false refreshes do not renew a timer. At most six scheduled
 retries may be sent in one physical connection. Each explicit Charge now ON has

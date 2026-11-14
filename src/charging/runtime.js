@@ -2254,7 +2254,8 @@ export class ChargingRuntime {
       const identificationAvailabilityReason = !request ? 'assignment-unresolved'
         : identificationPauseOutstanding ? 'awaiting-stop-confirmation'
           : currentTestOutstanding ? 'current-test-restoration-pending'
-            : this.identificationControlReason(item, now) ?? this.identificationFeedReason(item, now);
+            : this.identificationControlReason(item, now)
+              ?? (control.devicePermissionHeld === true ? 'device-permission-held' : this.identificationFeedReason(item, now));
       const power = telemetry[id]?.powerKw;
       // Explicitly restarting an unarmed observer fences its old correlations;
       // it must never replace an owned physical test or pending native command.

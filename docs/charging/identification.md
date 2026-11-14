@@ -7,6 +7,9 @@ This contract owns positive vehicle matching, bounded identification attempts an
 An explicit Identify retry reports its current availability separately from the
 previous attempt's outcome. An active attempt, unavailable vehicle feed and
 unready charger have distinct explanations; retry keeps the same admission rules.
+An existing SYS permission hold blocks a new Identify action. The displayed
+explanation directs the owner to Charge now or Use automatic to supersede that
+hold explicitly; Identify itself grants no replacement Start permission.
 An idle passive wait can offer **Retry Identify** while the attempt remains
 pending. This explicit action starts a new observation boundary for the same
 physical connection; it does not end the wait automatically. It requires fresh

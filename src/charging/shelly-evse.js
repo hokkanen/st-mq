@@ -1830,6 +1830,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && (field.readback.admittedAt === undefined || field.readback.admittedAt <= clock())) && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  const physicalZero = snapshot => physicalFresh(snapshot.fields.phase_info) && snapshot.powerKw === 0
+    && adapter.liveCurrents().healthy && adapter.liveCurrents().currents.every(value => value < .5);
   // The accepted owner may finish a finite period while a replacement proposal
   // is unavailable. This grants only its due Stop, never a future Start.
   const acceptedGap = (snapshot, input, intentRevision) => {
@@ -2429,7 +2431,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // The explicit instruction adopts this exact native permission, even
             // when the economic plan will leave an existing Stop in place. Its
             // source clock prevents that old stop reappearing after unplug/restart.
+            if (devicePermission(snapshot).held && !physicalZero(snapshot)) throw fail('evse-command-unconfirmed');
             state.manual = null; state.pending = null; state.owned = null;
+            // The reviewed token also supersedes this exact witnessed SYS
+            // hold. Retaining it would block current preparation and a later
+            // scheduled Start despite reporting a confirmed takeover. Native
+            // permission stays unchanged; later edges retain their own fences.
+            state.deviceHold = null;
             if (typeof input.takeover === 'string' && input.takeoverMode !== 'charge-now' && !chargeNow && adapter.config.limiterEnabled) {
               state.manualCurrentA = null;
               rememberCurrent(current);
@@ -2696,6 +2704,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
           state.ownedPause = true; state.automaticPermission = { value: false, measuredAt: start.measuredAt };
         }
         const recovery = state.owned?.sessionId === sessionId && !identificationPause;
+        // A current comparison can observe independently requested Charge now
+        // without owning its Start. Probe and owned-pause restoration remain
+        // bounded identification work and cannot acquire startup retries.
+        const ordinaryChargeNow = chargeNow && !probing && !identificationPause && !recovery;
         const nativeRelease = ['enable', 'charge-now'].includes(state.manual?.kind);
         const allowStart = (economic && inWindow || identification && !identificationPause
           || state.ownedPause && !pause && (!state.automaticPermission || !input.enabled || nativeRelease))
@@ -2709,8 +2721,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const origin = chargeNow ? 'charge-now' : 'scheduled';
         const requestAt = chargeNow ? input.chargeNow.requestedAt ?? null : null;
         const permissionBefore = devicePermission(snapshot);
-        const recoveryEligible = Boolean(economic && inWindow && !nativeBlocked && !state.manual
-          && !snapshot.nativeScheduleActive && !identification && !minimumBlocked && !currentUnconfirmed);
+        const recoveryEligible = Boolean((economic || ordinaryChargeNow) && inWindow && !nativeBlocked && !state.manual
+          && !snapshot.nativeScheduleActive && (!identification || ordinaryChargeNow) && !minimumBlocked && !currentUnconfirmed);
         const explicitStart = Boolean(chargeNow && takeoverRequested && input.takeoverMode === 'charge-now');
         const retry = compatibilityRecovery(state.compatibility, { now: clock(), origin, requestAt,
           eligible: recoveryEligible, held: permissionBefore.held, hold: permissionBefore.hold,
@@ -2718,8 +2730,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           physicalAt: physicalFresh(snapshot.fields.phase_info) && fresh(snapshot.fields.work_state) ? snapshot.powerAt : null,
           charging: snapshot.charging === true && snapshot.powerKw > .1,
           currentA: current.value, pending: state.pending, blocked: pause, newRequest: explicitStart });
-        const zero = physicalFresh(snapshot.fields.phase_info) && snapshot.powerKw === 0
-          && adapter.liveCurrents().healthy && adapter.liveCurrents().currents.every(value => value < .5);
+        const zero = physicalZero(snapshot);
         const startOverride = (explicitStart || retry.retry) && permissionBefore.held && zero;
         const heldBaseline = permissionBefore.hold;
         const permissionAllowsStart = () => {
@@ -2841,7 +2852,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           Object.assign(state.pending, { stage: 'accepted', ...commandReceiptTimes(state.pending, receipt) });
           if (role === 'start_charging') state.commandAt = state.pending.dispatchedAt;
           else state.currentCommandAt = state.pending.dispatchedAt;
-          if (role === 'start_charging' && value === true && !identification && reason === 'economic-window') {
+          if (role === 'start_charging' && value === true && reason === 'economic-window') {
             compatibilityStart(state.compatibility, { at: state.pending.dispatchedAt, acceptedAt: state.pending.acceptedAt,
               origin, requestAt, currentA: adapter.snapshot().fields.current_limit.value });
           }
@@ -2920,7 +2931,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (!stopPass && mayStartNow() && permissionAllowsStart() && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
             && !probeExpired()
             && (!adapter.config.limiterEnabled || adapter.snapshot().fields.current_limit?.value <= cap)) {
-            await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');
+            await command('start_charging', true, recovery ? 'identification-resume'
+              : identification && !ordinaryChargeNow ? 'identification-charge' : 'economic-window');
           }
           const actual = adapter.liveCurrents();
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
@@ -2983,6 +2995,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               && after.session?.sessionId === controlScope.session?.sessionId
               && after.session?.connectedAt === controlScope.session?.connectedAt
               && takeoverStatus(after).available && !state.pending && !state.manual && !after.nativeScheduleActive
+              && !devicePermission(after).held
               && after.notificationRevision === confirmedInstructionRevision
               && scheduleToken(after) === confirmedSchedule && after.nativeScheduleRevision === confirmedScheduleRevision
               && !after.permissionEvents?.some(event => event.sequence > (state.permissionEventCursor ?? 0))
