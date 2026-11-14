@@ -2138,13 +2138,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
       const receipt = await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
         { mutation: true, captureReceipt: true, identificationCurrent: copy(test), guard, attempt });
       Object.assign(test.pending, commandReceiptTimes(test.pending, receipt)); await persist();
+      const command = copy(test.pending);
       await refreshCommandReadback('current_limit', snapshot);
       const confirmedSnapshot = adapter.snapshot(), actual = confirmedSnapshot.fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending, adapter.commandClock?.()?.epoch)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; rememberCurrent(actual);
       await persist();
-      return { before: snapshot, after: confirmedSnapshot };
+      return { before: snapshot, command };
     } catch (cause) {
       attempt.fail(cause);
       if (['evse-control-unavailable', 'evse-command-revoked', 'invalid-evse-command',
@@ -2626,13 +2627,24 @@ export function createShellyController({ adapter, initialState, saveState = () =
           economicWait: userPause || economicWait,
           releaseProbe: !userPause && (!input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind)) });
         if (takeoverRequested && currentPreparation) {
-          const { before, after } = currentPreparation;
+          const { before, command } = currentPreparation;
+          // Ownership persistence can admit a delayed echo after the first
+          // correlated read. Join that input and confirm its exact command;
+          // neither a new current choice nor a permission edge is ours to adopt.
+          await settleTakeoverAdmission();
+          if (adapter.snapshot().notificationPending?.includes('current_limit')) {
+            await refreshCommandReadback('current_limit', before);
+            await settleTakeoverAdmission();
+          }
+          const after = adapter.snapshot();
           // Advance this exact takeover only over our confirmed current write.
           // Permission, session, transport and native schedule must still match;
           // a newer external change cannot be adopted from a live token.
           const withoutOwnCurrent = { ...after, notificationRevision: before.notificationRevision,
             fields: { ...after.fields, current_limit: before.fields.current_limit } };
-          if (takeoverToken(before) === acceptedTakeoverToken && takeoverToken(withoutOwnCurrent) === acceptedTakeoverToken
+          if (fresh(after.fields.current_limit)
+            && shellyCurrentCommandReadback(after.fields.current_limit, command, adapter.commandClock?.()?.epoch)
+            && takeoverToken(before) === acceptedTakeoverToken && takeoverToken(withoutOwnCurrent) === acceptedTakeoverToken
             && currentInstructionAt(adapter.snapshot().fields.current_limit) === currentInstructionAt(after.fields.current_limit))
             acceptedTakeoverToken = takeoverToken(after);
         }

@@ -157,6 +157,9 @@ Matching still requires the same value, physical session and boot, plus correlat
 readback requested after both acknowledgement and notification receipt. SYS off/on
 recovery can retain an earlier acknowledged Start without labelling it an external
 Enable. Current-limit confirmation and identification duties use the same evidence.
+A takeover that prepares identification current also joins delayed input and
+rechecks that exact acknowledged current command before continuing. A later
+native current or permission instruction still blocks the remaining Start.
 Without the clock observation, strict same-second checks remain. A notification publication clock is distinct from its setting update clock; late
 publication alone is not another instruction. Missing acknowledgement, another
 boot, an opposite value or a later independent instruction

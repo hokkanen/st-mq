@@ -2082,6 +2082,42 @@ for (const change of ['none', 'external-current', 'external-same-current', 'exte
     }
   });
 
+for (const change of ['own-echo', 'own-echo-pending', 'external-current', 'external-same-current', 'external-permission'])
+  test(`takeover reconciles a late current-preparation notification without adopting another instruction: ${change}`, async t => {
+    const f = fixture(t, { limiterEnabled: true });
+    f.fields.start_charging = false; f.fields.work_state = 'charger_wait'; f.fields.phase_info.total_power = 0;
+    await f.ready(); f.setNow(NOW + 1000);
+    let injected = false;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      saveState: async state => {
+        if (injected || state.currentTest?.phase !== 'active') return;
+        injected = true;
+        // The native setting was read back before this delayed own echo arrived
+        // during ownership persistence. External choices must retain priority.
+        f.setNow(f.now() + (change.startsWith('own-echo') ? 50 : 1100));
+        if (change === 'external-permission') f.delta('start_charging', { value: true, source: 'http' });
+        else f.delta('current_limit', { value: change === 'external-current' ? 8 : 6,
+          source: change.startsWith('own-echo') ? 'rpc' : 'http' }, { apply: !change.startsWith('own-echo') });
+        if (change !== 'own-echo-pending') await f.adapter.refresh({ force: true });
+      },
+      getIdentification: snapshot => ({ id: 'late-current-preparation', connectedAt: snapshot.session.connectedAt,
+        phase: 'waiting', minimumCurrent: true }),
+      getAllocation: () => ({ priority: 'charger2', property: reading([4, 4, 4], f.now()),
+        easee: reading([0, 0, 0], f.now()) }) });
+    t.after(() => controller.close());
+    const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+      takeoverMode: 'charge-now', chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt, requestedAt: f.now() } });
+    assert.equal(injected, true);
+    const commands = f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]);
+    if (change.startsWith('own-echo')) {
+      assert.equal(result.takeover.state, 'confirmed');
+      assert.deepEqual(commands, [['Number.Set', 6], ['Boolean.Set', true]]);
+    } else {
+      assert.equal(result.takeover.state, 'blocked');
+      assert.deepEqual(commands, [['Number.Set', 6]], 'A newer instruction blocks the application Start');
+    }
+  });
+
 test('first-seen timestamped DUP boundaries are admitted and repeats cannot create another epoch',async t=>{
  const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','charger_free',{dup:true,messageId:19});
  assert.equal(f.adapter.snapshot().session.connected,false);
