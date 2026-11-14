@@ -207,22 +207,46 @@ test('sub-cent comparison differences do not claim a zero extra cost', async () 
   panel.close();
 });
 
-test('an active allowance with changed shared allocation shows true costs without pretending it is a new extra-cost choice', async () => {
+for (const id of ['charger1', 'charger2']) for (const role of ['master', 'slave'])
+test(`${id} on ${role} keeps updated active savings visible through shared costs and uncertainty changes`, async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
-  const comparison = { ...flexibilityComparison, normalCostCents: 100, deferredCostCents: 110,
-    savingsCents: -10, householdSavingsCents: 5, riskAdjustedSavingsCents: 5, sharedPlanChanged: true, recommended: false,
-    chargers: [{ id: 'charger1', normalCostCents: 100, deferredCostCents: 110 },
-      { id: 'charger2', normalCostCents: 100, deferredCostCents: 85 }] };
-  const item = flexibleCharger({ active: true, checkpointAt: deadlineAt, eligible: false, preview: comparison });
-  const panel = createChargingPanel({ document, request: async () => ({ comparison }) });
-  panel.update(status(item));
-  assert.match($('charger1-flexibility').textContent, /Shared plan changed/);
-  assert.doesNotMatch($('charger1-flexibility').getAttribute('aria-label'), /extra cost/);
-  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
-  assert.equal($('charging-flexibility-saving').textContent, 'Shared plan changed');
-  assert.match($('charging-flexibility-plans').textContent, /Remaining cost €1.00.*Remaining cost €1.10/);
+  const peerId = id === 'charger1' ? 'charger2' : 'charger1';
+  const item = { ...flexibleCharger({ active: true, checkpointAt: deadlineAt, eligible: false }),
+    ...connected(id), settings: { ...charger(id).settings, enabled: true } };
+  const publish = () => panel.update({ ...status(item), role, readOnly: role === 'slave' });
+  const panel = createChargingPanel({ document, request: async () => assert.fail('Background comparisons require no browser request') });
+  publish();
+  await $(`${id}-flexibility`).listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  const details = $('charging-flexibility-price-details'), summary = details.querySelector('summary');
+  details.open = true; summary.focus();
+  for (const [savingsCents, householdSavingsCents, riskAdjustedSavingsCents, card, dialog] of [
+    [-10, 5, 5, '+€0.10 est. cost', 'Estimated extra cost €0.10'],
+    [10, 1, -.2, '€0.10 est. saving', 'Estimated saving €0.10'],
+    [0, -5, -5, '€0.00 est. saving', 'No estimated saving'],
+    [-.2, -.2, -.2, '€0.00 est. saving', 'No estimated saving'],
+    [-.5, -.5, -.5, '+€0.01 est. cost', 'Estimated extra cost €0.01'],
+    [.5, -.5, -.5, '€0.01 est. saving', 'Estimated saving €0.01'],
+    [25, -5, -10, '€0.25 est. saving', 'Estimated saving €0.25'],
+  ]) {
+    item.flexibility.preview = { ...flexibilityComparison, at: item.flexibility.preview.at + 60_000,
+      normalCostCents: 100, deferredCostCents: 100 - savingsCents, savingsCents,
+      householdSavingsCents, riskAdjustedSavingsCents, sharedPlanChanged: true, recommended: false,
+      chargers: [{ id, normalCostCents: 100, deferredCostCents: 100 - savingsCents },
+        { id: peerId, normalCostCents: 100, deferredCostCents: 100 + savingsCents - householdSavingsCents }] };
+    publish();
+    assert.equal($(`${id}-flexibility`).children[1].textContent, card);
+    assert.doesNotMatch($(`${id}-flexibility`).textContent, /Shared plan changed/);
+    assert.match($(`${id}-flexibility`).getAttribute('aria-label'), /canceling only this allowance/);
+    assert.equal($(`${id}-flexibility`).dataset.tone, 'deferred');
+    assert.equal($('charging-flexibility-saving').textContent, dialog);
+    assert.equal($('charging-flexibility-saving').dataset.tone, 'neutral');
+    assert.equal(document.activeElement, summary); assert.equal(details.open, true);
+    assert.equal($('charging-flexibility-apply').hidden, role === 'slave');
+  }
+  assert.match($('charging-flexibility-plans').textContent, /Remaining cost €1.00.*Remaining cost €0.75/);
   assert.match($('charging-flexibility-description').textContent, /later choices for the other charger retain their priority/);
-  assert.match($('charging-flexibility-household').textContent, /Combined remaining costs: €2.00.*€1.95/);
+  assert.match($('charging-flexibility-household').textContent, /€0.30 more estimated.*Combined remaining costs: €2.00.*€2.05.*Total estimated extra cost: €0.05/);
+  assert.match($('charging-flexibility-uncertainty').textContent, /€0.10 combined extra cost/);
   panel.close();
 });
 

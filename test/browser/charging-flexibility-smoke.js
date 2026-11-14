@@ -275,6 +275,36 @@ try {
   await until("document.getElementById('charging-flexibility-apply').textContent === 'Cancel flexibility'");
   assert.match(await evaluate("document.getElementById('charging-flexibility-risk-allowances').textContent"), /with the earlier deadline;.*with the approved deadline/);
   await screenshot('active-light-dialog'); await key('Escape');
+  for (const id of ['charger1', 'charger2']) {
+    await evaluate(id => {
+      const c = window.fixture.charging.chargers.find(c => c.id === id);
+      window.savedFlexibility = c.flexibility;
+      c.flexibility = { ...c.flexibility, active: true, eligible: false,
+        checkpointAt: window.fixture.now + 60_000, effectiveReadyByAt: c.flexibility.deferredReadyByAt };
+      window.panel.update({ ...window.fixture }); document.getElementById(id + '-flexibility').click();
+      document.getElementById('charging-flexibility-price-details').open = true;
+      document.querySelector('#charging-flexibility-price-details > summary').focus();
+    }, id);
+    for (const [savingsCents, card, dialog] of [[10, '€0.10 est. saving', 'Estimated saving €0.10'],
+      [0, '€0.00 est. saving', 'No estimated saving'], [-10, '+€0.10 est. cost', 'Estimated extra cost €0.10'],
+      [-.5, '+€0.01 est. cost', 'Estimated extra cost €0.01']]) {
+      await evaluate(({ id, savingsCents }) => {
+        const c = window.fixture.charging.chargers.find(c => c.id === id);
+        c.flexibility.preview = { ...c.flexibility.preview, at: c.flexibility.preview.at + 60_000,
+          savingsCents, sharedPlanChanged: true, recommended: false, riskAdjustedSavingsCents: -5 };
+        window.panel.update({ ...window.fixture });
+      }, { id, savingsCents });
+      assert.equal(await evaluate(id => document.querySelector('#' + id + '-flexibility .charging-flexibility-entry-value').textContent, id), card);
+      assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), dialog);
+      assert.equal(await evaluate("document.activeElement === document.querySelector('#charging-flexibility-price-details > summary')"), true);
+      assert.match(await evaluate("document.getElementById('charging-flexibility-uncertainty').textContent"), /€0.05 combined extra cost/);
+    }
+    await key('Escape');
+    await evaluate(id => {
+      window.fixture.charging.chargers.find(c => c.id === id).flexibility = window.savedFlexibility;
+      window.panel.update({ ...window.fixture });
+    }, id);
+  }
   await evaluate(() => {
     const c = window.fixture.charging.chargers[0]; window.fixture.now = c.flexibility.checkpointAt;
     window.panel.update({ ...window.fixture }); document.dispatchEvent(new Event('visibilitychange'));

@@ -2396,7 +2396,7 @@ export class ChargingRuntime {
     return { ...model, end: Math.max(model.end, view.flexibility.deferredReadyByAt ?? model.end),
       hard: JSON.stringify([hard,
         view.flexibility.active ? Object.values(this.chargers).map(item =>
-          [item.plan?.periods, item.plan?.allocationTargetAt]) : null]) };
+          [item.plan?.periods, item.plan?.targetAt]) : null]) };
   }
   scheduleFlexibilityComparisons() {
     if (this.closed || this.flexibilityScheduled || this.flexibilityFlight || !this.flexibilityQueue.size) return;
@@ -2887,8 +2887,10 @@ export class ChargingRuntime {
         && !(item.replan && item.request?.flexibility?.lastTransition?.action === 'cancel')
         && !priceReplans.has(view.id) ? [[view.id, periods]] : [];
     }));
+    // Reassessing retained periods must keep their selected allocation urgency.
     let result = maintenanceOnly
-      ? forecastFixedPlans({ ...planning, chargers: planningViews,
+      ? forecastFixedPlans({ ...planning, chargers: planningViews.map(view =>
+        withAllocationTarget(view, this.charger(view.id), now, true)),
         periodsByCharger: Object.fromEntries(views.flatMap(view => {
           const periods = this.charger(view.id).plan?.periods;
           return periods?.length && !view.control?.manual ? [[view.id, periods]] : [];

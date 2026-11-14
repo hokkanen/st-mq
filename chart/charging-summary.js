@@ -31,12 +31,13 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const amount = cents === null ? null : `€${(cents / 100).toFixed(2)}`;
   const extraCost = savings < 0 && cents > 0;
   const sharedPlanChanged = active && available && comparison.sharedPlanChanged === true;
-  const label = sharedPlanChanged ? 'Shared plan changed' : amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
+  const label = amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
     : loading ? 'Calculating…' : 'Unavailable';
   const detail = [active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.' : '',
-    sharedPlanChanged ? 'Compare the current shared plan with canceling this allowance; later peer choices remain in effect.'
-      : amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
-      : loading ? 'Calculating estimated savings.' : 'A cost estimate is not currently available.'].filter(Boolean).join(' ');
+    amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
+      : loading ? 'Calculating estimated savings.' : 'A cost estimate is not currently available.',
+    active && available ? 'Compared with canceling only this allowance; the other charger’s choices remain in effect.' : '',
+    sharedPlanChanged ? 'Shared costs and forecast uncertainty are explained in the comparison.' : ''].filter(Boolean).join(' ');
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
     effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
     title: active ? 'One day allowed' : 'One extra day',

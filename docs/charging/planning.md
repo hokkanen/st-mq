@@ -538,8 +538,11 @@ keeps that order in the approved-plan calculation; its earlier-deadline alternat
 asks what canceling this allowance would do now, with the peer's allowance intact.
 A later peer decision can change how savings are shared, so this marginal
 comparison can differ from the original grant. The active display explains such
-changes and shows the true remaining costs; it does not reorder approvals to
-manufacture a saving. Proposed periods remain separate from installed execution.
+changes and shows the current numerical saving or extra cost, even when shared
+costs or forecast uncertainty make the household result unfavorable. Household
+effects and uncertainty stay separate from the selected charger's cash saving.
+It does not reorder approvals to manufacture a saving. Proposed periods remain
+separate from installed execution.
 
 A positive individual saving is recommended when combined remaining cash cost
 and the household risk-adjusted result also improve. There is no additional
@@ -604,8 +607,11 @@ rather than retrying continuously.
 
 An active allowance's approved alternative is the actual current joint program,
 including retained periods and allocation targets. Its earlier alternative asks
-what cancelling only that allowance would do now. A cached successful comparison
-keeps its original snapshot time through temporary unavailability; a failed refresh
+what cancelling only that allowance would do now. The comparison
+is reassessed when either selected allocation target changes, even if its periods
+stay the same. Routine forecast maintenance preserves those retained targets too.
+A cached successful comparison keeps its original snapshot time through temporary
+unavailability; a failed refresh
 explicitly labels the previous estimate rather than renewing its clocks. Allowing
 or cancelling the selected day keeps the same comparison scope until its earlier
 checkpoint. Temporarily missing live presentation retains that dated scope but

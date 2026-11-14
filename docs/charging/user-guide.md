@@ -111,6 +111,10 @@ Once a day is allowed, the comparison labels its alternatives **Earlier ready-by
 and **Approved ready-by**, including their separate planning allowances. Cash
 savings exclude these allowances; their difference belongs only to the
 uncertainty-adjusted comparison.
+The saving updates as the shared plan changes. It can become zero or an extra
+cost compared with canceling only this allowance while keeping the other
+charger's choices. Household cost and forecast uncertainty are shown separately;
+an unfavorable household result does not hide this charger's amount.
 
 The comparison shows when it was calculated. It updates when a replacement
 changes the displayed result; ordinary polling does not renew its timestamp.

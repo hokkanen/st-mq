@@ -6,7 +6,8 @@ const finite = Number.isFinite;
 const scope = charger => charger?.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
 const comparisonScope = charger => charger?.flexibility?.comparisonScope ?? null;
 const validComparison = value => value?.available === true && finite(value.at);
-const money = cents => finite(cents) ? `€${(Math.round(cents) / 100).toFixed(2)}` : 'Unavailable';
+const roundCents = cents => Math.sign(cents) * Math.round(Math.abs(cents));
+const money = cents => finite(cents) ? `€${(roundCents(cents) / 100).toFixed(2)}` : 'Unavailable';
 const snapshotDate = (at, timezone) => new Intl.DateTimeFormat('en-GB', { timeZone: timezone,
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(at);
 const duration = milliseconds => {
@@ -21,7 +22,7 @@ const comparisonContent = value => JSON.stringify([
   ...['normalReadyByAt', 'deferredReadyByAt', 'normalFinishAt', 'deferredFinishAt'].map(key => finite(value[key]) ? Math.floor(value[key] / 60_000) : null),
   ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'normalHouseholdUncertaintyPremiumCents',
     'householdUncertaintyPremiumCents', 'riskAdjustedSavingsCents'].map(key => money(value[key])),
-  Math.sign(Math.round(value.savingsCents)), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
+  Math.sign(roundCents(value.savingsCents)), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
   value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage, value.sharedPlanChanged,
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
@@ -187,11 +188,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     const active = view.active;
     const displayedActive = snapshot?.active;
     title.textContent = `${snapshot?.label ?? 'Charging'} · ${displayedActive ? 'One day allowed' : 'One extra day'}`;
-    description.textContent = displayedActive && comparison?.sharedPlanChanged
-      ? 'The shared plan has changed since this allowance. These are the current approved plan and the alternative with this charger’s earlier deadline; later choices for the other charger retain their priority.'
-      : `This choice extends only ${snapshot?.label ?? 'this charger'}'s deadline. ` + (displayedActive
-      ? 'Charging can use any time before the approved deadline. Another day needs a new approval after the earlier deadline.'
-      : 'Charging can still happen sooner when it costs less.');
+    description.textContent = displayedActive
+      ? 'Compare the current approved plan with canceling only this allowance and restoring this charger’s earlier deadline. The other charger keeps its deadline; later choices for the other charger retain their priority.'
+      : `This choice extends only ${snapshot?.label ?? 'this charger'}'s deadline. Charging can still happen sooner when it costs less.`;
     const plansKey = JSON.stringify([available ? comparisonContent(comparison) : null, displayedActive, displayedState?.normalReadyByAt,
       displayedState?.deferredReadyByAt, snapshot?.timezone]);
     if (plansKey !== renderedPlans) {
@@ -210,8 +209,8 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       });
       renderedPlans = plansKey;
     }
-    const displayedSaving = available && finite(comparison.savingsCents) ? Math.round(comparison.savingsCents) : null;
-    savingValue.textContent = displayedActive && available && comparison.sharedPlanChanged ? 'Shared plan changed' : displayedSaving !== null
+    const displayedSaving = available && finite(comparison.savingsCents) ? roundCents(comparison.savingsCents) : null;
+    savingValue.textContent = displayedSaving !== null
       ? displayedSaving > 0 ? `Estimated saving ${money(displayedSaving)}`
         : displayedSaving < 0 ? `Estimated extra cost ${money(-displayedSaving)}` : 'No estimated saving'
       : comparing ? 'Comparing charging plans…' : '';
@@ -225,10 +224,10 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       return `${snapshot.labels[peer.id] ?? 'The other charger'}: ${money(Math.abs(saving))} ${saving < 0 ? 'more' : 'less'} estimated, with its ready-by time unchanged.`;
     }).join(' ') + (!combined.hidden && displayedActive && comparison.sharedPlanChanged
       ? ` Combined remaining costs: ${money(comparison.chargers.reduce((sum, row) => sum + row.normalCostCents, 0))} with the earlier deadline; ${money(comparison.chargers.reduce((sum, row) => sum + row.deferredCostCents, 0))} with the approved deadline.`
-      : !combined.hidden && finite(comparison.householdSavingsCents)
-      ? ` Total estimated ${comparison.householdSavingsCents < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
+      : '') + (!combined.hidden && finite(comparison.householdSavingsCents)
+      ? ` Total estimated ${roundCents(comparison.householdSavingsCents) < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
     uncertainty.hidden = !available || !comparison.usesForecast;
-    const riskSaving = finite(comparison?.riskAdjustedSavingsCents) ? Math.round(comparison.riskAdjustedSavingsCents) : null;
+    const riskSaving = finite(comparison?.riskAdjustedSavingsCents) ? roundCents(comparison.riskAdjustedSavingsCents) : null;
     uncertainty.textContent = uncertainty.hidden || riskSaving === null ? '' : riskSaving === 0
       ? 'After forecast uncertainty: no combined saving.'
       : `After forecast uncertainty: ${money(Math.abs(riskSaving))} combined ${riskSaving < 0 ? 'extra cost' : 'saving'}.`;

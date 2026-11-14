@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fixture, START, HOUR } from './helpers/charging-joint-fixture.js';
 import { readChargingRuntime } from '../src/charging/runtime-storage.js';
+import { forecastFixedPlans } from '../src/charging/planner.js';
 
 async function drain(runtime) {
   for (let i = 0; i < 20; i++) {
@@ -50,6 +51,52 @@ test('both cards receive automatic cached comparisons and published snapshots wi
     association: view.association, sessionId: view.request.sessionId, revision: view.request.revision })));
   assert(results.every(result => result.comparison.available));
   assert.equal(f.calls.length, before, 'Browsers reuse the same completed comparison');
+});
+
+for (const retainedId of ['charger1', 'charger2'])
+test(`maintenance forecasts retain ${retainedId}'s approved earlier allocation target`, async t => {
+  const f = await ready(t), runtime = f.runtime;
+  for (const id of ['charger1', 'charger2']) {
+    await runtime.setFlexibility(id, { ...f.scope(id), action: 'allow', actionId: `synthetic-retained-${id}` });
+    await f.settle(); await f.drain();
+  }
+  const before = f.view(retainedId);
+  assert.ok(before.plan.targetAt < before.deadlineAt, 'equal prices retain the earlier allocation target');
+  const peerId = retainedId === 'charger1' ? 'charger2' : 'charger1';
+  const peer = runtime.chargers[peerId];
+  peer.plan = { ...peer.plan, targetAt: f.view(peerId).deadlineAt };
+  const scope = runtime.flexibilityContext;
+  const views = runtime.views(f.now);
+  const expected = forecastFixedPlans({ ...scope, now: f.now, prices: runtime.getPlanningPrices(f.now),
+    chargers: views.map(view => ({ ...view, allocationTargetAt: runtime.chargers[view.id].plan.targetAt })),
+    periodsByCharger: Object.fromEntries(views.map(view => [view.id, runtime.chargers[view.id].plan.periods])) });
+  let searches = 0;
+  const request = runtime.plannerService.request.bind(runtime.plannerService);
+  runtime.plannerService.request = options => { searches++; return request(options); };
+  const commands = f.commands.length;
+  runtime.lastEconomicExecutionBasis = null;
+  await f.assess();
+  assert.equal(searches, 0, 'an execution bookkeeping change only reassesses retained periods');
+  assert.equal(f.commands.length, commands, 'forecast maintenance sends no device commands');
+  for (const id of ['charger1', 'charger2']) {
+    const view = f.view(id);
+    assert.equal(view.forecast.finishAt, expected.forecasts[id].finishAt, `${id} retains the selected allocation target`);
+    assert.deepEqual(view.forecast.accounting, expected.forecasts[id].accounting);
+  }
+});
+
+for (const id of ['charger1', 'charger2'])
+test(`${id}'s active comparison refreshes when the shared allocation target changes without changing periods`, async t => {
+  const f = await ready(t), runtime = f.runtime;
+  await runtime.setFlexibility(id, { ...f.scope(id), action: 'allow', actionId: 'synthetic-target-refresh' });
+  await f.settle(); await f.drain();
+  const before = f.calls.filter(chargerId => chargerId === id).length, commands = f.commands.length;
+  const item = runtime.chargers[id], periods = item.plan.periods;
+  item.plan = { ...item.plan, targetAt: item.plan.targetAt + HOUR };
+  await f.assess();
+  assert.ok(f.calls.filter(chargerId => chargerId === id).length > before, 'the active comparison must reassess changed allocation urgency');
+  assert.deepEqual(item.plan.periods, periods, 'a comparison refresh does not change charging periods');
+  assert.equal(f.commands.length, commands, 'a comparison refresh sends no device commands');
 });
 
 test('normal planning tolerances suppress clock churn and subthreshold household drift for savings too', async t => {

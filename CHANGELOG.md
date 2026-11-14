@@ -6,6 +6,12 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- One-day charging allowances keep their updated estimated saving or extra cost
+  visible on both chargers when shared costs or forecast uncertainty change.
+  The comparison explains the other charger's cost and the combined result.
+  Routine forecasts preserve retained allocation targets, and target changes
+  refresh active comparisons even when charging periods stay the same.
+
 - Accepted Home heating schedules survive missing inputs, restart and learning
   rebuilds. Stopping preheat at the predicted limit of heat already delivered
   preserves the planned reduction. Bounded background comparisons can shorten
