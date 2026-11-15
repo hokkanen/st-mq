@@ -295,7 +295,12 @@ the model; approved executions retain their context in the ordinary cycle and
 learning records, subject to the same completion and validation checks.
 
 Each candidate prices preheat, reduction, recovery and remaining heat debt under
-the same price/weather outlook. Electricity price belongs in this objective, not
+the same price/weather outlook. Compared alternatives share integration boundaries,
+including both schedules' phase changes and recovery-hold deadlines. An idle
+treatment cannot earn savings merely by splitting the numerical calculation
+differently. This also applies to stress scenarios, trial exposure, pending-plan
+checks, explorer estimates and economic continuation.
+Electricity price belongs in this objective, not
 in the thermal coefficients. The fixed compressor performance map and nominal auxiliary estimates
 remain estimates; property consumption minus charging is never heat-pump metering.
 DHW is separately attributed where routing is known. Its demand and tank recovery

@@ -160,6 +160,23 @@ export function evaluateCycle(args) {
   return evaluateCyclePartition(args, null, false).result;
 }
 
+/** Price alternatives on the same integration tape. Otherwise a phase boundary
+ * can change Normal's numerical trajectory and masquerade as heat savings.
+ * The reference may carry a different observed state for full-cycle exposure. */
+export function evaluateCyclePair(args, reference = null,
+  { initialState = args.initialState, captureTrajectory = args.captureTrajectory } = {}) {
+  const holdMinutes = args.config?.recoveryHoldMinutes ?? CONTROL_DEFAULTS.recoveryHoldMinutes;
+  const boundaries = [...new Set([args.schedule, reference].filter(Boolean).flatMap(schedule =>
+    [schedule.preheatStart, schedule.preheatEnd, schedule.reductionStart, schedule.reductionEnd,
+      schedule.recoveryHoldUntil ?? schedule.reductionEnd + holdMinutes * 60_000]))].filter(number).sort((a,b) => a-b);
+  const intervals = args.intervals.flatMap(interval => {
+    const cuts = [interval.start, ...boundaries.filter(at => at > interval.start && at < interval.end), interval.end];
+    return cuts.slice(0, -1).map((start, index) => ({ ...interval, start, end: cuts[index + 1] }));
+  });
+  return { prediction: evaluateCycle({ ...args, intervals }),
+    referencePrediction: evaluateCycle({ ...args, intervals, schedule: reference, initialState, captureTrajectory }) };
+}
+
 /** Advance contiguous partitions of the same interval tape under fixed inputs.
  * Scalars are cumulative; trajectory contains only this call's points and is
  * omitted from the continuation. Use includeTail:false until final assessment;
@@ -424,7 +441,7 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
   let unsafe = prediction.severe;
   for (const direction of [-1, 1]) {
     const source = estimateHeatPumpPerformance({ ...args.model.performance, supplyC: args.equipment?.supplyC, brineC: args.equipment?.brineC });
-    const scenario = { ...args,
+    const scenario = { ...args, captureTrajectory: false,
       model: { ...args.model, parameters: { ...args.model.parameters,
         hydronicCPerKwh: clamp(hydronicGain(args.model) * (1 - direction * .15), ...THERMAL_PARAMETER_BOUNDS.hydronicCPerKwh),
         lossPerHour: clamp(args.model.parameters.lossPerHour * (1 + direction * .15), ...THERMAL_PARAMETER_BOUNDS.lossPerHour) } },
@@ -432,7 +449,7 @@ export function economicAdmission({ prediction, referencePrediction, args, sched
         slabC: (args.initialState.slabC ?? args.initialState.reserveC) + direction * .5 },
       config: { ...args.config, scenarioElectricalScale: 1 + direction * source.relativeUncertainty,
         scenarioAuxScale: 1 + direction * .5, scenarioDutyShift: direction * .08 } };
-    const action = evaluateCycle({ ...scenario, schedule }), normal = evaluateCycle({ ...scenario, schedule: reference });
+    const { prediction: action, referencePrediction: normal } = evaluateCyclePair({ ...scenario, schedule }, reference);
     lowerBenefitCents = Math.min(lowerBenefitCents, normal.costCents - action.costCents);
     unsafe ||= action.severe;
   }
@@ -632,10 +649,9 @@ export function trialCostExposure(args) {
     const scenario = prefix ? { ...original, initialState: { ...prefix.actualState, integral: args.initialState.integral },
       referenceInitialState: prefix.referenceState, config: { ...original.config,
         scenarioElectricalScale: prefix.electricalScale, scenarioAuxScale: prefix.auxiliaryScale } } : original;
-    const reference = evaluateCycle({ ...scenario, schedule: null,
-      ...(prefix ? { initialState: prefix.referenceState } : {}) });
     for (const scale of [0, 1]) {
-      const action = evaluateCycle({ ...scenario, config: { ...scenario.config, scenarioReductionScale: scale } });
+      const { prediction: action, referencePrediction: reference } = evaluateCyclePair({ ...scenario,
+        config: { ...scenario.config, scenarioReductionScale: scale } }, null, { initialState: prefix?.referenceState ?? scenario.initialState });
       costExposureCents = Math.max(costExposureCents,
         (prefix ? prefix.actualCostCents - prefix.referenceCostCents : 0) + action.costCents - reference.costCents);
       const lost = reference.trajectory.reduce((sum, row) => {
@@ -698,7 +714,7 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
     integral:equipment.integral };
   const args = { intervals, model, initialState, targetC, occupancy:settings.occupancy,
     maxDropC:settings.comfort.maxDropC, maxRiseC:settings.comfort.maxRiseC ?? 1.5, config:c, equipment };
-  const prediction = evaluateCycle({...args,schedule:plan.schedule}), referencePrediction=evaluateCycle({...args,schedule:plan.reference});
+  const { prediction, referencePrediction } = evaluateCyclePair({ ...args, schedule: plan.schedule }, plan.reference);
   const benefit = referencePrediction.costCents-prediction.costCents;
   const economics = economicAdmission({ prediction, referencePrediction, args, schedule: plan.schedule, reference: plan.reference, settings });
   const risk = economics.uncertaintyCents;
@@ -741,8 +757,9 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   if (!intervals.length || intervals.at(-1).end - now < 4 * HOUR) return normal('missing-or-incomplete-price-weather-horizon');
   const initialState = { ...homePlanningState(model, observations.indoor.value, intervals[0]?.outdoorC, intervals[0]?.solarRadiationWm2,thermalState),
     integral: equipment.integral };
-  const evaluation = schedule => evaluateCycle({ schedule, intervals, model, initialState, targetC,
-    occupancy: settings.occupancy, maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5, config: c, equipment });
+  const args = { intervals, model, initialState, targetC, occupancy: settings.occupancy,
+    maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5, config: c, equipment };
+  const evaluation = schedule => evaluateCycle({ ...args, schedule });
   const baseline = evaluation(null), candidates = [];
   const away = settings.occupancy.mode === 'away';
   const readiness = learningReadiness(checkpoint, c, equipment);
@@ -787,10 +804,12 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   let evaluatedCandidates=0, forecastRejected=0, comfortRejected=0;
   const rejectedExamples = new Map();
   const addCandidate=(schedule,duration)=>{
-    const result=evaluation(schedule);evaluatedCandidates++;
+    // Keep one trajectory per grid candidate, as before. Only shortlisted trial
+    // opportunities and the chosen plan need a full Normal trajectory.
+    const { prediction: result, referencePrediction } = evaluateCyclePair({ ...args, schedule }, null, { captureTrajectory: false });evaluatedCandidates++;
     const trialSafety=trialEnvelope({schedule,initialState,targetC,intervals,model,config:c,
       occupancy:settings.occupancy,maxDropC,maxRiseC:settings.comfort.maxRiseC ?? 1.5,equipment,assessCost:false});
-    const option={schedule,result,duration,trialSafety,firstActionAt:schedule.preheatStart};
+    const option={schedule,result,referencePrediction,duration,trialSafety,firstActionAt:schedule.preheatStart};
     if (!result.severe)candidates.push(option);
     else {
       comfortRejected++;
@@ -850,10 +869,8 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   const diagnostics = { configuredMaximumHours: configuredMaximum, validatedMaximumHours: testedMaximum,
     economicMaximumHours: economicMaximum, trialMaximumHours: trialMaximum,
     forecastRejected, comfortRejected, violations: [...rejectedExamples.values()] };
-  const args = { intervals, model, initialState, targetC, occupancy: settings.occupancy,
-    maxDropC, maxRiseC: settings.comfort.maxRiseC ?? 1.5, config: c, equipment };
   for (const option of candidates) {
-    option.benefit = baseline.costCents - option.result.costCents;
+    option.benefit = option.referencePrediction.costCents - option.result.costCents;
     option.risk = 5;
   }
   const qualified = candidates.filter(o => o.duration <= economicMaximum && !o.result.severe
@@ -868,7 +885,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
     ...qualified.filter(o=>o.schedule.roomBoostC>0).slice(0,16)];
   if (incumbent && qualified.includes(incumbent) && !economicShortlist.includes(incumbent)) economicShortlist.push(incumbent);
   const assessed = economicShortlist.map(option => {
-    option.economics = economicAdmission({ prediction: option.result, referencePrediction: baseline, args, schedule: option.schedule, settings });
+    option.economics = economicAdmission({ prediction: option.result, referencePrediction: option.referencePrediction, args, schedule: option.schedule, settings });
     option.risk = option.economics.uncertaintyCents;
     return option;
   }).filter(option => option.economics.admitted);
@@ -894,8 +911,9 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
       && (!o.schedule.roomBoostC || o.schedule.preheatEnd-o.schedule.preheatStart<=trialPreheat*HOUR)
       && o.trialSafety.comfortSafe && !o.result.severe);
     for (const option of small) {
-      option.opportunity = trialOpportunity({ schedule: option.schedule,baseline, equipment, initialState, intervals });
-      option.information=trialInformation({schedule:option.schedule,prediction:option.result,baseline,opportunity:option.opportunity,
+      const pairedBaseline = evaluateCyclePair({ ...args, schedule: option.schedule }).referencePrediction;
+      option.opportunity = trialOpportunity({ schedule: option.schedule,baseline:pairedBaseline, equipment, initialState, intervals });
+      option.information=trialInformation({schedule:option.schedule,prediction:option.result,baseline:pairedBaseline,opportunity:option.opportunity,
         noiseC:thermalUncertaintyC(model,6)});
       const phase=option.schedule.roomBoostC>0?'preheat':'reduction';
       option.responseEpisodes=equipmentResponseEstimate(model,phase,option.schedule.treatmentKey)?.trainingEpisodes??0;
@@ -932,7 +950,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   }
   if (!chosen) return { ...normal(trialBlock ?? diagnostics.trialBlockedReason ?? 'normal-operation-preferred'), readiness,
     diagnostics, evaluation: { baselineCostCents: baseline.costCents, candidates: candidates.length, search } };
-  const reference = null, referenceResult = baseline;
+  const reference = null, referenceResult = evaluateCyclePair({ ...args, schedule: chosen.schedule }).referencePrediction;
   const phase = phaseAt(chosen.schedule, now);
   return { action: phase === 'reduction' ? 'reduction' : 'normal', phase,
     reasons: [trial ? 'bounded-learning-trial' : chosen.economics.lowerBenefitCents<0?'reviewed-experimental-cycle':'predicted-full-cycle-benefit'],

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { appendLearningRecord } from './committed-learning.js';
-import { evaluateCycle, phaseAt, trialCostScenarios } from '../control/planner.js';
+import { evaluateCyclePair, phaseAt, trialCostScenarios } from '../control/planner.js';
 import { advanceReference, observedState, rebuildCycleWorking, assessCycle,
   initialTrialCostPrefix, advanceTrialCostPrefix } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
@@ -219,9 +219,10 @@ export class CycleTracker {
     plan = structuredClone({ ...definition, prediction: summary(plan.prediction), referencePrediction: summary(plan.referencePrediction) });
     const common = { intervals: plan.intervals, model: plan.model, initialState: plan.initialState, targetC: plan.targetC,
       occupancy: plan.occupancy, maxDropC: plan.maxDropC, maxRiseC: plan.maxRiseC,
-      config: plan.config ?? this.config, equipment: plan.equipment ?? {} };
-    plan.prediction = summary(evaluateCycle({ ...common, schedule: plan.schedule }));
-    plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
+      config: plan.config ?? this.config, equipment: plan.equipment ?? {}, captureTrajectory: false };
+    const { prediction, referencePrediction } = evaluateCyclePair({ ...common, schedule: plan.schedule }, plan.reference);
+    plan.prediction = summary(prediction);
+    plan.referencePrediction = summary(referencePrediction);
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
       ...(executionSchedule ? { executionSchedule: structuredClone(executionSchedule) } : {}),
       executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observationCount: 0, phases: [], lastSample: sampleEndpoint(sample), lastForecastVersion: sample.provenance?.forecastVersion ?? null,

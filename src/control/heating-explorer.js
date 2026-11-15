@@ -2,7 +2,7 @@ import { CONTROL_DEFAULTS } from '../app/config.js';
 import { HEATING_STRATEGIES, heatingEconomics, DEFAULT_HEATING_STRATEGY } from '../domain/heating-strategy.js';
 import { initialAdaptiveModel, equipmentResponseEstimate } from './adaptive-learning.js';
 import { homePlanningState } from '../domain/home-model.js';
-import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, learningReadiness,
+import { chooseCycle, evaluateCycle, evaluateCyclePair, economicAdmission, forecastIntervals, learningReadiness,
   phaseAt, validatedReductionHours, cycleForecastCovered, indoorUncertaintyAt, preheatRoomRequest } from './planner.js';
 
 const HOUR = 3_600_000;
@@ -160,7 +160,9 @@ function outcomes(prediction, args) {
 
 function summary(decision, args, baseline, { origin = 'recalculated', plan = decision?.plan } = {}) {
   const schedule = plan?.schedule ?? null;
-  const prediction = args ? schedule ? evaluateCycle({ ...args, schedule }) : baseline : null;
+  const pair = args && schedule ? evaluateCyclePair({ ...args, schedule }) : null;
+  const prediction = pair?.prediction ?? (args ? baseline : null);
+  if (pair) baseline = pair.referencePrediction;
   // A forecast starting after treatment began has no observed cycle prefix or
   // original Normal reference. Starting both paths at today's state cannot
   // predict when yesterday's treatment has recovered.
@@ -203,7 +205,10 @@ function summary(decision, args, baseline, { origin = 'recalculated', plan = dec
 
 function compare(current, alternative) {
   const left = current.outcomes, right = alternative.outcomes;
-  return { additionalBenefitCents: left && right ? left.costCents - right.costCents : null,
+  // Each schedule has its own paired Normal calculation. Compare attributable
+  // benefits so different phase partitions cannot earn an apparent improvement.
+  return { additionalBenefitCents: finite(current.estimatedBenefitCents) && finite(alternative.estimatedBenefitCents)
+      ? alternative.estimatedBenefitCents - current.estimatedBenefitCents : null,
     additionalElectricityKwh: left && right ? right.electricityKwh - left.electricityKwh : null,
     additionalIndoorDropC: finite(left?.maxIndoorDropC) && finite(right?.maxIndoorDropC) ? right.maxIndoorDropC - left.maxIndoorDropC : null,
     additionalIndoorRiseC: finite(left?.maxIndoorRiseC) && finite(right?.maxIndoorRiseC) ? right.maxIndoorRiseC - left.maxIndoorRiseC : null,
@@ -331,8 +336,8 @@ function illustrate(input, changes, current, scenario, args, normal) {
   const schedule = { preheatStart: start, preheatEnd: start, reductionStart: start,
     reductionEnd: start + duration * HOUR, roomBoostC: 0, treatmentKey: 'reduction-only-v1' };
   if (!cycleForecastCovered(args.intervals, schedule, input.now)) return null;
-  const prediction = evaluateCycle({ ...args, schedule });
-  const economics = economicAdmission({ prediction, referencePrediction: normal, args, schedule, settings: input.settings });
+  const { prediction, referencePrediction } = evaluateCyclePair({ ...args, schedule });
+  const economics = economicAdmission({ prediction, referencePrediction, args, schedule, settings: input.settings });
   const evidenceDuration = validatedReductionHours(args.model, schedule);
   const reasons = ['illustrative-fixed-duration-not-a-selected-plan'];
   if (duration > evidenceDuration) reasons.push('outside-demonstrated-duration');

@@ -109,7 +109,7 @@ test('retained actual pending plan stays the main reference when fresh optimizat
   assert.deepEqual(result.refreshedCurrent.schedule, decision.plan.schedule);
   assert.equal(result.currentDiffersFromRecalculation, true);
   assert.equal(result.current.origin, 'selected');
-  assert.equal(result.comparison.additionalBenefitCents, result.current.outcomes.costCents - result.scenario.outcomes.costCents);
+  assert.equal(result.comparison.additionalBenefitCents, result.scenario.estimatedBenefitCents - result.current.estimatedBenefitCents);
 });
 
 test('an executed reduction never acquires a rolling one-hour recovery deadline from a fresh forecast', () => {
@@ -352,7 +352,7 @@ test('a useful relaxation explains the duration ceiling against fresh and actual
   assert.equal(result.refreshedCurrent.schedule.reductionEnd, actual.schedule.reductionEnd);
   assert.ok(opportunity.scenario.economics.admitted);
   assert.ok(opportunity.additionalBenefitCents > 10);
-  assert.equal(opportunity.additionalBenefitCents, result.current.outcomes.costCents - opportunity.scenario.outcomes.costCents);
+  assert.equal(opportunity.additionalBenefitCents, opportunity.scenario.estimatedBenefitCents - result.current.estimatedBenefitCents);
   assert.equal(result.constraints.find(row => row.key === 'maxReductionHours').status, 'blocking');
   assert.ok(result.computation.plannerRuns <= 4);
 });

@@ -1,4 +1,4 @@
-import { evaluateCycle, cycleForecastCovered, forecastIntervals, phaseAt } from './planner.js';
+import { evaluateCycle, evaluateCyclePair, cycleForecastCovered, forecastIntervals, phaseAt } from './planner.js';
 import { homePlanningState } from '../domain/home-model.js';
 
 const HOUR = 3_600_000;
@@ -120,11 +120,12 @@ export function reviseHeatingCycle({ args, schedule, preheatHours = 0 }) {
   const noPreheat = withoutFurtherPreheat(schedule, args.now);
   const consider = candidate => {
     if (Math.max(0, candidate.preheatEnd - Math.max(args.now, candidate.preheatStart)) < retainedPreheat) return;
-    const prediction = evaluate(candidate);
+    const { prediction, referencePrediction } = evaluateCyclePair({ ...args, schedule: candidate }, best?.schedule ?? schedule,
+      { captureTrajectory: false });
     // Central bounds constrain optional future heat, not the useful reduction
     // of an already warm house. Cold reduction is owned by the live stop test.
     if (!optionalHeatFits(candidate, prediction) || minimum(prediction) < coldFloor - 1e-8) return;
-    if (!best || costsLess(prediction.costCents, best.prediction.costCents)) best = { schedule: candidate, prediction };
+    if (!best || costsLess(prediction.costCents, referencePrediction.costCents)) best = { schedule: candidate, prediction };
   };
   consider(noPreheat);
   if (schedule.reductionStart > args.now && (roomBoostC > 0 || schedule.floorOverride === true)) {
@@ -149,8 +150,9 @@ export function reviseHeatingCycle({ args, schedule, preheatHours = 0 }) {
   }
   // No feasible repair is a reason to retain intent, not to invent an exit.
   best ??= { schedule, prediction: incumbent };
-  const stopped = evaluate(endTreatmentNow(schedule, args.now));
+  const { prediction: continued, referencePrediction: stopped } = evaluateCyclePair({ ...args, schedule: best.schedule, captureTrajectory: false },
+    endTreatmentNow(schedule, args.now));
   return { schedule: best.schedule, end: (!args.trial || finite(args.approvedExtraCostCents))
-      && costsLess(stopped.costCents + (args.approvedExtraCostCents ?? 0), best.prediction.costCents),
-    continuedCostCents: best.prediction.costCents, stoppedCostCents: stopped.costCents };
+      && costsLess(stopped.costCents + (args.approvedExtraCostCents ?? 0), continued.costCents),
+    continuedCostCents: continued.costCents, stoppedCostCents: stopped.costCents };
 }
