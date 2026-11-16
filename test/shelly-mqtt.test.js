@@ -297,6 +297,29 @@ test('a delayed read dispatch preserves contradictory feedback received after it
   assert.equal(f.capture.status().devices[0].readings.heat_savings_active.value, 0);
 });
 
+for (const circulation of [false, true]) for (const output of [false, true]) test(`${circulation ? 'Circulation' : 'Heating'} ${output ? 'ON' : 'OFF'} ignores stale switch deltas when ordering current correlated readback`, async t => {
+  const device = circulation ? { id: 'dhwr', kind: 'switch', generation: 3, connection: 'shelly:invented-dhwr' } : heat;
+  const prefix = circulation ? 'invented-dhwr' : 'invented-mini';
+  const f = fixture(t, [device], initial, { deferReadback: true }); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: !output } }); f.now(initial + 1000);
+  const action = (circulation ? f.capture.publishDhwr(output) : f.capture.publishHeating([output ? 'reduction' : 'normal']))
+    .then(result => ({ result }), error => ({ error }));
+  f.now(initial + 1010);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: !output });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  f.now(initial + 1020);
+  f.capture.receive(`${prefix}/status/switch:0`, JSON.stringify({ id: 0, output: !output }));
+  f.now(initial + 1030); get.options.onFirstWrite();
+  f.now(initial + 1040);
+  f.capture.receive(`${prefix}/events/rpc`, JSON.stringify({ src: `fixture-${prefix}`, method: 'NotifyStatus',
+    params: { ts: (initial + 1005) / 1000, 'switch:0': { output } } }));
+  f.now(initial + 1050); f.reply(get, { output });
+  const outcome = await action;
+  assert.equal(outcome.error, undefined, 'An ignored stale packet supplies no newer contradictory switch evidence');
+  assert.equal(outcome.result.confirmed ?? outcome.result.sent, true);
+  assert.equal(f.capture.status().devices[0].readings[circulation ? 'dhwr_active' : 'heat_savings_active'].value, Number(output));
+});
+
 test('dispatching a delayed read neither renews its original deadline nor permits stale byte writes', async t => {
   let elapsed = 0; t.mock.method(performance, 'now', () => elapsed);
   const f = fixture(t, [heat], initial, { deferReadback: true }); f.capture.setConnected(true);
@@ -310,6 +333,24 @@ test('dispatching a delayed read neither renews its original deadline nor permit
   f.now(initial + 111); f.reply(get, { output: true });
   await action;
   assert.equal(f.capture.status().devices[0].readings.heat_savings_active.value, 0);
+});
+
+test('a metered switch power delta cannot supersede output readback or be rewound by it', async t => {
+  const f = fixture(t, [{ ...caravan, switch_control: true }]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false, apower: 0, current: 0 } }); f.now(initial + 1000);
+  const action = f.capture.setSwitch('caravan', true).then(result => ({ result }), error => ({ error }));
+  f.now(initial + 1010);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  f.now(initial + 1020);
+  f.capture.receive('invented-caravan/events/rpc', JSON.stringify({ src: 'fixture-invented-caravan', method: 'NotifyStatus',
+    params: { ts: (initial + 1020) / 1000, 'switch:0': { id: 0, apower: 5 } } }));
+  f.now(initial + 1030); f.reply(get, { output: true, apower: 0, current: 0 });
+  const outcome = await action;
+  assert.equal(outcome.error, undefined); assert.equal(outcome.result.confirmed, true);
+  const readings = f.capture.status().devices[0].readings;
+  assert.equal(readings.caravan_active.value, 1);
+  assert.equal(readings.caravan_power.value, .005); assert.equal(readings.caravan_power.observedAt, initial + 1020);
 });
 
 test('keyed switch deltas preserve absent output, reject conflicting ids and retain native faults', t => {

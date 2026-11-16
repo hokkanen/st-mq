@@ -119,6 +119,9 @@ query's original deadline is not extended by dispatch. Reports retain their
 original monotonic transport receipt through recording and source-clock waits;
 processing an earlier delivery after dispatch does not make it later evidence,
 including when wall clocks tie or move backward.
+Only admitted switch output advances the switch confirmation order. Ignored
+stale deltas and independent power, energy or temperature updates cannot
+supersede a current output readback or rewind those other fields.
 
 Generic MQTT and Gen1 Shelly switches, native H66 settings, and dehumidifier
 settings also establish their confirmation boundary at the first transport

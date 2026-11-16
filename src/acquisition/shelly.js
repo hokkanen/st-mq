@@ -248,7 +248,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     });
     return device.identityPending;
   };
-  function switchStatus(device, status, at, { full = false, readback = false, commandId = null, preserveObservation = false } = {}) {
+  function switchStatus(device, status, at, { full = false, readback = false, commandId = null, preserveObservation = false, observe = false } = {}) {
     const signal = stateName(device);
     if (!signal) return;
     if (!status || typeof status !== 'object') {
@@ -268,6 +268,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (scalar(at)) {
         if (!older) { device.state = output; emit(device, signal, Number(output), 'state', at); }
         if (device.generation === 1 && !older) device.observationOrder = ++sequence;
+        if (observe && !older) {
+          // Only admitted switch output can supersede a switch query. An
+          // ignored older delta or another component supplies no such evidence.
+          device.observationOrder = ++sequence;
+          device.observationReceivedAt = receivedNow(); device.observationMonotonicAt = receptionMonotonicAt;
+        }
         if (readback) for (const waiter of [...device.waiters])
           if (waiter.at <= at && waiter.output === output && (device.generation === 1
             ? waiter.dispatched && device.observationOrder > waiter.revision
@@ -573,19 +579,17 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         }
         const full = frame.method === 'NotifyFullStatus', switchValue = params[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`];
         const temperatureValue = params[`temperature:${device.temperatureId}`];
-        if (switchValue || full) switchStatus(device, switchValue, at, { full });
+        if (switchValue || full) switchStatus(device, switchValue, at, { full, observe: true });
         temperatureStatus(device, temperatureValue, at, full);
         const custom = customStatus(device, params, at, full);
         if (at === null || !switchValue && !temperatureValue && !custom) return true;
       } else if (suffix === `status/${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`) {
-        switchStatus(device, frame, at, { full: true });
+        switchStatus(device, frame, at, { full: true, observe: true });
         customStatus(device, { [suffix.slice(7)]: frame }, at, true, false, suffix.slice(7));
       }
       else if (hasTemperature(device) && suffix === `status/temperature:${device.temperatureId}`) temperatureStatus(device, frame, at, true);
       else if (device.customReadings.some(mapping => suffix === `status/${mapping.component}`)) customStatus(device, { [suffix.slice(7)]: frame }, at, false);
       else return true;
-      device.observationOrder = ++sequence;
-      device.observationReceivedAt = receivedAt; device.observationMonotonicAt = receptionMonotonicAt;
       device.lastAt = receivedAt; device.connected = device.available = true; return true;
     },
     tick(now = engine.clock()) {
