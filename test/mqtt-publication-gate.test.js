@@ -43,7 +43,7 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
     pendingCount: () => store._inflights.size };
 }
 
-test('installed MQTT.js: Shelly readback supersedes reports processed before its delayed outgoing-store write', async t => {
+for (const beforeWrite of [true, false]) test(`installed MQTT.js: Shelly readback resolves mixed-clock reports ${beforeWrite ? 'before' : 'after'} its outgoing-store write`, async t => {
   const f = await fixture(t); f.acknowledge(true);
   const store = new Store(':memory:'), publications = [];
   const initial = Date.parse('2026-09-10T12:00:00Z'); let now = initial;
@@ -70,16 +70,23 @@ test('installed MQTT.js: Shelly readback supersedes reports processed before its
   assert.equal(f.delayed.length, 1); f.delayed.shift()(); await flush();
   now = initial + 1010; reply('Switch.Set', { was_on: false });
   assert.equal(f.delayed.length, 1, 'The readback has not reached the synthetic wire');
+  if (!beforeWrite) { now = initial + 1015; f.delayed.shift()(); await flush(); }
   now = initial + 1020;
   capture.receive('invented-dhwr/status/switch:0', JSON.stringify({ id: 0, output: false }));
   now = initial + 1030;
   capture.receive('invented-dhwr/events/rpc', JSON.stringify({ src: 'fixture-dhwr', method: 'NotifyStatus',
     params: { ts: (initial + 1005) / 1000, 'switch:0': { output: true } } }));
-  now = initial + 1040; f.delayed.shift()(); await flush();
+  if (beforeWrite) { now = initial + 1040; f.delayed.shift()(); await flush(); }
   now = initial + 1050; reply('Switch.GetStatus', { id: 0, output: true });
+  if (!beforeWrite) {
+    assert.equal(f.delayed.length, 1, 'The masked query needs one genuinely new native read');
+    now = initial + 1060; f.delayed.shift()(); await flush();
+    now = initial + 1070; reply('Switch.GetStatus', { id: 0, output: true });
+  }
   assert.equal((await action).confirmed, true);
+  assert.equal(publications.filter(row => row.method === 'Switch.Set').length, 1);
   const reading = capture.status().devices[0].readings.dhwr_active;
-  assert.equal(reading.value, 1); assert.equal(reading.observedAt, initial + 1040);
+  assert.equal(reading.value, 1); assert.equal(reading.observedAt, initial + (beforeWrite ? 1040 : 1060));
 });
 
 for (const native of [false, true]) for (const queued of [false, true]) test(`installed MQTT.js: ${native ? 'Gen1 Shelly' : 'generic MQTT'} switch cannot confirm from ${queued ? 'queued earlier' : 'pre-write'} feedback`, async t => {

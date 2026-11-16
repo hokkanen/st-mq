@@ -7,7 +7,7 @@ export function createMqttReception({ store, engine, admission, devices, meters,
   let effects = null, accepted = null;
   const revisions = new WeakMap();
   let transportRevision = 0;
-  const copiedFields = ['readings', 'dehumidifierState', 'dehumidifierReport', 'temperatureGuard'];
+  const copiedFields = ['readings', 'ignoredSwitchReport', 'dehumidifierState', 'dehumidifierReport', 'temperatureGuard'];
   const operationFields = ['coverOperation', 'dehumidifierOperation'];
   const scalarFields = ['connected', 'available', 'lastAt', 'lastPollAt', 'state', 'identity', 'identityPending',
     'observationOrder', 'observationReceivedAt', 'observationMonotonicAt', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',

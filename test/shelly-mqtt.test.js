@@ -353,6 +353,49 @@ test('a metered switch power delta cannot supersede output readback or be rewoun
   assert.equal(readings.caravan_power.value, .005); assert.equal(readings.caravan_power.observedAt, initial + 1020);
 });
 
+for (const circulation of [false, true]) test(`${circulation ? 'Circulation' : 'Heating'} refreshes a read masked by mixed-clock feedback without repeating the command`, async t => {
+  const device = circulation ? { id: 'dhwr', kind: 'switch', generation: 3, connection: 'shelly:invented-dhwr' } : heat;
+  const prefix = circulation ? 'invented-dhwr' : 'invented-mini';
+  const f = fixture(t, [device]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } }); f.now(initial + 1000);
+  const action = (circulation ? f.capture.publishDhwr(true) : f.capture.publishHeating(['reduction']));
+  f.now(initial + 1010);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  f.now(initial + 1020);
+  f.capture.receive(`${prefix}/status/switch:0`, JSON.stringify({ id: 0, output: false }));
+  f.now(initial + 1030);
+  f.capture.receive(`${prefix}/events/rpc`, JSON.stringify({ src: `fixture-${prefix}`, method: 'NotifyStatus',
+    params: { ts: (initial + 1005) / 1000, 'switch:0': { output: true } } }));
+  f.now(initial + 1040); f.reply(get, { output: true });
+  const next = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  assert.notEqual(JSON.parse(next.payload).id, JSON.parse(get.payload).id, 'Mixed clocks require a genuinely new query');
+  assert.equal(f.publications.filter(row => JSON.parse(row.payload).method === 'Switch.Set').length, 1);
+  f.now(initial + 1050); f.reply(next, { output: true });
+  assert.equal((await action).sent, true);
+  assert.equal(f.capture.status().devices[0].readings[circulation ? 'dhwr_active' : 'heat_savings_active'].value, 1);
+});
+
+test('mixed-clock read refresh retains the original deadline and stops after one additional query', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t, [heat]); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } }); f.now(initial + 1000);
+  const action = assert.rejects(f.capture.publishHeating(['reduction']), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.now(initial + 1010);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: false });
+  for (const offset of [20, 50]) {
+    const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+    f.now(initial + 1000 + offset); f.capture.receive('invented-mini/status/switch:0', JSON.stringify({ id: 0, output: false }));
+    f.now(initial + 1005 + offset); f.capture.receive('invented-mini/events/rpc', JSON.stringify({ src: 'fixture-invented-mini', method: 'NotifyStatus',
+      params: { ts: (initial + 1000 + offset - 1) / 1000, 'switch:0': { output: true } } }));
+    f.now(initial + 1010 + offset); f.reply(get, { output: true });
+  }
+  const queries = f.publications.filter(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  assert.equal(queries.length, 2);
+  t.mock.timers.tick(100); await action;
+  assert.equal(queries[1].options.beforeWrite(), false, 'Expired refresh cannot dispatch after the original command ends');
+});
+
 test('keyed switch deltas preserve absent output, reject conflicting ids and retain native faults', t => {
   const f = fixture(t, [heat]); f.capture.setConnected(true);
   f.status({ 'switch:0': { output: false } });

@@ -122,6 +122,11 @@ including when wall clocks tie or move backward.
 Only admitted switch output advances the switch confirmation order. Ignored
 stale deltas and independent power, energy or temperature updates cannot
 supersede a current output readback or rewind those other fields.
+If mixed-clock feedback masks an otherwise matching command readback, the same
+command may obtain one additional correlated status query after that feedback
+commits. The original command deadline, identity and cancellation still apply;
+the ignored packet is not confirmation. Only the new native reply can confirm,
+and the actuator command is sent once.
 
 Generic MQTT and Gen1 Shelly switches, native H66 settings, and dehumidifier
 settings also establish their confirmation boundary at the first transport
