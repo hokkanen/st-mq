@@ -110,6 +110,13 @@ leases, restoration deadlines, authentication, pairing authority and snapshot
 acceptance retain their own exact checks. No global future-time grace grants
 control or extends a physical obligation.
 
+Native Shelly queries establish their evidence time and packet-order boundary
+when MQTT first writes the request, including after queued storage or outgoing-store
+work. Constructing a query does not establish dispatch. Reports processed before
+that write cannot supersede its correlated reply merely because they arrived
+after construction. Later contradictory feedback remains authoritative, and the
+query's original deadline is not extended by dispatch.
+
 Pairing browser display ages use the server's status clock advanced by monotonic
 elapsed time. Pairing snapshot presentation allows the existing 60-second cross-computer
 uncertainty and displays zero age within it, never a negative age. This is display

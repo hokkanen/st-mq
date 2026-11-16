@@ -203,10 +203,19 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
     if (purpose === 'write') device.writeOrder = id;
-    const request = { device, method, at: engine.clock(), purpose, commandId, retired: false,
+    const requestedAt = engine.clock(), deadline = performance.now() + readbackTimeoutMs;
+    const request = { device, method, at: requestedAt, requestedAt, order: id, purpose, commandId, retired: false,
       complete: (...args) => { if (!request.retired) { request.retired = true; complete?.(...args); } } };
     requests.set(id, request);
     try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false,
+      ...(purpose !== 'write' ? {
+        // Query construction can precede queued native reports and MQTT's
+        // outgoing-store write. Only actual dispatch establishes the read's
+        // evidence boundary; the original request deadline stays unchanged.
+        beforeWrite: () => !request.retired && connected && !closed && canControl()
+          && performance.now() < deadline,
+        onFirstWrite: () => { request.at = engine.clock(); request.order = ++sequence; },
+      } : {}),
       ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, onRecordingBlocked, beforePublish: () => {
         beforePublish?.(); requests.get(id).at = engine.clock();
       } } : {}) }); }
@@ -470,7 +479,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (!frame || typeof frame !== 'object') return true;
       if (topic === replyTopic) {
         const request = requests.get(frame.id);
-        if (!request || receivedAt - request.at > readbackTimeoutMs || frame.dst !== source) return true;
+        if (!request || receivedAt - request.requestedAt > readbackTimeoutMs || frame.dst !== source) return true;
         requests.delete(frame.id);
         if (frame.error) { unavailable(request.device, 'device-rpc-error'); reception.afterCommit(() => request.complete?.('error')); return true; }
         if (request.method !== 'Shelly.GetDeviceInfo' && (!request.device.identity || frame.src !== request.device.identity)) {
@@ -500,7 +509,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           // An unrelated partial notification must not discard this complete
           // snapshot. emit() compares each component's own evidence clock.
           if (frame.id < request.device.writeOrder || request.method === 'Switch.GetStatus'
-            && frame.id < request.device.observationOrder
+            && request.order < request.device.observationOrder
             && (request.purpose !== 'readback' || result.output !== request.device.state)) {
             reception.afterCommit(() => request.complete?.('superseded')); return true;
           }
@@ -510,16 +519,16 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         }
         request.device.lastAt = receivedAt; request.device.connected = request.device.available = true;
         if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at,
-          frame.id < request.device.observationOrder);
+          request.order < request.device.observationOrder);
         else if (request.method === 'Switch.GetStatus') {
-          const preserveObservation = frame.id < request.device.observationOrder;
+          const preserveObservation = request.order < request.device.observationOrder;
           switchStatus(request.device, result, request.at,
             { full: true, readback: request.purpose === 'readback', commandId: request.commandId, preserveObservation });
           if (!preserveObservation) customStatus(request.device, { [`switch:${request.device.switchId}`]: result }, request.at, true, false, `switch:${request.device.switchId}`);
         }
         else if (request.method === 'Switch.Set') reception.afterCommit(() => { send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
           { purpose: 'readback', commandId: request.commandId }).catch(() => {}); });
-        request.device.observationOrder = Math.max(request.device.observationOrder, frame.id);
+        request.device.observationOrder = Math.max(request.device.observationOrder, request.order);
         reception.afterCommit(() => request.complete?.('received')); return true;
       }
       let at = receivedAt;
@@ -564,7 +573,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       if (closed) return;
       drainPending(now);
       for (const energy of energies.values()) energy.tick(now);
-      for (const [id, request] of requests) if (now - request.at > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
+      for (const [id, request] of requests) if (now - request.requestedAt > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
       for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt >= maxAge(device)) unavailable(device, 'missing-report');
       if (connected) for (const device of devices) if (now - device.lastPollAt >= pollInterval(device)) {
         device.lastPollAt = now; identify(device); requestStatus(device).catch(() => {});

@@ -5,6 +5,9 @@ import { once } from 'node:events';
 import mqtt from 'mqtt';
 import mqttPacket from 'mqtt-packet';
 import { gateMqttPublications } from '../src/control/mqtt-publication-gate.js';
+import { createShellyCapture } from '../src/acquisition/shelly.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
+import { Store } from '../src/storage/store.js';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
@@ -35,8 +38,48 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
   return { client, gate, wire, streams, delayed, store, publish,
     get byteCount() { return bytes; },
     authority: value => { allowed = value; }, acknowledge: value => { acknowledge = value; },
+    holdStorage: value => { holdStore = value; },
     pendingCount: () => store._inflights.size };
 }
+
+test('installed MQTT.js: Shelly readback supersedes reports processed before its delayed outgoing-store write', async t => {
+  const f = await fixture(t); f.acknowledge(true);
+  const store = new Store(':memory:'), publications = [];
+  const initial = Date.parse('2026-09-10T12:00:00Z'); let now = initial;
+  const capture = createShellyCapture({ store, readbackTimeoutMs: 1000,
+    settings: equipmentConfiguration({ devices: [{ id: 'dhwr', kind: 'switch', generation: 3,
+      connection: 'shelly:invented-dhwr' }] }),
+    engine: { clock: () => now, ingest: row => store.observation(row) },
+    publish: (topic, payload, options) => new Promise((resolve, reject) => {
+      const { beforePublish, ...wireOptions } = options;
+      beforePublish?.(); publications.push(JSON.parse(payload));
+      f.client.publish(topic, payload, wireOptions, error => error ? reject(error) : resolve());
+    }) });
+  t.after(() => { capture.close(); store.close(); });
+  const request = method => publications.findLast(row => row.method === method);
+  const reply = (method, result) => {
+    const row = request(method);
+    capture.receive(row.src + '/rpc', JSON.stringify({ id: row.id, src: 'fixture-dhwr', dst: row.src, result }));
+  };
+  capture.setConnected(true);
+  reply('Shelly.GetDeviceInfo', { id: 'fixture-dhwr', gen: 3 });
+  reply('Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await flush();
+  f.holdStorage(true); now = initial + 1000;
+  const action = capture.publishDhwr(true);
+  assert.equal(f.delayed.length, 1); f.delayed.shift()(); await flush();
+  now = initial + 1010; reply('Switch.Set', { was_on: false });
+  assert.equal(f.delayed.length, 1, 'The readback has not reached the synthetic wire');
+  now = initial + 1020;
+  capture.receive('invented-dhwr/status/switch:0', JSON.stringify({ id: 0, output: false }));
+  now = initial + 1030;
+  capture.receive('invented-dhwr/events/rpc', JSON.stringify({ src: 'fixture-dhwr', method: 'NotifyStatus',
+    params: { ts: (initial + 1005) / 1000, 'switch:0': { output: true } } }));
+  now = initial + 1040; f.delayed.shift()(); await flush();
+  now = initial + 1050; reply('Switch.GetStatus', { id: 0, output: true });
+  assert.equal((await action).confirmed, true);
+  const reading = capture.status().devices[0].readings.dhwr_active;
+  assert.equal(reading.value, 1); assert.equal(reading.observedAt, initial + 1040);
+});
 
 test('installed MQTT.js: an asynchronous outgoing-store callback cannot dispatch after revocation', async t => {
   for (const topic of ['invented/switch/set', 'invented/gen1/relay/0/command', 'invented/gen2/rpc']) {

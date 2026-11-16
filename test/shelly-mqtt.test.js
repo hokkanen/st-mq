@@ -11,7 +11,7 @@ import { createCaravanEnergy } from '../src/acquisition/shelly-energy.js';
 import { Recorder } from '../src/storage/recorder.js';
 
 const HOUR = 3_600_000, initial = Date.parse('2026-09-10T12:00:00Z');
-function fixture(t, devices = [], initialAt = initial) {
+function fixture(t, devices = [], initialAt = initial, { deferReadback = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-shelly-'));
   const store = new Store(join(directory, 'test.sqlite'));
   let now = initialAt, authority = true;
@@ -19,7 +19,10 @@ function fixture(t, devices = [], initialAt = initial) {
   const engine = { clock: () => now, ingest: row => { observations.push(row); store.observation(row); }, rememberObservation: row => observations.push(row) };
   const settings = equipmentConfiguration({ devices });
   const capture = createShellyCapture({ engine, store, settings,
-    publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); },
+    publish: async (topic, payload, options) => {
+      publications.push({ topic, payload, options });
+      if (!deferReadback || JSON.parse(payload).method !== 'Switch.GetStatus') options.onFirstWrite?.();
+    },
     canControl: () => authority, readbackTimeoutMs: 100 });
   t.after(() => { capture.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   const identities = new Map();
@@ -250,6 +253,63 @@ for (const circulation of [false, true]) test(`${circulation ? 'Circulation' : '
   const reading = f.capture.status().devices[0].readings[circulation ? 'dhwr_active' : 'heat_savings_active'];
   assert.equal(reading.value, 1);
   assert.equal(reading.observedAt, initial + 30, 'Correlated readback preserves the newer native observation');
+});
+
+for (const circulation of [false, true]) test(`${circulation ? 'Circulation' : 'Heating'} readback orders evidence at dispatch after queued native reports`, async t => {
+  const device = circulation ? { id: 'dhwr', kind: 'switch', generation: 3, connection: 'shelly:invented-dhwr' } : heat;
+  const prefix = circulation ? 'invented-dhwr' : 'invented-mini';
+  const f = fixture(t, [device], initial, { deferReadback: true }); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } });
+  f.now(initial + 1000);
+  const action = (circulation ? f.capture.publishDhwr(true) : f.capture.publishHeating(['reduction']))
+    .then(result => ({ result }), error => ({ error }));
+  const set = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set');
+  f.now(initial + 1010); f.reply(set, { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  // An unsourced OFF status can arrive after the source clock on the ON
+  // notification. Both are processed while the readback waits to reach MQTT.
+  f.now(initial + 1020);
+  f.capture.receive(`${prefix}/status/switch:0`, JSON.stringify({ id: 0, output: false }));
+  f.now(initial + 1030);
+  f.capture.receive(`${prefix}/events/rpc`, JSON.stringify({ src: `fixture-${prefix}`, method: 'NotifyStatus',
+    params: { ts: (initial + 1005) / 1000, 'switch:0': { output: true } } }));
+  f.now(initial + 1040); get.options.onFirstWrite?.();
+  f.now(initial + 1050); f.reply(get, { output: true });
+  const outcome = await action;
+  assert.equal(outcome.error, undefined, 'A read dispatched after both reports must supply current correlated evidence');
+  assert.equal(outcome.result.confirmed ?? outcome.result.sent, true);
+  const reading = f.capture.status().devices[0].readings[circulation ? 'dhwr_active' : 'heat_savings_active'];
+  assert.equal(reading.value, 1); assert.equal(reading.observedAt, initial + 1040);
+});
+
+test('a delayed read dispatch preserves contradictory feedback received after its first write', async t => {
+  const f = fixture(t, [heat], initial, { deferReadback: true }); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } }); f.now(initial + 1000);
+  const action = assert.rejects(f.capture.publishHeating(['reduction']), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.now(initial + 1010);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  f.now(initial + 1020); get.options.onFirstWrite();
+  f.now(initial + 1030);
+  f.capture.receive('invented-mini/status/switch:0', JSON.stringify({ id: 0, output: false }));
+  f.now(initial + 1040); f.reply(get, { output: true });
+  await action;
+  assert.equal(f.capture.status().devices[0].readings.heat_savings_active.value, 0);
+});
+
+test('dispatching a delayed read neither renews its original deadline nor permits stale byte writes', async t => {
+  let elapsed = 0; t.mock.method(performance, 'now', () => elapsed);
+  const f = fixture(t, [heat], initial, { deferReadback: true }); f.capture.setConnected(true);
+  f.status({ 'switch:0': { output: false } });
+  const action = assert.rejects(f.capture.publishHeating(['reduction']), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.now(initial + 10);
+  f.reply(f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.Set'), { was_on: false });
+  const get = f.publications.findLast(row => JSON.parse(row.payload).method === 'Switch.GetStatus');
+  elapsed = 99; f.now(initial + 100); assert.equal(get.options.beforeWrite(), true); get.options.onFirstWrite();
+  elapsed = 100; assert.equal(get.options.beforeWrite(), false);
+  f.now(initial + 111); f.reply(get, { output: true });
+  await action;
+  assert.equal(f.capture.status().devices[0].readings.heat_savings_active.value, 0);
 });
 
 test('keyed switch deltas preserve absent output, reject conflicting ids and retain native faults', t => {
