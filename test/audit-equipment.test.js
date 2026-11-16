@@ -13,7 +13,7 @@ function fixture(t, devices = [relay]) {
   const store = new Store(':memory:'); let now = START;
   const sent = [], engine = { clock: () => now, ingest: row => store.observation(row) };
   const capture = createEquipmentCapture({ store, engine, settings: equipmentConfiguration({ devices }),
-    readbackTimeoutMs: 100, publish: async (topic, payload, options) => { options.beforePublish?.(); sent.push({ topic, payload, options }); } });
+    readbackTimeoutMs: 100, publish: async (topic, payload, options) => { options.beforePublish?.(); options.onFirstWrite?.(); sent.push({ topic, payload, options }); } });
   const find = method => sent.findLast(row => row.payload.startsWith('{') && JSON.parse(row.payload).method === method);
   const reply = (publication, result, extra = {}) => {
     const request = JSON.parse(publication.payload);

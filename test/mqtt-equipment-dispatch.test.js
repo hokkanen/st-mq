@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { withMqttWriteBoundary } from './helpers/mqtt-write-boundary.js';
 
 const START = Date.parse('2026-10-10T10:00:00Z');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -41,6 +42,7 @@ async function fixture(t, { timeoutMs = 1000, switchState = false, doorState = '
     else if (publicationMode === 'acknowledge') done();
   };
   client.end = (force, options, done) => done();
+  withMqttWriteBoundary(client);
   const reader = await startMqtt({ engine, store,
     config: { h66: { readbackTimeoutMs: timeoutMs }, connections: { equipment: settings, mqtt: { address: 'mqtt://fixture.invalid' } } },
     connect: () => client, canControl: () => authority, reportStorageFailure: () => {} });

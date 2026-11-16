@@ -6,6 +6,7 @@ import mqtt from 'mqtt';
 import mqttPacket from 'mqtt-packet';
 import { gateMqttPublications } from '../src/control/mqtt-publication-gate.js';
 import { createShellyCapture } from '../src/acquisition/shelly.js';
+import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { Store } from '../src/storage/store.js';
 
@@ -25,7 +26,7 @@ async function fixture(t, { holdStore = false, timeoutMs = 1000 } = {}) {
       if (packet.cmd === 'connect') queueMicrotask(() => stream.push(mqttPacket.generate({ cmd: 'connack', returnCode: 0, sessionPresent: false })));
       if (packet.cmd === 'publish') {
         wire.push({ topic: packet.topic, allowed });
-        if (acknowledge) queueMicrotask(() => stream.push(mqttPacket.generate({ cmd: 'puback', messageId: packet.messageId })));
+        if (acknowledge && packet.qos === 1) queueMicrotask(() => stream.push(mqttPacket.generate({ cmd: 'puback', messageId: packet.messageId })));
       }
     });
     return stream;
@@ -79,6 +80,41 @@ test('installed MQTT.js: Shelly readback supersedes reports processed before its
   assert.equal((await action).confirmed, true);
   const reading = capture.status().devices[0].readings.dhwr_active;
   assert.equal(reading.value, 1); assert.equal(reading.observedAt, initial + 1040);
+});
+
+for (const native of [false, true]) for (const queued of [false, true]) test(`installed MQTT.js: ${native ? 'Gen1 Shelly' : 'generic MQTT'} switch cannot confirm from ${queued ? 'queued earlier' : 'pre-write'} feedback`, async t => {
+  const f = await fixture(t); f.acknowledge(true);
+  const store = new Store(':memory:'); let now = Date.parse('2026-09-10T12:00:00Z'), elapsed = 0;
+  const initial = now, topic = native ? 'shellies/invented-switch/relay/0' : 'invented/state';
+  const device = native ? { id: 'relay', kind: 'switch', generation: 1, connection: 'shelly:shellies/invented-switch', switch_control: true }
+    : { id: 'relay', kind: 'switch', connection: 'mqtt:invented/state', switch_control: true,
+      mqtt: { command_topic: 'invented/command', on_payload: 'ON', off_payload: 'OFF' } };
+  const capture = createEquipmentCapture({ store, monotonicClock: () => elapsed, readbackTimeoutMs: 1000,
+    settings: equipmentConfiguration({ devices: [device] }), engine: { clock: () => now, ingest: row => store.observation(row) },
+    publish: (topic, payload, options) => new Promise((resolve, reject) => {
+      const { beforePublish, ...wireOptions } = options; beforePublish?.();
+      f.client.publish(topic, payload, wireOptions, error => error ? reject(error) : resolve());
+    }) });
+  t.after(() => { capture.close(); store.close(); });
+  capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
+  capture.receive(topic, 'off', {}, now, null, null, elapsed); await flush();
+  f.holdStorage(true);
+  let finished = false;
+  const action = capture.setSwitch('relay', true).then(value => { finished = true; return { value }; }, error => ({ error }));
+  await flush();
+  assert.equal(f.delayed.length, 1);
+  const earlier = () => capture.receive(topic, 'on', {}, initial + 1, null, null, 5);
+  now = initial + 1; elapsed = 5; if (!queued) earlier();
+  const before = f.wire.length;
+  elapsed = 10; f.delayed.shift()(); await flush();
+  if (!queued) {
+    assert.ok((await action).error, 'Changed pre-write state must cancel the unsent request');
+    assert.equal(f.wire.length, before); return;
+  }
+  elapsed = 20; if (queued) earlier(); await flush();
+  assert.equal(finished, false, 'Only post-dispatch transport feedback may confirm a switch');
+  now = initial + 2; elapsed = 30; capture.receive(topic, 'on', {}, now, null, null, elapsed);
+  assert.equal((await action).value.confirmed, true);
 });
 
 test('installed MQTT.js: an asynchronous outgoing-store callback cannot dispatch after revocation', async t => {

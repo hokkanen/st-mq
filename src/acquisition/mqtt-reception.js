@@ -10,7 +10,7 @@ export function createMqttReception({ store, engine, admission, devices, meters,
   const copiedFields = ['readings', 'dehumidifierState', 'dehumidifierReport', 'temperatureGuard'];
   const operationFields = ['coverOperation', 'dehumidifierOperation'];
   const scalarFields = ['connected', 'available', 'lastAt', 'lastPollAt', 'state', 'identity', 'identityPending',
-    'observationOrder', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
+    'observationOrder', 'observationReceivedAt', 'observationMonotonicAt', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
     'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation', 'dehumidifierHistoryAfter'];
   return {
     // Connection/subscription withdrawal happens outside SQLite admission. It

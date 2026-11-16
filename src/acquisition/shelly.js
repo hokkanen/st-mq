@@ -2,7 +2,7 @@ import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
-import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
+import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, receiptAfterDispatch } from '../domain/time-evidence.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
@@ -42,11 +42,12 @@ const protectsGarage = device => definitions(device).some(row => ['garage_temper
 /** Native protocol is selected by configuration; no host detection or fallback.
  * Modern command readbacks retain the exact command identity through both RPCs. */
 export function createShellyCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000, brokerIdentity = null, topicGroups = [],
-  onSourceTimeChanged = null }) {
+  onSourceTimeChanged = null, monotonicClock = () => performance.now() }) {
   const devices = settings.devices.filter(config => config.enabled !== false).map(config => ({ ...config,
     customReadings: config.readings, connected: false,
     available: false, lastAt: null, lastPollAt: -Infinity, readings: {}, state: null, identity: null, identityPending: null,
-    observationOrder: 0, writeOrder: 0, waiters: new Set(), checks: new Set(), check: null }));
+    observationOrder: 0, observationReceivedAt: null, observationMonotonicAt: null,
+    writeOrder: 0, waiters: new Set(), checks: new Set(), check: null }));
   const feedbackRecorder = devices.some(device => device.id === 'dhwr')
     ? engine.recorder ?? new Recorder(store, { clock: engine.clock }) : null;
   const admission = createMqttAdmission();
@@ -54,12 +55,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   let sequence = 0, commandSequence = 0, connected = false, closed = false, heatingBusy = false;
   const energies = new Map();
   const reception = createMqttReception({ store, engine, admission, devices, meters: energies, requests });
-  let receptionAt = null;
+  let receptionAt = null, receptionMonotonicAt = null;
   let admittedReceptionAt, pendingSequence = 0;
   const receivedNow = () => receptionAt ?? engine.clock();
   const pendingFor = device => pendingTime.some(row => row.device === device);
   const pendingAvailability = device => pendingTime.some(row => row.device === device && row.blocksAvailability);
-  const pendingTime = createSourceTimePending({ clock: engine.clock, ordered: row => row.device.id,
+  const pendingTime = createSourceTimePending({ clock: engine.clock, monotonicClock, ordered: row => row.device.id,
     dispatch: action => {
       const apply = () => (store.transaction ?? (fn => fn())).call(store, () => { const checkpoint = pendingTime.checkpoint();
         store.afterRollback?.(() => pendingTime.restore(checkpoint)); return action(); });
@@ -71,11 +72,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         onSourceTimeChanged?.(engine.clock());
       }
     },
-    onReady({ topic, body, packet }, receivedAt, admittedAt) {
+    onReady({ topic, body, packet, receivedMonotonicAt }, receivedAt, admittedAt) {
       if (closed || !connected) return;
       const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
       try {
-        api.receive(topic, body, packet, receivedAt);
+        api.receive(topic, body, packet, receivedAt, null, receivedMonotonicAt);
         // The deferred meter and its dependent recording gate publish together.
         // This runs inside the queue's writer transaction, including rollback.
         onSourceTimeChanged?.(admittedAt);
@@ -199,12 +200,13 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     } finally { receptionAt = before; }
   };
   const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null,
-    beforePublish, signal, recordingDeadlineExpired, onRecordingBlocked } = {}) => {
+    beforePublish, onFirstWrite, signal, recordingDeadlineExpired, onRecordingBlocked } = {}) => {
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
     const id = ++sequence;
     if (purpose === 'write') device.writeOrder = id;
-    const requestedAt = engine.clock(), deadline = performance.now() + readbackTimeoutMs;
+    const requestedAt = engine.clock(), deadline = monotonicClock() + readbackTimeoutMs;
     const request = { device, method, at: requestedAt, requestedAt, order: id, purpose, commandId, retired: false,
+      dispatchedMonotonicAt: null,
       complete: (...args) => { if (!request.retired) { request.retired = true; complete?.(...args); } } };
     requests.set(id, request);
     try { await publish(`${device.prefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 1, retain: false,
@@ -213,15 +215,20 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         // outgoing-store write. Only actual dispatch establishes the read's
         // evidence boundary; the original request deadline stays unchanged.
         beforeWrite: () => !request.retired && connected && !closed && canControl()
-          && performance.now() < deadline,
-        onFirstWrite: () => { request.at = engine.clock(); request.order = ++sequence; },
+          && monotonicClock() < deadline,
+        onFirstWrite: () => { request.at = engine.clock(); request.order = ++sequence; request.dispatchedMonotonicAt = monotonicClock(); },
       } : {}),
-      ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, onRecordingBlocked, beforePublish: () => {
-        beforePublish?.(); requests.get(id).at = engine.clock();
-      } } : {}) }); }
+      ...(purpose === 'write' ? { noReplay: true, signal, recordingContext: 'switch-command', recordingDeadlineExpired, onRecordingBlocked,
+        beforePublish, beforeWrite: () => { beforePublish?.(); return true; },
+        onFirstWrite: () => { request.at = engine.clock(); onFirstWrite?.(); } } : {}) }); }
     catch (cause) { request.retired = true; requests.delete(id); throw heatingErrorCode(cause?.code) ? cause : error('publication failed'); }
     return id;
   };
+  // Writer/source-clock admission can process an earlier receipt after the
+  // query reaches MQTT. Processing order alone cannot establish a newer report.
+  const superseded = request => request.order < request.device.observationOrder
+    && receiptAfterDispatch({ receivedAt: request.device.observationReceivedAt, dispatchedAt: request.at,
+      receivedMonotonicAt: request.device.observationMonotonicAt, dispatchedMonotonicAt: request.dispatchedMonotonicAt });
   const requestStatus = device => device.generation === 1
     ? publish(`${device.prefix}/command`, 'update', { qos: 0, retain: false }) : send(device, 'Shelly.GetStatus');
   const clearIdentity = device => {
@@ -263,7 +270,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (device.generation === 1 && !older) device.observationOrder = ++sequence;
         if (readback) for (const waiter of [...device.waiters])
           if (waiter.at <= at && waiter.output === output && (device.generation === 1
-            ? waiter.dispatched && device.observationOrder > waiter.revision && receivedNow() >= waiter.at
+            ? waiter.dispatched && device.observationOrder > waiter.revision
+              && receiptAfterDispatch({ receivedAt: receivedNow(), dispatchedAt: waiter.at,
+                receivedMonotonicAt: receptionMonotonicAt, dispatchedMonotonicAt: waiter.dispatchedMonotonicAt })
             : waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
       }
     } else if (full) { device.state = null; emit(device, signal, null, 'state', at, ['missing']); }
@@ -390,16 +399,20 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (performance.now() >= deadline) throw error('relay readback timed out; delivery unconfirmed');
         if (device.identity !== identity) throw error('device identity unavailable');
         if (device.id === 'dhwr' && output && !available(device, engine.clock())) throw error('circulation feedback unavailable');
-        validate(); waiter.at = engine.clock(); waiter.revision = device.observationOrder; waiter.dispatched = true;
+        validate();
+      };
+      const onFirstWrite = () => {
+        waiter.at = engine.clock(); waiter.revision = device.observationOrder;
+        waiter.dispatched = true; waiter.dispatchedMonotonicAt = monotonicClock();
       };
       const action = device.generation === 1
         // Gen1 feedback has no command identity. Capture the state boundary only
         // after storage admission, then require a newly committed live report.
         ? publish(`${device.prefix}/relay/${device.switchId}/command`, output ? 'on' : 'off',
-          { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+          { qos: 1, retain: false, noReplay: true, beforePublish, beforeWrite: () => { beforePublish(); return true; }, onFirstWrite, signal: cancellation.signal,
             recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired, onRecordingBlocked }).then(() => requestStatus(device))
         : send(device, 'Switch.Set', { id: device.switchId, on: output },
-          { purpose: 'write', commandId: waiter.commandId, beforePublish, signal: cancellation.signal,
+          { purpose: 'write', commandId: waiter.commandId, beforePublish, onFirstWrite, signal: cancellation.signal,
             recordingDeadlineExpired: () => recordingDeadlineExpired, onRecordingBlocked });
       action.catch(cause => finish(heatingErrorCode(cause?.code) ? cause : error('relay command failed; delivery unconfirmed')));
     });
@@ -509,7 +522,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           // An unrelated partial notification must not discard this complete
           // snapshot. emit() compares each component's own evidence clock.
           if (frame.id < request.device.writeOrder || request.method === 'Switch.GetStatus'
-            && request.order < request.device.observationOrder
+            && superseded(request)
             && (request.purpose !== 'readback' || result.output !== request.device.state)) {
             reception.afterCommit(() => request.complete?.('superseded')); return true;
           }
@@ -519,16 +532,20 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         }
         request.device.lastAt = receivedAt; request.device.connected = request.device.available = true;
         if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at,
-          request.order < request.device.observationOrder);
+          superseded(request));
         else if (request.method === 'Switch.GetStatus') {
-          const preserveObservation = request.order < request.device.observationOrder;
+          const preserveObservation = superseded(request);
           switchStatus(request.device, result, request.at,
             { full: true, readback: request.purpose === 'readback', commandId: request.commandId, preserveObservation });
           if (!preserveObservation) customStatus(request.device, { [`switch:${request.device.switchId}`]: result }, request.at, true, false, `switch:${request.device.switchId}`);
         }
         else if (request.method === 'Switch.Set') reception.afterCommit(() => { send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
           { purpose: 'readback', commandId: request.commandId }).catch(() => {}); });
-        request.device.observationOrder = Math.max(request.device.observationOrder, request.order);
+        if (request.order >= request.device.observationOrder) {
+          request.device.observationOrder = request.order;
+          request.device.observationReceivedAt = request.at;
+          request.device.observationMonotonicAt = request.dispatchedMonotonicAt;
+        }
         reception.afterCommit(() => request.complete?.('received')); return true;
       }
       let at = receivedAt;
@@ -542,8 +559,9 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           if ((timing.status === 'pending' || timing.status === 'ready' && pendingFor(device)) && admittedReceptionAt === undefined) {
             const queuedSourceTime = at;
             const blocksAvailability = !energyOnlyNotification(device, frame);
+            const receivedMonotonicAt = receptionMonotonicAt;
             reception.afterCommit(() => pendingTime.defer(++pendingSequence,
-              { device, topic, body, packet, blocksAvailability }, { sourceTime: queuedSourceTime, receivedAt }));
+              { device, topic, body, packet, blocksAvailability, receivedMonotonicAt }, { sourceTime: queuedSourceTime, receivedAt }));
             at = null;
           }
           // Reject this source clock without erasing unrelated, still-bounded
@@ -567,6 +585,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       else if (device.customReadings.some(mapping => suffix === `status/${mapping.component}`)) customStatus(device, { [suffix.slice(7)]: frame }, at, false);
       else return true;
       device.observationOrder = ++sequence;
+      device.observationReceivedAt = receivedAt; device.observationMonotonicAt = receptionMonotonicAt;
       device.lastAt = receivedAt; device.connected = device.available = true; return true;
     },
     tick(now = engine.clock()) {
@@ -636,11 +655,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     close() { api.setConnected(false); closed = true; requests.clear(); },
   };
   const receive = api.receive;
-  api.receive = (topic, payload, packet = {}, receivedAt = engine.clock(), onAccepted = null) => {
+  api.receive = (topic, payload, packet = {}, receivedAt = engine.clock(), onAccepted = null, receivedMonotonicAt = null) => {
     if (topic !== replyTopic && !devices.some(device => topic.startsWith(`${device.prefix}/`))) return false;
-    const before = receptionAt; receptionAt = receivedAt;
+    const before = receptionAt, beforeMonotonic = receptionMonotonicAt; receptionAt = receivedAt;
+    receptionMonotonicAt = scalar(receivedMonotonicAt) && receivedMonotonicAt >= 0 ? receivedMonotonicAt : null;
     try { return reception.run(() => receive(topic, payload, packet, receivedAt), { onAccepted }); }
-    finally { receptionAt = before; }
+    finally { receptionAt = before; receptionMonotonicAt = beforeMonotonic; }
   };
   return api;
 }

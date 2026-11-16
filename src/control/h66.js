@@ -3,6 +3,7 @@ import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { H66_SETTING_LIMITS, REDUCED_DHW_TARGETS, validateH66ControlState } from '../domain/heating-control-state.js';
 import { createWriteScope } from '../storage/write-scope.js';
 import { createControlAttempt } from '../storage/control-attempt.js';
+import { receiptAfterDispatch } from '../domain/time-evidence.js';
 
 const HOUR = 3_600_000;
 const MAX_PAUSE_MS = 366 * 24 * HOUR;
@@ -67,6 +68,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const committedRevisions = new Map();
   let compressorState = null;
   const readings = new Map(), pending = new Map();
+  const nativeDispatches = new Map();
+  let manualDispatch = null;
   const writes = createWriteScope({ closeTimeoutMs: closeWriteTimeoutMs,
     runWrite: (operation, options) => store.runWrite ? store.runWrite(operation, options) : Promise.resolve().then(operation) });
   const persist = () => { validateH66ControlState(state); store.setState(key, copy(state)); };
@@ -96,7 +99,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const baselineRestorationConfirmed = (index, reading, obligation) => equal(reading.value, obligation.baseline)
     && reading.revision <= (committedRevisions.get(index) ?? -1)
     && (obligation.confirmed || obligation.restoring && Number.isFinite(obligation.dispatchedAt)
-      && reading.revision > obligation.dispatchedRevision && reading.receivedAt >= obligation.dispatchedAt);
+      && reading.revision > obligation.dispatchedRevision
+      && receiptAfterDispatch({ receivedAt: reading.receivedAt, dispatchedAt: obligation.dispatchedAt,
+        receivedMonotonicAt: reading.receivedMonotonicAt,
+        dispatchedMonotonicAt: nativeDispatches.get(index)?.at === obligation.dispatchedAt
+          && nativeDispatches.get(index)?.revision === obligation.dispatchedRevision
+          && nativeDispatches.get(index)?.connectionGeneration === connectionGeneration ? nativeDispatches.get(index).mono : null }));
   function liveTariff() {
     let value;
     try { value = tariffFeedback(); } catch { return null; }
@@ -341,7 +349,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       const finish = (error, reading) => {
         if (settled) return;
         settled = true; clearTimeout(timer); pending.delete(index); cancellation.abort();
-        if (error) { error.dispatchedAt = dispatchedAt; error.dispatchedRevision = waiter.revision; reject(error); }
+        if (error) { error.dispatchedAt = dispatchedAt; error.dispatchedRevision = waiter.revision;
+          error.dispatchedMonotonicAt = waiter.afterMonotonic; reject(error); }
         else resolve({ ...reading, dispatchedAt });
       };
       const expire = (activationExpired = false) => {
@@ -366,6 +375,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         if (settled || dispatchedAt !== null) return;
         dispatchedAt = clock();
         waiter.after = dispatchedAt; waiter.revision = revision;
+        waiter.afterMonotonic = monotonicClock();
+        nativeDispatches.set(index, { at: dispatchedAt, mono: waiter.afterMonotonic, revision: waiter.revision, connectionGeneration });
+        if (state.lastManual?.status === 'pending' && state.lastManual.register === index && equal(state.lastManual.value, value))
+          manualDispatch = { register: index, requestedAt: state.lastManual.at, dispatchedAt,
+            dispatchedMonotonicAt: waiter.afterMonotonic, connectionGeneration };
         readbackEnd = Math.min(dispatchedAt + confirmationMs, activationEnd);
         readbackElapsedEnd = monotonicClock() + Math.max(0, readbackEnd - dispatchedAt);
         clearTimeout(timer);
@@ -646,7 +660,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           const reading = current(register);
           if (Number.isFinite(error.dispatchedAt) && reading && reading.revision > error.dispatchedRevision
             && reading.revision <= (committedRevisions.get(register) ?? -1)
-            && reading.receivedAt >= (error.dispatchedAt ?? requested.at) && equal(reading.value, value))
+            && receiptAfterDispatch({ receivedAt: reading.receivedAt, dispatchedAt: error.dispatchedAt,
+              receivedMonotonicAt: reading.receivedMonotonicAt, dispatchedMonotonicAt: error.dispatchedMonotonicAt }) && equal(reading.value, value))
             settleNative(state.lastManual, reading);
         });
         if (state.lastManual.confirmed) return copy(state.lastManual);
@@ -748,14 +763,15 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     committedRevisions.clear(); for (const [index, value] of checkpoint.committedRevisions) committedRevisions.set(index, value);
     readings.clear(); for (const [index, reading] of checkpoint.readings) readings.set(index, reading);
   }
-  function ingest(reading, { afterCommit = effect => effect() } = {}) {
+  function ingest(reading, { afterCommit = effect => effect(), receivedMonotonicAt = null } = {}) {
     if (closed || !reading || reading.deviceId !== deviceId || !H66_REGISTERS[reading.register] || reading.duplicate) return;
     const previous = readings.get(reading.register);
     if (reading.usableForControl && previous?.usableForControl && previous.receivedAt <= clock() && reading.receivedAt < previous.receivedAt) return;
     const beforeContext = state.tariffRoom;
     observeTariff();
     if (reading.register === '1A01') trackCompressor(reading);
-    reading = { ...reading, revision: ++revision, connectionGeneration };
+    reading = { ...reading, revision: ++revision, connectionGeneration,
+      ...(Number.isFinite(receivedMonotonicAt) ? { receivedMonotonicAt } : {}) };
     const prior = readings.get(reading.register);
     if (reading.usableForControl || !prior?.usableForControl) readings.set(reading.register, copy(reading));
     if (reading.usableForControl) lastPublicationAt = reading.receivedAt;
@@ -767,14 +783,18 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (reading.usableForControl && state.lastManual?.status === 'unconfirmed'
       && state.lastManual.sent !== false
       && state.lastManual.register === reading.register
-      && reading.receivedAt >= (state.lastManual.dispatchedAt ?? state.lastManual.at)
+      && receiptAfterDispatch({ receivedAt: reading.receivedAt, dispatchedAt: state.lastManual.dispatchedAt ?? state.lastManual.at,
+        receivedMonotonicAt, dispatchedMonotonicAt: manualDispatch?.register === state.lastManual.register
+          && manualDispatch.requestedAt === state.lastManual.at && manualDispatch.dispatchedAt === state.lastManual.dispatchedAt
+          && manualDispatch.connectionGeneration === connectionGeneration ? manualDispatch.dispatchedMonotonicAt : null })
       && equal(reading.value, state.lastManual.value)) {
       settleNative(state.lastManual, reading);
       persist();
     }
     const waiter = pending.get(reading.register);
     if (waiter && reading.usableForControl && reading.revision > waiter.revision
-      && reading.receivedAt >= waiter.after && equal(reading.value, waiter.value)) {
+      && receiptAfterDispatch({ receivedAt: reading.receivedAt, dispatchedAt: waiter.after,
+        receivedMonotonicAt, dispatchedMonotonicAt: waiter.afterMonotonic }) && equal(reading.value, waiter.value)) {
       afterCommit(() => waiter.finish(null, reading));
       return;
     }

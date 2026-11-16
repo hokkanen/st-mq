@@ -38,6 +38,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
       if (topic !== 'fixture/dryer/set') return;
       await options.preparePublish?.();
       options.beforePublish?.();
+      options.onFirstWrite?.();
       const command = JSON.parse(payload); commands.push(command);
       if (failOn && command.power === 'on') throw new Error('Synthetic publication failure');
     } });
@@ -62,6 +63,7 @@ function fixture(t, { failOn = false, genericMeter = false } = {}) {
   meterConnect();
   warming = true;
   const f = { capture, commands, store, recorder, now: () => now, advance: ms => { now += ms; elapsed += Math.max(0, ms); },
+    elapse: ms => { elapsed += ms; },
     recording: () => recorder.status(now).exactParameters.find(row => row.signal === 'caravan_dehumidifier_state'),
     native: () => capture.status().devices.find(row => row.id === 'caravan'),
     counter: (lead = 578) => capture.receive('fixture/caravan/events/rpc', JSON.stringify({
@@ -315,10 +317,9 @@ test('configuration rejects a recording-disabled Caravan dehumidifier', () => {
 });
 
 test('a rejected required native wait breaks qualification before any subsequent fresh meter report', async t => {
-  let elapsed = 0; t.mock.method(performance, 'now', () => elapsed);
   const f = fixture(t); await f.qualifyManaged();
   f.advance(1000); f.meter(105, 40); await settle();
-  elapsed = 5000;
+  f.elapse(5000);
   await automaticallyAdmit(() => f.native().readings.caravan_power.value === null);
   assert.equal(f.state().qualified, false); assert.equal(f.state().recording, false);
   assert.equal(f.recording().freshness.status, 'unavailable');

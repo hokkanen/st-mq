@@ -15,6 +15,7 @@ import { loadConfig, validateSettings } from '../src/app/config.js';
 import { start } from '../src/main.js';
 import { CONTROL_SCOPE } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
+import { withMqttWriteBoundary } from './helpers/mqtt-write-boundary.js';
 import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
 import { EQUIPMENT_COMMAND_ERRORS } from '../src/domain/equipment-command-errors.js';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -251,7 +252,7 @@ function brokerFixture(beforeReply) {
       if (holdReadbacks && frame.method === 'Switch.GetStatus') heldReadbacks.push(respond);
       else respond();
     };
-    return client;
+    return withMqttWriteBoundary(client);
   };
   return { connect, clients, events, outputs, identities, hardwareIds, failOff(value) { rejectOff = value; },
     holdReadbacks(value) { holdReadbacks = value; if (!value) for (const respond of heldReadbacks.splice(0)) respond(); },

@@ -63,9 +63,9 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
   let controller;
-  const feed = (index, value = native[index], extra = {}) => controller.ingest(decoder.decode({
+  const feed = (index, value = native[index], extra = {}, receipt = {}) => controller.ingest(decoder.decode({
     topic: `${deviceId}/HP/${index}`, payload: String(value), receivedAt: now, ...extra,
-  }));
+  }), receipt);
   controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed, closeWriteTimeoutMs,
     canAttributeStorageBlock, tariffFeedback,
     requestSnapshot: async () => { if (snapshot) await snapshot({ feed, native }); else if (controller.status().preheatPreparation) for (const index of Object.keys(native)) feed(index); },
@@ -969,6 +969,39 @@ test('an uncertain native edit preserves an indefinite paused Reduced choice and
   await r.controller.restore();
   assert.equal(r.native['0212'], 46, 'The confirmed native edit becomes the new baseline.');
   assert.equal(r.native['2201'], 1);
+});
+
+test('H66 cannot confirm from a queued pre-write receipt with the same wall clock', async t => {
+  let release;
+  const r = rig({ settings: { readbackTimeoutMs: 500 }, behavior: () => 'silent',
+    beforePublication: () => new Promise(resolve => { release = resolve; }) });
+  t.after(() => r.controller.close());
+  let finished = false;
+  const action = r.controller.setSetting({ register: '0203', value: 21 }).then(result => { finished = true; return result; });
+  await nextTurn(); r.elapse(10); release(); await nextTurn();
+  r.feed('0203', 21, {}, { receivedMonotonicAt: 5 }); await nextTurn();
+  assert.equal(finished, false, 'Writer admission cannot make an earlier receipt confirm a later H66 command');
+  r.elapse(10); r.feed('0203', 21, {}, { receivedMonotonicAt: 20 });
+  assert.equal((await action).confirmed, true);
+});
+
+test('an H66 timeout cannot promote queued pre-write feedback into late confirmation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let release;
+  const r = rig({ settings: { readbackTimeoutMs: 500 }, behavior: () => 'silent',
+    beforePublication: () => new Promise(resolve => { release = resolve; }) });
+  t.after(() => r.controller.close());
+  const action = r.controller.setSetting({ register: '0203', value: 21 });
+  action.catch(() => {});
+  await nextTurn(); r.elapse(10); release(); await nextTurn();
+  r.feed('0203', 21, {}, { receivedMonotonicAt: 5 });
+  t.mock.timers.tick(500);
+  await assert.rejects(action, { code: 'H66_READBACK_TIMEOUT' });
+  assert.equal(r.controller.status().lastManual.status, 'unconfirmed');
+  r.feed('0203', 21, {}, { receivedMonotonicAt: 5 });
+  assert.equal(r.controller.status().lastManual.status, 'unconfirmed');
+  r.elapse(10); r.feed('0203', 21, {}, { receivedMonotonicAt: 20 });
+  assert.equal(r.controller.status().lastManual.confirmed, true);
 });
 
 test('H66 waits for admitted MQTT publication and only subsequent readback confirms it', async t => {

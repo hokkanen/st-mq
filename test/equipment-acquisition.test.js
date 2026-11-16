@@ -69,7 +69,7 @@ function fixture(t, rows, options = {}) {
   const settings = equipmentConfiguration({ devices: rows });
   const capture = createEquipmentCapture({ engine, store, settings, canControl: () => authority,
     brokerIdentity: { address: 'mqtt://example.invalid', username: 'invented' },
-    publish: async (topic, payload, options) => { options.beforePublish?.(); publications.push({ topic, payload, options }); }, readbackTimeoutMs: 50, ...options });
+    publish: async (topic, payload, options) => { options.beforePublish?.(); options.onFirstWrite?.(); publications.push({ topic, payload, options }); }, readbackTimeoutMs: 50, ...options });
   t.after(async () => { for (const cleanup of cleanups) await cleanup(); capture.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
   const identities = new Map();
   const reply = (publication, result) => {
@@ -338,7 +338,8 @@ test('generic switch requires explicit publication plus fresh state, rejects ret
   let settled = false; pending.then(() => { settled = true; });
   f.capture.receive('invented/state', 'on', { retain: true }); await Promise.resolve(); assert.equal(settled, false);
   f.now(initial + 1); f.capture.receive('invented/state', 'on'); assert.equal((await pending).confirmed, true);
-  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, ...flags } = f.publications[0].options;
+  const { beforePublish, beforeWrite, onFirstWrite, signal, recordingContext, recordingDeadlineExpired, ...flags } = f.publications[0].options;
+  assert.equal(typeof beforeWrite, 'function'); assert.equal(typeof onFirstWrite, 'function');
   assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
   assert.equal(recordingContext, 'switch-command');
   assert.equal(typeof recordingDeadlineExpired, 'function'); assert.equal(recordingDeadlineExpired(), false);

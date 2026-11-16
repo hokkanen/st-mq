@@ -8,6 +8,7 @@ import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { withMqttWriteBoundary } from './helpers/mqtt-write-boundary.js';
 import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
 import { classifySourceTime } from '../src/domain/time-evidence.js';
 const START = Date.parse('2026-10-09T10:00:00Z'), IDENTITY = 'a'.repeat(64), METER = 'invented-caravan-meter';
@@ -35,6 +36,7 @@ async function mqttFixture(t, { writer = false } = {}) {
     done();
   };
   client.end = (_force, _options, done) => done();
+  withMqttWriteBoundary(client);
   const reader = await startMqtt({ monotonicClock: () => now - START + CARAVAN_NATIVE_RESTART_DELAY_MS, store,
     engine: { clock: () => now, recorder, ingest: row => recorder.record(row), rememberObservation() {} },
     config: { connections: { mqtt: { address: 'mqtt://synthetic.invalid' }, equipment: settings } },

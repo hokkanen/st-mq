@@ -843,7 +843,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             sensorMeasuredAt: decoded.sensorMeasuredAt, cached: decoded.cached,
             retained: decoded.retained, publicationMayUseGatewayCache: decoded.sourceAt == null,
             snapshotRequestedAt } });
-        h66.ingest(decoded, { afterCommit: effect => effects.push(effect) });
+        h66.ingest(decoded, { afterCommit: effect => effects.push(effect), receivedMonotonicAt });
       };
       const rewind = () => {
         if (decoderGeneration === channel.generation) decoder.restore(decoderCheckpoint);

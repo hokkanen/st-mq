@@ -115,7 +115,17 @@ when MQTT first writes the request, including after queued storage or outgoing-s
 work. Constructing a query does not establish dispatch. Reports processed before
 that write cannot supersede its correlated reply merely because they arrived
 after construction. Later contradictory feedback remains authoritative, and the
-query's original deadline is not extended by dispatch.
+query's original deadline is not extended by dispatch. Reports retain their
+original monotonic transport receipt through recording and source-clock waits;
+processing an earlier delivery after dispatch does not make it later evidence,
+including when wall clocks tie or move backward.
+
+Generic MQTT and Gen1 Shelly switches, native H66 settings, and dehumidifier
+settings also establish their confirmation boundary at the first transport
+write. Their original monotonic report receipts survive writer admission;
+queued pre-command feedback cannot become confirmation merely by being saved
+later. Protocol command identities, native protection and restoration ownership
+remain independent checks.
 
 Pairing browser display ages use the server's status clock advanced by monotonic
 elapsed time. Pairing snapshot presentation allows the existing 60-second cross-computer

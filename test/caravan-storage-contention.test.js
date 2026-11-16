@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
+import { withMqttWriteBoundary } from './helpers/mqtt-write-boundary.js';
 import { CARAVAN_NATIVE_RESTART_DELAY_MS } from '../src/domain/caravan-power-timing.js';
 import { testCompletionLimit } from '../scripts/lib/offline-test-profile.js';
 
@@ -44,6 +45,7 @@ async function fixture(t, { locationCheck = true, holdSubscriptions = false, rea
     done();
   };
   client.end = (force, options, done) => done();
+  withMqttWriteBoundary(client);
   const acquisition = await startMqtt({ monotonicClock: () => elapsed, engine: { clock: () => now, ingest() {} }, store,
     connect: () => client, canControl: () => authority,
     config: { h66: { readbackTimeoutMs }, connections: { equipment: settings, mqtt: { address: 'mqtt://synthetic.invalid' } } } });

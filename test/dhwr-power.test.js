@@ -17,12 +17,12 @@ const device = { id: 'dhwr', kind: 'switch', connection: `shelly:${PREFIX}`, gen
 const settle = () => new Promise(resolve => setImmediate(resolve));
 // Successful commands retain the actual native deadline. Expiry cases below
 // own their deliberately short timers instead of racing wall-clock scheduling.
-function fixture(t, { identify = true, readbackTimeoutMs = 10_000 } = {}) {
+function fixture(t, { identify = true, readbackTimeoutMs = 10_000, monotonicClock } = {}) {
   const store = new Store(':memory:'), publications = [], observations = [];
   let now = INITIAL, nativeId = 'shelly1pmg3-fixture';
   const settings = equipmentConfiguration({ devices: [device] });
   const capture = createEquipmentCapture({ store, settings, brokerIdentity: 'fixture-broker',
-    engine: { clock: () => now, ingest: row => observations.push(row) }, readbackTimeoutMs,
+    engine: { clock: () => now, ingest: row => observations.push(row) }, readbackTimeoutMs, monotonicClock,
     publish: async (topic, payload, options) => { publications.push({ topic, frame: JSON.parse(payload), options }); } });
   const context = { config: { connections: { equipment: settings } }, clock: () => now,
     executor: { pulseMs: 600000, status: () => ({ dhwrOutstanding: true, pulseUntil: INITIAL + 600000 }) }, equipmentStatus: () => capture.status() };
@@ -88,7 +88,8 @@ test('native identity and exact Switch.GetStatus confirm circulation; PUBACK, wa
   await settle();
   const command = f.publications.findLast(row => row.frame.method === 'Switch.Set');
   assert.deepEqual(command.frame.params, { id: 0, on: true });
-  const { beforePublish, signal, recordingContext, recordingDeadlineExpired, onRecordingBlocked, ...wireOptions } = command.options;
+  const { beforePublish, beforeWrite, onFirstWrite, signal, recordingContext, recordingDeadlineExpired, onRecordingBlocked, ...wireOptions } = command.options;
+  assert.equal(typeof beforeWrite, 'function'); assert.equal(typeof onFirstWrite, 'function');
   assert.deepEqual(wireOptions, { qos: 1, retain: false, noReplay: true });
   assert.equal(typeof beforePublish, 'function'); assert.equal(signal.aborted, false);
   assert.equal(recordingContext, 'switch-command');
@@ -137,6 +138,33 @@ test('older command readback cannot override a newer contradictory notification'
   t.mock.timers.tick(40);
   await action;
   assert.equal(f.status().actualOn, false);
+});
+
+for (const afterDispatch of [false, true]) test(`queued native reports received ${afterDispatch ? 'after' : 'before'} query dispatch retain their original receipt boundary`, async t => {
+  let elapsed = 0;
+  const f = fixture(t, { readbackTimeoutMs: 40, monotonicClock: () => elapsed }); f.report(0);
+  const action = f.capture.publishDhwr(true).then(result => ({ result }), error => ({ error }));
+  f.reply(f.publications.findLast(row => row.frame.method === 'Switch.Set'), { was_on: false });
+  await settle();
+  const readback = f.publications.findLast(row => row.frame.method === 'Switch.GetStatus');
+  elapsed = 10; readback.options.onFirstWrite();
+  // Wall clocks tie. Both packets are processed after dispatch, while only
+  // their original transport receipts distinguish the two causal cases.
+  elapsed = 30;
+  f.capture.receive(`${PREFIX}/status/switch:0`, JSON.stringify({ id: 0, output: false, apower: 0 }),
+    {}, INITIAL, null, null, afterDispatch ? 20 : 5);
+  f.capture.receive(`${PREFIX}/events/rpc`, JSON.stringify({ src: 'shelly1pmg3-fixture', method: 'NotifyStatus',
+    params: { ts: (INITIAL - 5) / 1000, 'switch:0': { output: true } } }),
+    {}, INITIAL, null, null, afterDispatch ? 21 : 6);
+  f.reply(readback, { id: 0, output: true, apower: 17 });
+  const outcome = await action;
+  if (afterDispatch) {
+    assert.equal(outcome.error?.code, 'SHELLY_READBACK_TIMEOUT');
+    assert.equal(f.status().actualOn, false);
+  } else {
+    assert.equal(outcome.error, undefined, 'Writer delay must not turn an earlier receipt into later contradictory evidence');
+    assert.equal(outcome.result.confirmed, true); assert.equal(f.status().actualOn, true);
+  }
 });
 
 test('failed native readback preserves durable OFF and clears it only after confirmed retry', async t => {

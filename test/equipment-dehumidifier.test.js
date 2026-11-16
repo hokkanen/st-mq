@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
   const settings = equipmentConfiguration({ devices: [device] });
   const capture = createEquipmentCapture({ engine: { clock: () => now, ingest: row => observations.push(row) },
     store, settings, canControl: () => authority, readbackTimeoutMs: 10_000,
-    publish: async (topic, payload, options) => { options.beforePublish?.(); publications.push({ topic, payload, options }); }, ...options });
+    publish: async (topic, payload, options) => { options.beforePublish?.(); options.onFirstWrite?.(); publications.push({ topic, payload, options }); }, ...options });
   t.after(() => { capture.close(); store.close(); });
   const rawReport = (state, at = now, retain = false) => capture.receive('invented/dehumidifier/state',
     JSON.stringify({ identity: 'a'.repeat(64), capabilities,
@@ -33,6 +33,23 @@ function fixture(t, options = {}) {
     status: () => capture.status().devices[0],
     command: (setting, value) => capture.setDehumidifier({ deviceId: device.id, setting, value }) };
 }
+
+test('dehumidifier confirmation uses original receipt after actual dispatch when wall clocks tie', async t => {
+  let elapsed = 0;
+  const f = fixture(t, { monotonicClock: () => elapsed, publish: async (_topic, _payload, options) => {
+    options.beforePublish(); elapsed = 10; options.onFirstWrite?.();
+  } });
+  f.online(); f.report({}, INITIAL - 1);
+  await f.command('fanSpeed', 'high');
+  const report = receivedMonotonicAt => f.capture.receive('invented/dehumidifier/state', JSON.stringify({
+    identity: 'a'.repeat(64), capabilities, ...defaults, fanSpeed: 'high',
+    fieldTimestamps: Object.fromEntries(Object.keys(defaults).map(key => [key, INITIAL])), timestamp: new Date(INITIAL).toISOString(),
+  }), {}, INITIAL, null, null, receivedMonotonicAt);
+  elapsed = 20; report(5);
+  assert.equal(f.status().dehumidifier.operation.status, 'published', 'Earlier transport feedback cannot confirm the command');
+  elapsed = 30; report(30);
+  assert.equal(f.status().dehumidifier.operation.status, 'observed');
+});
 
 test('dehumidifier configuration requires dedicated MQTT controls and one current Off/Low/Medium/High state', () => {
   const configured = equipmentConfiguration({ devices: [device] }).devices[0];
@@ -149,7 +166,8 @@ test('setting requests enforce supported values, authority and explicit field se
   for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['targetHumidity', 80], ['fanSpeed', 'auto'], ['swing', 'fixed_45']]) {
     const previous = f.status().dehumidifier.state;
     await f.command(setting, value);
-    const { beforePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = f.publications.at(-1).options;
+    const { beforePublish, beforeWrite, onFirstWrite, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = f.publications.at(-1).options;
+    assert.equal(typeof beforeWrite, 'function'); assert.equal(typeof onFirstWrite, 'function');
     assert.equal(recordingContext, 'caravan-command'); assert.equal(recordingKind, 'mutation');
     assert.equal(typeof recordingDeadlineExpired, 'function');
     assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
@@ -210,7 +228,7 @@ test('a conflicting snapshot at an unchanged source time cannot mutate state or 
 
 test('telemetry arriving during publication confirms only after broker acknowledgement', async t => {
   let acknowledge;
-  const f = fixture(t, { publish: (topic, payload, options) => { options.beforePublish(); return new Promise(resolve => { acknowledge = resolve; }); } });
+  const f = fixture(t, { publish: (topic, payload, options) => { options.beforePublish(); options.onFirstWrite(); return new Promise(resolve => { acknowledge = resolve; }); } });
   f.online(); f.report(); f.advance(1000);
   const pending = f.command('power', 'on');
   f.report({ power: 'on' });

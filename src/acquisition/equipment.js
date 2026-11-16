@@ -4,7 +4,7 @@ import { createMqttReception } from './mqtt-reception.js';
 import { createDoorRecording } from './equipment-door-recording.js';
 import { retainStorageWithdrawal } from './storage-withdrawal.js';
 import { createSourceTimePending } from './source-time-pending.js';
-import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, observationTimeAdmitted } from '../domain/time-evidence.js';
+import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime, observationTimeAdmitted, receiptAfterDispatch } from '../domain/time-evidence.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createShellyCapture } from './shelly.js';
 import { createCaravanEnergy } from './shelly-energy.js';
@@ -62,7 +62,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
   const publish = (topic, payload, options, broker) => transportPublish(topic, meross.encode(topic, payload),
     merossTopics.has(topic) ? { ...options, qos: 0 } : options, broker);
   const native = enabled.some(row => row.protocol === 'shelly') ? createShellyCapture({ engine, store,
-    settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity,
+    settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity, monotonicClock,
     onSourceTimeChanged: confirmCaravanSources }) : null;
   let connected = false, closed = false, heatingBusy = false, caravanStopping = false, sequence = 0;
   const devices = enabled.filter(row => row.protocol === 'mqtt').map(config => ({ ...config, readings: {}, mappings: config.readings,
@@ -826,7 +826,9 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       reception.afterCommit(() => dispatch.cancellation.abort());
     }
     if (operation && operation.status !== 'observed' && scalar(operation.dispatchedAt) && report && report.identity === operation.identity
-      && report.receivedAt >= operation.dispatchedAt && fieldFresh(device, operation.setting, now)
+      && receiptAfterDispatch({ receivedAt: report.receivedAt, dispatchedAt: operation.dispatchedAt,
+        receivedMonotonicAt: report.receivedMonotonicAt, dispatchedMonotonicAt: operation.dispatchedMonotonicAt })
+      && fieldFresh(device, operation.setting, now)
       && report.fieldTimestamps[operation.setting] >= operation.dispatchedAt
       && device.dehumidifierState[operation.setting] === operation.value) {
       operation.observedAt = report.fieldTimestamps[operation.setting];
@@ -1017,7 +1019,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       const definition = definitions(device)[0];
       const powerAt = fieldTimestamps.power;
       const stale = powerAt === null || receivedAt - powerAt >= device.maxAgeMs;
-      const report = { observedAt: at, receivedAt, temperature: reportedSnapshot?.temperature, humidity: reportedSnapshot?.humidity,
+      const report = { observedAt: at, receivedAt, receivedMonotonicAt, temperature: reportedSnapshot?.temperature, humidity: reportedSnapshot?.humidity,
         capabilities, fieldTimestamps, identity: physicalIdentity };
       const history = dehumidifierHistory(device, evaluatedAt, state, report);
       updated = record(device, definition, history.value, history.observedAt, receivedAt,
@@ -1103,6 +1105,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       invalid ||= definition.required && value === null;
     }
     if (!updated) return;
+    for (const signal of reported) device.readings[signal].receivedMonotonicAt = receivedMonotonicAt;
     device.lastAt = receivedAt; device.liveSinceConnect = !packet.retain; device.invalid = invalid;
     const counter = device.mappings.find(mapping => mapping.key === 'energy_counter');
     if (device.metered && counter && healthy(device, evaluatedAt)) {
@@ -1130,6 +1133,8 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     const main = device.readings[device.stateSignal];
     if (device.subscriptionStatus === 'subscribed' && healthy(device, now) && fresh(device, main, now)) for (const waiter of [...device.waiters])
       if (waiter.dispatched && main.revision > waiter.revision && main.receivedAt >= waiter.at
+        && receiptAfterDispatch({ receivedAt: main.receivedAt, dispatchedAt: waiter.at,
+          receivedMonotonicAt: main.receivedMonotonicAt, dispatchedMonotonicAt: waiter.dispatchedMonotonicAt })
         && main.observedAt >= waiter.at && main.value === Number(waiter.on)) {
         reception.afterCommit(() => { waiter.observed = true; if (waiter.published) waiter.finish(); });
       }
@@ -1165,10 +1170,13 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
         if (completed || cancellation.signal.aborted || engine.clock() >= deadline || performance.now() >= monotonicDeadline
           || !canControl() || !device.brokerConnected || closed)
           throw fail('switch control is unavailable');
+      };
+      const onFirstWrite = () => {
         waiter.dispatched = true; waiter.at = engine.clock(); waiter.revision = sequence;
+        waiter.dispatchedMonotonicAt = monotonicClock();
       };
       Promise.resolve().then(() => publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload,
-        { qos: 1, retain: false, noReplay: true, beforePublish, signal: cancellation.signal,
+        { qos: 1, retain: false, noReplay: true, beforePublish, beforeWrite: () => { beforePublish(); return true; }, onFirstWrite, signal: cancellation.signal,
           recordingContext: 'switch-command', recordingDeadlineExpired: () => recordingDeadlineExpired }, device.broker))
         .then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, error => waiter.finish(error));
     });
@@ -1238,13 +1246,15 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
       }
       return now;
     };
-    const beforePublish = () => {
-      const now = validateDispatch();
+    const beforePublish = () => { validateDispatch(); };
+    const onFirstWrite = () => {
+      const now = engine.clock();
       if (origin === 'location-test') {
         probe.commandAt = now; probe.lastCommandAt = now;
         probe.phaseEvidence[probe.phase].commandAt = now;
       }
       operation.dispatchedAt = now;
+      operation.dispatchedMonotonicAt = monotonicClock();
     };
     const preparePublish = async () => {
       if (!['location-test', 'location-restoration'].includes(origin) || !restoration) return;
@@ -1266,7 +1276,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     try {
       await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value,
         identity: operation.identity, requestedAt: operation.requestedAt, expiresAt }),
-      { qos: 1, retain: false, noReplay: true, beforePublish,
+      { qos: 1, retain: false, noReplay: true, beforePublish, beforeWrite: () => { beforePublish(); return true; }, onFirstWrite,
         ...(['location-test', 'location-restoration'].includes(origin) && restoration ? { preparePublish } : {}),
         recordingContext: 'caravan-command', recordingKind: 'mutation', recordingDeadlineExpired: () => recordingDeadlineExpired,
         signal: cancellation.signal }, device.broker);
@@ -1447,7 +1457,7 @@ export function createEquipmentCapture({ engine, store, settings, publish: trans
     },
     receiveRecorded(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null, receivedMonotonicAt = null) {
       if (admittedReceptionAt === undefined) drainPending(engine.clock());
-      if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt, onAccepted)) {
+      if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt, onAccepted, receivedMonotonicAt)) {
         confirmCaravanSources(engine.clock());
         return true;
       }

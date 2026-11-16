@@ -42,6 +42,7 @@ function fixture(t, options = {}) {
       if (options.beforePublish) await options.beforePublish(topic, payload, flags);
       await flags?.preparePublish?.();
       flags?.beforePublish?.();
+      flags?.onFirstWrite?.();
       allPublications.push({ topic, payload, flags });
       if (topic !== 'fixture/dryer/set') return;
       const body = JSON.parse(payload), { identity, requestedAt, expiresAt, ...command } = body;
@@ -759,7 +760,8 @@ test('a small matched electrical rise and fall qualify recording without applian
   assert.equal(inventory.find(row => row.id === 'state-caravan-power-timing').count, 1);
   for (const publication of f.publications) {
     assert.equal(publication.body.expiresAt, publication.body.requestedAt + 10000);
-    const { beforePublish, preparePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = publication.flags;
+    const { beforePublish, beforeWrite, onFirstWrite, preparePublish, signal, recordingContext, recordingKind, recordingDeadlineExpired, ...flags } = publication.flags;
+    assert.equal(typeof beforeWrite, 'function'); assert.equal(typeof onFirstWrite, 'function');
     assert.equal(recordingContext, 'caravan-command'); assert.equal(recordingKind, 'mutation');
     assert.equal(typeof recordingDeadlineExpired, 'function');
     assert.equal(typeof beforePublish, 'function'); assert.equal(typeof preparePublish, 'function'); assert(signal instanceof AbortSignal);

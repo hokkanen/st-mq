@@ -4,6 +4,15 @@
 export const MAX_SOURCE_AHEAD_MS = 1000;
 export const evidenceTime = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 
+/** Connection-local command ordering uses original transport receipt, never
+ * writer/source-time admission. Monotonic clocks also distinguish wall ties. */
+export function receiptAfterDispatch({ receivedAt, dispatchedAt, receivedMonotonicAt, dispatchedMonotonicAt }) {
+  const monotonic = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  return monotonic(receivedMonotonicAt) && monotonic(dispatchedMonotonicAt)
+    ? receivedMonotonicAt >= dispatchedMonotonicAt
+    : evidenceTime(receivedAt) && evidenceTime(dispatchedAt) && receivedAt >= dispatchedAt;
+}
+
 export function classifySourceTime({ sourceTime, receivedAt, now, maxAgeMs = Infinity }) {
   const result = (status, reason = null, delayMs = 0) => ({ status, reason, delayMs });
   if (![sourceTime, receivedAt, now].every(evidenceTime)
