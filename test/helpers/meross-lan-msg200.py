@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('installer', ROOT / 'scripts/apply-meross-lan-msg200.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
-fixture = ROOT / 'test/fixtures/meross-lan-6.0.1'
+fixture = ROOT / 'test/fixtures/meross-lan-6.0.2'
 original = (fixture / 'garagedoor.py').read_bytes()
 patched = installer.patched_source(original)
 tree = ast.parse(re.sub(rb"(?m)^(        )type [^\n]+", rb"\1pass", patched))
@@ -127,7 +127,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert source.read_bytes() == held
     source.write_bytes(original)
     manifest = json.loads((root / 'manifest.json').read_text())
-    for version in ['5.8.0', '6.0.0', '6.0.2']:
+    for version in ['5.8.0', '6.0.0', '6.0.1', '6.0.3']:
         manifest['version'] = version
         (root / 'manifest.json').write_text(json.dumps(manifest))
         for content in [original, patched]:
@@ -139,7 +139,7 @@ with tempfile.TemporaryDirectory() as tmp:
             else:
                 raise AssertionError('Unsupported version was accepted')
             assert source.read_bytes() == content
-    manifest['version'] = '6.0.1'
+    manifest['version'] = '6.0.2'
     manifest['requirements'].append('fixture-unreviewed-dependency')
     (root / 'manifest.json').write_text(json.dumps(manifest))
     try:
