@@ -7,6 +7,14 @@ challenge authorize a bounded command attempt. Retained state may be displayed
 as recorded evidence but does not authorize a write. Reconnect never replays an
 old ordinary command. Slaves cannot publish commands.
 
+A Garage heating or native-setting request may wait up to five seconds when
+the only blocker is an expiring or consumed challenge. The controller must
+report a usable replacement before ST-MQ creates the command. The pending
+request still requires the same connection, device, boot and relevant settings,
+and current authorization. A disconnected browser or a changed control context
+cancels the wait. Timeout leaves the previous selection in place and asks the
+user to try again.
+
 Pump commands and protection-sender configuration can wait briefly for received
 MQTT observations to finish saving. The wait retains the original command and
 challenge deadlines. Dispatch rechecks the connection, device/boot/challenge,

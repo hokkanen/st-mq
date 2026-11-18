@@ -202,7 +202,11 @@ export function renderGarage(document, status = {}) {
   set('garage-controller-state', readOnly ? 'Recorded snapshot' : connected ? 'Available' : adapter.connected ? 'Awaiting readings' : 'Not connected');
   const connection = document.getElementById('garage-controller-state');
   if (connection) connection.dataset.state = readOnly ? 'pending' : connected ? 'available' : 'attention';
-  set('garage-controller-reason', [garage.error, display.reason].filter(Boolean).join(' '));
+  const controllerReason = document.getElementById('garage-controller-reason');
+  if (controllerReason) {
+    controllerReason.textContent = garage.error ?? '';
+    controllerReason.hidden = !garage.error || [garage.controlReason, garage.regulationReason].includes(garage.error);
+  }
   detail('garage-pump-reading-info', 'Reading details', 'Mitsubishi heat-pump readings',
     'Reported pump settings and compressor operation are separate from the selected room target. The pump control temperature can include an offset and is not an independent room measurement. Electrical readings retain their original quality.');
   renderMitsubishiReadings(document, status);
@@ -245,9 +249,6 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     if (input && !dirty) input.value = finite(garage.normalTargetC) ? String(garage.normalTargetC) : '';
     const help = $('garage-heating-status');
     if (help) help.textContent = available() ? 'Control available' : 'Control unavailable';
-    const reason = $('garage-control-detail');
-    if (reason) reason.textContent = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
-      ? 'Recorded selection. Change heating on the live controller.' : garageDisplay(garage).reason;
     if (message && selectionFeedback && !busy) {
       const now = status?.now ?? Date.now(), receipt = selectionFeedback;
       if (!actionReceiptRecent(receipt.at, now)) { selectionFeedback = null; message.textContent = ''; message.classList.remove('form-error'); }
@@ -264,6 +265,15 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
         message.textContent = receipt.error ?? `${modeName(receipt.mode)} selected · ${number(receipt.targetC)}. ${confirmation}.`;
         message.classList.toggle('form-error', Boolean(receipt.error));
       }
+    }
+    const reason = $('garage-control-detail');
+    if (reason) {
+      const text = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
+        ? 'Recorded selection. Change heating on the live controller.'
+        : garage.controlReason && garage.controlReason === message?.textContent
+          ? garage.regulationReason : garageDisplay(garage).reason;
+      reason.textContent = text ?? '';
+      reason.hidden = !text;
     }
     renderGarage(document, status ?? {});
     refreshControls();

@@ -730,10 +730,21 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const result = await current.charging[method](id, input);
             return json(200, action === 'flexibility-preview' ? result : status());
           });
-        if (req.method === 'POST' && url.pathname === '/api/garage/heating')
-          return await mutate(async (current, input) => { await current.garage.setHeating(input); return json(200, status()); });
-        if (req.method === 'POST' && url.pathname === '/api/garage/native')
-          return await mutate(async (current, input) => { await current.garage.setNativeSettings(input); return json(200, status()); });
+        if (req.method === 'POST' && ['/api/garage/heating', '/api/garage/native'].includes(url.pathname))
+          return await mutate(async (current, input) => {
+            const cancellation = new AbortController(), disconnected = () => cancellation.abort();
+            const isAuthorized = () => {
+              const latest = access();
+              return !res.destroyed && !unavailable() && !writesBlocked() && current === getEngine()
+                && latest.enabled && (ingress || latest === acceptedAccess) && identity(latest)?.role === 'admin';
+            };
+            res.once('close', disconnected);
+            try {
+              const method = url.pathname === '/api/garage/heating' ? 'setHeating' : 'setNativeSettings';
+              await current.garage[method](input, { signal: cancellation.signal, isAuthorized });
+              if (!res.destroyed) return json(200, status());
+            } finally { res.removeListener('close', disconnected); }
+          });
         if (req.method === 'POST' && url.pathname === '/api/equipment/recheck')
           return await mutate(async (current, input) => { await current.recheckEquipment(input); return json(200, status()); });
         if (req.method === 'POST' && url.pathname === '/api/equipment/switch')

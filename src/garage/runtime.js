@@ -86,14 +86,20 @@ export class GarageRuntime {
       until: now + 86_400_000, message: GARAGE_WARMING_WARNING } };
     this.store.setState(this.keys.mode, this.selection);
   }
-  controlReason(now = this.clock()) {
+  controlReason(now) {
     if (!this.settings.enabled) return 'Garage control is disabled in configuration.';
     if (!this.canControl() || this.input === 'offline') return 'This instance is read-only.';
     if (this.closed) return 'Garage control is closed.';
     if (this.busy) return 'Wait for the current garage request to finish.';
-    return this.adapter?.status(now).blockedReasons[0] ?? (!this.adapter ? 'Waiting for the heat-pump controller connection.' : null);
+    if (!this.adapter) return 'Waiting for the heat-pump controller connection.';
+    const view = this.adapter.status(now);
+    return view.waitingForChallenge ? null : view.blockedReasons[0] ?? null;
   }
-  async setHeating(input) {
+  commandRequest(adapter, request) {
+    return { signal: request ? AbortSignal.any([this.writeLifetime.signal, request.signal]) : this.writeLifetime.signal,
+      isAuthorized: () => this.adapter === adapter && this.canControl() && (!request || request.isAuthorized()) };
+  }
+  async setHeating(input, request) {
     if (!input || typeof input !== 'object' || Array.isArray(input)
       || Object.keys(input).some(key => !['mode', 'targetC'].includes(key))
       || !['normal', 'away'].includes(input.mode)
@@ -103,14 +109,14 @@ export class GarageRuntime {
     const now = this.clock();
     const reason = this.controlReason(now);
     if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
-    const adapter = this.adapter.status(now), previous = this.identityChanged ? null : this.selection;
-    const normalTargetC = input.targetC ?? previous?.normalTargetC ?? adapter.control?.targetC;
+    const adapter = this.adapter, view = adapter.status(now), previous = this.identityChanged ? null : this.selection;
+    const normalTargetC = input.targetC ?? previous?.normalTargetC ?? view.control?.targetC;
     if (!validGarageTarget(normalTargetC)) throw new Error('Wait for the saved room target to be reported or choose a Normal temperature.');
     const targetC = input.mode === 'away' ? this.settings.awayTargetC : normalTargetC;
-    const fromC = adapter.control?.effectiveTargetC ?? (previous?.mode === 'away' ? previous.awayTargetC : previous?.normalTargetC);
+    const fromC = view.control?.effectiveTargetC ?? (previous?.mode === 'away' ? previous.awayTargetC : previous?.normalTargetC);
     this.busy = true;
     try {
-      const result = await this.adapter.setControl({ targetC, externalEnabled: true }, now);
+      const result = await adapter.setControl({ targetC, externalEnabled: true }, now, this.commandRequest(adapter, request));
       // A device result can arrive before publication finishes. A resolved
       // transport promise does not turn a failed or uncertain edit into intent.
       if (['rejected', 'failed', 'uncertain'].includes(result.status))
@@ -118,8 +124,9 @@ export class GarageRuntime {
           ? 'The heat-pump controller rejected the room target.'
           : 'The room target change is unconfirmed. Check the controller status before trying again.'),
         { statusCode: result.status === 'rejected' ? 409 : 503 });
-      const next = { version: 1, adapterKey: this.adapterKey, targetIdentity: adapter.targetIdentity,
-        mode: input.mode, normalTargetC, awayTargetC: this.settings.awayTargetC, changedAt: now,
+      const at = result.requestedAt;
+      const next = { version: 1, adapterKey: this.adapterKey, targetIdentity: view.targetIdentity,
+        mode: input.mode, normalTargetC, awayTargetC: this.settings.awayTargetC, changedAt: at,
         warmingWarning: previous?.warmingWarning ?? null };
       await this.runWrite(() => {
         const previousSelection = structuredClone(this.selection), previousIdentityChanged = this.identityChanged;
@@ -128,33 +135,34 @@ export class GarageRuntime {
         });
         this.store.setState(this.keys.mode, next);
         this.store.event('garage-mode-changed', { mode: input.mode, targetC, previousTargetC: fromC ?? null,
-          commandId: result.commandId, status: result.status }, now);
+          commandId: result.commandId, status: result.status }, at);
         this.selection = next; this.identityChanged = false;
-        this.recordIntent(adapter.targetIdentity, 'dashboard-selection', now);
-        this.warn(fromC, targetC, now);
+        this.recordIntent(view.targetIdentity, 'dashboard-selection', at);
+        this.warn(fromC, targetC, at);
       }, { priority: 'control' });
 
-      return this.status(now);
+      return this.status();
     } finally { this.busy = false; }
   }
   nativeControls(now = this.clock()) {
-    const controls = this.adapter?.nativeControls(now) ?? { available: false, settings: {}, reason: 'Waiting for the heat-pump controller connection.' };
+    const controls = this.adapter?.nativeControls(now, true) ?? { available: false, settings: {}, reason: 'Waiting for the heat-pump controller connection.' };
     const reason = this.controlReason(now);
     return { ...controls, available: !reason && controls.available, busy: this.busy || controls.busy,
       reason: reason ?? controls.reason,
       settings: Object.fromEntries(Object.entries(controls.settings).map(([key, value]) => [key,
         reason ? { ...value, available: false, reason } : value])) };
   }
-  async setNativeSettings(input) {
-    const request = validateGarageNativeSetting(input, .5), now = this.clock(), reason = this.controlReason(now);
+  async setNativeSettings(input, request) {
+    const fields = validateGarageNativeSetting(input, .5), now = this.clock();
+    const reason = this.controlReason(now);
     if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
     this.busy = true;
     try {
-      const prior = this.adapter.status(now).native;
-      const result = await this.adapter.setNativeSetting(request, now);
+      const adapter = this.adapter, prior = adapter.status(now).native;
+      const result = await adapter.setNativeSetting(fields, now, this.commandRequest(adapter, request));
       await this.runWrite(() => {
-        this.store.event('garage-native-setting-requested', { ...request, commandId: result.commandId, status: result.status }, now);
-        if (request.setting === 'targetC') this.warn(prior.targetC, request.value, now);
+        this.store.event('garage-native-setting-requested', { ...fields, commandId: result.commandId, status: result.status }, result.requestedAt);
+        if (fields.setting === 'targetC') this.warn(prior.targetC, fields.value, result.requestedAt);
       }, { priority: 'control' });
 
       return result;

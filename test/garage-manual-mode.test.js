@@ -11,6 +11,8 @@ import { garageSettings } from '../src/garage/settings.js';
 import { validateGarageModeState } from '../src/garage/room-temperature.js';
 import { garageV2Fixture, GARAGE_TEST_AT, GARAGE_TEST_ADAPTER } from './helpers/garage-v2.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
+import { createAppServer } from '../src/app/server.js';
+import { setTimeout as delay } from 'node:timers/promises';
 function fixture(t, options = {}) {
   const store = new Store(options.path ?? ':memory:'); t.after(() => store.close());
   const engine = { latest: {}, recorder: { recordEnergy: value => value }, ingest: row => { engine.latest[row.signal] = row; } };
@@ -230,6 +232,66 @@ test('actual backend status enables supported native UI controls and reports con
   f.update({ result: { commandId: f.publications[0].commandId, status: 'native-confirmed', reason: null } });
   assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting: 2.*Confirmed by the pump/);
   assert.equal(mitsubishiControl(status(), 'power').available, true);
+});
+
+test('Garage HTTP controls publish once through a challenge gap and cancel a revoked wait', { timeout: 10_000 }, async t => {
+  const f = fixture(t);
+  let access = { enabled: true, token: 'fixture-admin' };
+  const engine = { ...f.engine, garage: f.runtime, config: f.config, clock: f.now,
+    status: () => ({ now: f.now(), garage: f.runtime.status() }) };
+  const server = createAppServer({ engine, store: f.store, getAccess: () => access });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const post = (action, input, signal) => fetch(`http://127.0.0.1:${server.address().port}/api/garage/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-admin' },
+    body: JSON.stringify(input), signal,
+  });
+  async function waitUntilBusy() {
+    while (!f.runtime.busy) await delay(5, undefined, { signal: t.signal });
+  }
+
+  f.at(GARAGE_TEST_AT + 14_000);
+  assert.equal(f.adapter.status().controlAvailable, false);
+  assert.equal(f.runtime.status().controlAvailable, true);
+  assert.equal(f.runtime.status().nativeControls.settings.fan.available, true);
+  assert.equal(f.runtime.status().nativeControls.settings.targetC.available, false);
+  const heating = post('heating', { mode: 'normal', targetC: 15 });
+  await waitUntilBusy();
+  assert.equal(f.publications.length, 0);
+  assert.equal(f.runtime.selection.normalTargetC, 10);
+  assert.equal((await post('native', { setting: 'fan', value: 4 })).status, 409);
+  f.at(GARAGE_TEST_AT + 16_000); f.update();
+  assert.equal((await heating).status, 200);
+  assert.equal(f.runtime.selection.normalTargetC, 15);
+  assert.equal(f.publications[0].challenge, 'challenge-2');
+  assert.equal(f.runtime.status().controlAvailable, false, 'Previous command confirmation still blocks');
+
+  f.update({ control: { targetC: 15 }, challenge: { value: null, expiresInMs: 0 } });
+  const native = post('native', { setting: 'fan', value: 4 });
+  await waitUntilBusy();
+  assert.equal(f.publications.length, 1);
+  f.at(GARAGE_TEST_AT + 18_000); f.update({ control: { targetC: 15 } });
+  assert.equal((await native).status, 200);
+  assert.equal(f.publications[1].challenge, 'challenge-4');
+  assert.equal(f.publications[1].value, 4);
+
+  f.update({ control: { targetC: 15 }, challenge: { value: null, expiresInMs: 0 },
+    result: { commandId: f.publications[1].commandId, status: 'native-confirmed', reason: null } });
+  const cancellation = new AbortController();
+  const abandoned = assert.rejects(post('heating', { mode: 'away' }, cancellation.signal), { name: 'AbortError' });
+  await waitUntilBusy();
+  cancellation.abort(); await abandoned;
+  while (f.runtime.busy) await delay(5, undefined, { signal: t.signal });
+  assert.equal(f.publications.length, 2);
+  assert.equal(f.runtime.selection.mode, 'normal');
+
+  const revoked = post('heating', { mode: 'away' });
+  await waitUntilBusy();
+  access = { ...access, token: 'fixture-replacement-token' };
+  f.update({ control: { targetC: 15 } });
+  assert.equal((await revoked).status, 401);
+  assert.equal(f.publications.length, 2);
+  assert.equal(f.runtime.selection.mode, 'normal');
 });
 
 test('changing Away preset or telemetry limits never changes a running target or loses the saved Normal choice', async t => {

@@ -272,7 +272,7 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     const reading = mitsubishiReadings(status?.garage, status?.now).find(row => row.key === `native-${key}`);
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
-    $('garage-native-status').textContent = control.available
+    const statusText = control.available
       ? 'Changes the heat pump’s device setting. Wait for pump confirmation.'
       : /\s/.test(control.reason) ? control.reason : words(control.reason);
     if (!busy) {
@@ -293,6 +293,9 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
           && ['rejected', 'uncertain', 'failed'].includes(receipt.status)));
       }
     }
+    const note = $('garage-native-status');
+    note.hidden = statusText === message.textContent;
+    note.textContent = note.hidden ? '' : statusText;
     refreshControls();
   };
   const pointerChoice = () => { pointerSelection = true; };

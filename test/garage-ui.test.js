@@ -21,7 +21,7 @@ function fixture() {
     'garage-target-form', 'garage-normal-target', 'garage-target-submit', 'garage-heating-message', 'garage-warming-warning',
     'garage-control-mode', 'garage-requested', 'garage-current-room', 'garage-target-confirmation', 'garage-heating-operation', 'garage-current-mode',
     'garage-regulation-temperature', 'garage-regulation-reading', 'garage-readings-details', 'garage-protection-summary',
-    'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
+    'garage-heating-status', 'garage-control-detail', 'garage-controller-reason', 'garage-protection-status', 'garage-protection-detail',
     'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target',
     'garage-protection-reason', 'garage-protection-summary-note',
     'garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front', 'garage-reserve-rear',
@@ -142,11 +142,16 @@ test('polling preserves target validation and request errors after a successful 
 
 test('a rejected repeated selection cannot become confirmed from the pre-existing target', async () => {
   const f = fixture(), message = f.nodes.get('garage-heating-message');
-  f.reply(Object.assign(new Error('Waiting for a fresh command challenge.'), { status: 409 }));
+  const challenge = 'Waiting for a fresh command challenge.';
+  f.reply(Object.assign(new Error(challenge), { status: 409 }));
   await f.trigger('garage-mode-normal');
+  f.panel.update({ ...f.initial, garage: { ...f.initial.garage, controlAvailable: false, controlReason: challenge } });
+  assert.equal(message.textContent, challenge);
+  assert.equal(f.nodes.get('garage-control-detail').hidden, true);
+  assert.equal(f.nodes.get('garage-controller-reason').hidden, true);
   f.panel.update({ ...f.initial, now: now + 1000, garage: { ...f.initial.garage,
     adapter: { observedAt: now + 1000 } } });
-  assert.equal(message.textContent, 'Waiting for a fresh command challenge.');
+  assert.equal(message.textContent, challenge);
   assert.equal(message.classes.has('form-error'), true);
 });
 

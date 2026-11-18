@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { garageV2Fixture, GARAGE_TEST_AT, GARAGE_TEST_ADAPTER } from './helpers/garage-v2.js';
 import { createGarageAdapter } from '../src/garage/adapter.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
@@ -86,6 +87,49 @@ test('command expiry and delivery headroom block edits while controller readback
   f.update();
   await f.adapter.setControl({ targetC: 5, externalEnabled: true });
   assert.equal(f.publications.length, 1, 'only the new explicit request uses the refreshed challenge');
+});
+
+test('a request waiting for a challenge cannot cross a reconnect, reboot or native change', async () => {
+  await Promise.all(['reconnect', 'reboot', 'native change'].map(async scenario => {
+    const f = garageV2Fixture(); f.update();
+    f.at(GARAGE_TEST_AT + 14_000);
+    const request = { signal: new AbortController().signal, isAuthorized: () => true };
+    const result = f.adapter.setNativeSetting({ setting: 'fan', value: 4 }, f.now(), request);
+    const rejected = assert.rejects(result, /connection changed|setting or control ownership changed/);
+    if (scenario === 'reconnect') { f.adapter.setConnected(false); f.adapter.setConnected(true); f.update(); }
+    if (scenario === 'reboot') f.update({ bootId: 'boot-two' });
+    if (scenario === 'native change') f.update({ native: { fan: { value: 2, measuredAt: f.now() } } });
+    await rejected;
+    assert.equal(f.publications.length, 0, scenario);
+    assert.equal(f.adapter.status().lastCommand, null, scenario);
+  }));
+});
+
+test('a slightly ahead replacement can authorize the waiting request only after admission', async () => {
+  const f = garageV2Fixture(); f.update();
+  f.at(GARAGE_TEST_AT + 14_000);
+  const request = { signal: new AbortController().signal, isAuthorized: () => true };
+  const result = f.adapter.setControl({ targetC: 5, externalEnabled: true }, f.now(), request);
+  f.at(GARAGE_TEST_AT + 15_000);
+  assert.equal(f.update({ observedAt: f.now() + 250 }), false);
+  await delay(150);
+  assert.equal(f.publications.length, 0);
+  f.at(GARAGE_TEST_AT + 15_250); f.adapter.tick();
+  await result;
+  assert.equal(f.publications.length, 1);
+  assert.equal(f.publications[0].challenge, 'challenge-2');
+});
+
+test('a challenge wait expires without a receipt or a replay when a replacement arrives later', { timeout: 10_000 }, async () => {
+  const f = garageV2Fixture(); f.update();
+  f.at(GARAGE_TEST_AT + 14_000);
+  const request = { signal: new AbortController().signal, isAuthorized: () => true };
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }, f.now(), request),
+    /controller did not become ready/);
+  f.at(GARAGE_TEST_AT + 20_000); f.update();
+  assert.equal(f.adapter.status().controlAvailable, true);
+  assert.equal(f.adapter.status().lastCommand, null);
+  assert.equal(f.publications.length, 0);
 });
 
 test('source transit delay and repeated publications cannot renew command authority', async () => {

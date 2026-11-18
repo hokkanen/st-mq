@@ -358,6 +358,25 @@ test('loss of current native values preserves the editor and unsaved draft while
   f.panel.update(f.status); assert.equal(input.value, '23.5'); assert.equal(input.disabled, false);
 });
 
+test('a matching native readiness reason and request error render once', async () => {
+  const f = panelFixture(), reason = 'Waiting for a fresh command challenge.';
+  f.change('fan');
+  const select = f.nodes.get('garage-native-value');
+  select.value = '4'; select.listeners.get('change')();
+  f.reply(() => { throw new Error(reason); });
+  await f.submit();
+  const unavailable = structuredClone(f.status);
+  Object.assign(unavailable.garage.nativeControls, { available: false, reason });
+  f.panel.update(unavailable);
+  assert.equal(f.nodes.get('garage-native-status').hidden, true);
+  assert.equal(f.nodes.get('garage-native-message').textContent, reason);
+  assert.equal(select.value, '4');
+  f.panel.update(f.status);
+  assert.equal(f.nodes.get('garage-native-status').hidden, false);
+  assert.equal(select.value, '4');
+  assert.equal(select.disabled, false);
+});
+
 test('a native command receipt follows late pump readback, survives later telemetry loss and expires after 24 hours', () => {
   const f = panelFixture(), at = now - 1000;
   const latest = structuredClone(f.status);
