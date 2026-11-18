@@ -498,10 +498,10 @@ const checkPeriod = comparison => `${checkDate(comparison.start)} – ${checkDat
 const checkDuration = value => value > 0 && value < 1000 ? '<1 s' : durationText(value);
 const sessions = count => `${count} session${count === 1 ? '' : 's'}`;
 
-function energyDifference(percent) {
+function energyDifference(percent, reference = 'the meter') {
   if (!Number.isFinite(percent)) return 'Meter recorded no consumption in this period';
-  if (Math.abs(percent) < 0.05) return 'Recorded energy matches the meter within 0.1%';
-  return `Recorded energy is ${Math.abs(percent).toFixed(1)}% ${percent < 0 ? 'lower' : 'higher'} than the meter`;
+  if (Math.abs(percent) < 0.05) return `Recorded energy matches ${reference} within 0.1%`;
+  return `Recorded energy is ${Math.abs(percent).toFixed(1)}% ${percent < 0 ? 'lower' : 'higher'} than ${reference}`;
 }
 
 const exclusionLabels = {
@@ -563,18 +563,21 @@ export function energyAuditRow(item) {
   }
   if (item.kind !== 'property-meter-summary') throw new TypeError('Unknown recorded energy check');
   const comparison = s.comparison ?? s.lastSuccessfulComparison;
+  const conversion = comparison?.assumedConversion;
   const latest = s.latestReading, previous = s.previousReading;
   const state = propertyCheckStates[s.status];
   const coverage = s.coverage;
   return { key: item.signal, title: 'Property', subtitle: 'Import meter',
     method: 'Checks the stored L1–L3 energy sum, estimated by integrating power, against the increase in the Equalizer import counter over the same period.',
-    value: comparison ? energyDifference(comparison.differencePercent) : state ?? 'Comparison unavailable',
+    value: conversion ? energyDifference(conversion.differencePercent, 'the meter with the assumed conversion')
+      : comparison ? energyDifference(comparison.differencePercent) : state ?? 'Comparison unavailable',
     context: [
       ...(comparison ? [
-        `${checkEnergy(comparison.estimatedKwh)} recorded · ${checkEnergy(comparison.meteredKwh)} metered`,
-        `${s.comparison ? 'Compared period' : 'Last successful comparison'}: ${checkPeriod(comparison)}`,
+        `${checkEnergy(comparison.estimatedKwh)} recorded · ${checkEnergy(conversion?.meteredKwh ?? comparison.meteredKwh)} ${conversion ? 'metered (converted)' : 'metered'}`,
+        ...(conversion ? [`Equalizer reported ${checkEnergy(comparison.meteredKwh)} for this period · assumed ${conversion.factor === 1000 ? '×1,000' : '÷1,000'} conversion`] : []),
+        `${s.comparison ? 'Compared period' : 'Last compared period'}: ${checkPeriod(comparison)}`,
       ] : []),
-      ...(latest ? [`Latest meter reading: ${checkEnergy(latest.valueKwh)} · ${checkDate(latest.sourceTime)}`] : []),
+      ...(latest ? [`Latest meter reading: ${checkEnergy(latest.valueKwh)}${conversion ? ' as reported' : ''} · ${checkDate(latest.sourceTime)}`] : []),
     ],
     notice: comparison && !s.comparison ? `Latest reading: ${state ?? 'Comparison unavailable'}.` : null,
     detailsLabel: 'Meter readings and coverage',
@@ -594,6 +597,7 @@ export function energyAuditRow(item) {
       ...(s.status === 'conflicting-coverage' ? ['Overlapping or conflicting records prevent a reliable total for this period.'] : []),
       ...(s.status === 'counter-reset' ? ['The decreased counter starts a new baseline; consumption across the reset cannot be compared.'] : []),
       ...(s.status === 'out-of-order-counter' ? ['A reading with a later meter timestamp was already recorded. No consumption is calculated from this reversed period.'] : []),
+      ...(conversion ? ['The conversion applies to this comparison. Cumulative readings show the values supplied by Easee.'] : []),
       ...(comparison?.edgeEstimated ? ['Energy at the comparison boundaries is prorated from recorded interval averages.'] : []),
       ...(comparison?.includesOpenInterval ? ['The comparison includes an ongoing recorded interval saved to the database.'] : []),
       ...(comparison && comparison.differencePercent === null ? ['A percentage cannot be calculated when the meter increment is zero.'] : []),

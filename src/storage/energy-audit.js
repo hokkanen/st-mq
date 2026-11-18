@@ -1,5 +1,16 @@
 import { recordedEnergyGroups } from './energy-history.js';
 
+function assumedMeterConversion(estimatedKwh, meteredKwh) {
+  if (!(estimatedKwh > 0 && meteredKwh > 0)) return null;
+  const factor = estimatedKwh > meteredKwh ? 1000 : 0.001;
+  const convertedKwh = meteredKwh * factor;
+  const relativeDifference = (estimatedKwh - convertedKwh) / convertedKwh;
+  // A close match after conversion supports a diagnostic assumption. Keep
+  // the original counter and unscaled comparison alongside it.
+  if (!(Math.abs(relativeDifference) <= 0.2)) return null;
+  return { factor, meteredKwh:convertedKwh, differencePercent:relativeDifference*100 };
+}
+
 export function previousEnergyAudit(store, row, now = Date.now()) {
   // Receipt order makes a delayed older meter timestamp observable. Use the
   // highest prior meter timestamp so it cannot become a new counter baseline.
@@ -36,8 +47,10 @@ export function checkEnergyAudit(store, row, previous, now = Date.now(), groups)
   if (coverage.conflictingMs) return { status:'conflicting-coverage', coverage, comparison:null };
   if (coverage.coveredMs !== coverage.durationMs) return { status:'incomplete-coverage', coverage, comparison:null };
   const meteredKwh = row.value-previous.value;
+  const assumedConversion = assumedMeterConversion(estimatedKwh, meteredKwh);
   return { status:'compared', coverage, comparison:{start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
     differencePercent:meteredKwh>0 ? (estimatedKwh-meteredKwh)/meteredKwh*100 : null,
+    ...(assumedConversion ? { assumedConversion } : {}),
     edgeEstimated,includesOpenInterval,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
       : 'diagnostic-only-matching-complete-intervals'} };
 }

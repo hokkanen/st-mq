@@ -522,7 +522,7 @@ try {
     differenceKwh:-.00998,differencePercent:-3.992,start:now-7200000,end:now-3600000,lastSessionEnd:now};
   await refreshEnergyChecks(gapRows);
   assert.match(await checkText(propertyCheck),/10\.0% lower/,'An incomplete latest period retains the last successful result');
-  assert.match(await checkText(propertyCheck),/Last successful comparison:/);
+  assert.match(await checkText(propertyCheck),/Last compared period:/);
   assert.equal(await checkText(propertyCheck+' .energy-check-notice'),'Latest reading: Recording does not cover the whole meter period.');
   assert.match(await checkText(propertyCheck),/Recording covers 30 min of 1 h/,'Property diagnostics identify the missing coverage');
   assert.equal(await checkText(charger1Check+' .energy-check-result'),'Recorded energy is 4.0% lower than the meter');
@@ -538,6 +538,14 @@ try {
   assert.match(await checkText(methodCheck),
     /Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check/);
   assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);
+  Object.assign(gapRows[0].summary.lastSuccessfulComparison, {
+    estimatedKwh:63.75,meteredKwh:0.0625,differenceKwh:63.6875,differencePercent:101900,
+    assumedConversion:{factor:1000,meteredKwh:62.5,differencePercent:2},
+  });
+  await refreshEnergyChecks(gapRows);
+  assert.match(await checkText(propertyCheck+' .energy-check-result'),/2\.0% higher.*assumed conversion/);
+  assert.match(await checkText(propertyCheck),/62\.5 kWh metered \(converted\).*Equalizer reported 0\.063 kWh.*assumed ×1,000 conversion.*Last compared period:/);
+  assert.equal(await checkText(propertyCheck+' .energy-check-notice'),'Latest reading: Recording does not cover the whole meter period.');
   await evaluate("document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=true); true");
   for(const theme of ['dark','light']) for(const width of [320,390,1440]) {
     if(await evaluate('document.documentElement.dataset.theme')!==theme)

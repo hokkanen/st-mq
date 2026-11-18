@@ -606,10 +606,15 @@ results. Property always has a row: it reports no readings, waiting for a second
 reading, a decreased or out-of-order counter, incomplete or conflicting energy
 coverage, or a completed comparison. The latest cumulative reading retains its
 full useful precision and source time; receipt time and coverage are in **Meter
-readings and coverage**. A previously successful comparison remains visible with
+readings and coverage**. A previously completed comparison remains visible with
 its own dates when the latest reading cannot be compared. Reading counts and
 comparisons belong to the latest reading's source and physical meter; another
 meter's history cannot supply a baseline or a successful result.
+For a complete period with positive totals, the check assumes a meter unit
+conversion when multiplying or dividing the reported increase by 1,000 puts
+the recorded energy within 20% of that scaled increase. The panel labels the
+assumption, shows the original increase and compares against the converted
+increase. Cumulative counter history retains the values supplied by Easee.
 
 Property and charger summaries run as a shared read-only background job with
 an independent worker, outside the chart and inventory queues. Opening the fold
@@ -644,7 +649,7 @@ only means that a later check rereads evidence; it never limits history or drops
 comparisons. Changed selection,
 incompatible continuity, source edits and clock rollback invalidate affected
 cached evidence. The exact comparison still includes every applicable recorded
-session and may search all older counter pairs for the last successful property
+session and may search all older counter pairs for the last completed property
 comparison. A partial scan never becomes a complete count or energy total.
 No history-page cutoff hides an older success. These jobs do not edit source
 history, learn model coefficients or grant device control.

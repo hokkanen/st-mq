@@ -52,6 +52,26 @@ test('property result reports a matching period and distinguishes zero meter inc
   assert.equal(read().comparison.differencePercent,null);
 });
 
+test('property calculates a labelled thousandfold conversion alongside the original comparison',t=>{
+  const {store,audit,energy,read}=fixture(t);
+  audit(0,1);audit(10,1.0625);energy(0,10,63.75);
+  const {comparison}=read();
+  assert.equal(comparison.meteredKwh,0.0625);
+  assert.deepEqual(comparison.assumedConversion,{factor:1000,meteredKwh:62.5,differencePercent:2});
+  assert.deepEqual(store.energyAudits({now:start+10*MINUTE}).at(-1).comparison,comparison);
+
+  audit(20,63.5625);energy(10,20,0.06);
+  const converted=read().comparison.assumedConversion;
+  assert.equal(converted.factor,0.001);
+  assert.equal(converted.meteredKwh,0.0625);
+  assert(Math.abs(converted.differencePercent+4)<1e-10);
+
+  audit(30,63.625);energy(20,30,30);
+  assert.equal(read().comparison.assumedConversion,undefined,'a large discrepancy alone does not imply a unit error');
+  audit(40,63.625);energy(30,40,1);
+  assert.equal(read().comparison.assumedConversion,undefined,'zero increase cannot suggest a scale');
+});
+
 test('a gap reports every usable span and preserves the last complete property comparison',t=>{
   const {audit,energy,read}=fixture(t);
   audit(0,100);audit(10,101);audit(20,102);

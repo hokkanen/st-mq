@@ -6,6 +6,10 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
+- Property energy checks account for likely thousandfold Equalizer unit
+  discrepancies. They label the assumed conversion and show the original
+  meter increase alongside the adjusted comparison.
+
 - One-day charging allowances keep their updated estimated saving or extra cost
   visible on both chargers when shared costs or forecast uncertainty change.
   The comparison explains the other charger's cost and the combined result.

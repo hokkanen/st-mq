@@ -243,9 +243,23 @@ test('a previous property result is dated separately from the latest incomplete 
   const display=energyAuditRow(propertyCheck({status:'incomplete-coverage',lastSuccessfulComparison:meterComparison,
     coverage:{start:60_000,end:180_000,coveredMs:60_000,durationMs:120_000}}));
   assert.equal(display.value,'Recorded energy matches the meter within 0.1%');
-  assert.match(display.context.join(' '),/Last successful comparison:/);
+  assert.match(display.context.join(' '),/Last compared period:/);
   assert.equal(display.notice,'Latest reading: Recording does not cover the whole meter period.');
   assert.match(display.details.join(' '),/Recording covers 1 min of 2 min/);
+});
+
+test('a property comparison labels its conversion assumption and shows the original increase',()=>{
+  const comparison={...meterComparison,estimatedKwh:63.75,meteredKwh:0.0625,differencePercent:101900,
+    assumedConversion:{factor:1000,meteredKwh:62.5,differencePercent:2}};
+  const latest=energyAuditRow(propertyCheck({comparison}));
+  assert.equal(latest.value,'Recorded energy is 2.0% higher than the meter with the assumed conversion');
+  assert.match(latest.context.join(' '),/63\.75 kWh recorded · 62\.5 kWh metered \(converted\).*Equalizer reported 0\.063 kWh.*assumed ×1,000 conversion.*Compared period:/);
+  assert.match(latest.context.join(' '),/Latest meter reading: 12,345\.678 kWh as reported/);
+
+  const earlier=energyAuditRow(propertyCheck({status:'incomplete-coverage',lastSuccessfulComparison:comparison}));
+  assert.equal(earlier.value,latest.value);
+  assert.match(earlier.context.join(' '),/Last compared period:/);
+  assert.equal(earlier.notice,'Latest reading: Recording does not cover the whole meter period.');
 });
 
 test('zero meter increments do not become zero-percent agreement',()=>{
