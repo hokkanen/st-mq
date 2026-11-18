@@ -257,7 +257,9 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
   assert.equal(native.values['2201'],2);assert.deepEqual(r.circulation,[]);
   r.room(20.4);
   for(let step=0;step<6;step++){
-    r.advance(10*MINUTE);native.refresh();status=r.engine.tick();await r.settle();
+    r.advance(10*MINUTE);native.refresh();
+    if (step === 0) r.engine.cycles.record({ timestamp: r.now, phase: 'recovery', outdoorC: null }, r.now);
+    status=r.engine.tick();await r.settle();
     if(r.now<deadline){
       assert.equal(status.decision.phase,'recovery');
       assert.equal(status.decision.recoveryHoldUntil,deadline,'Polling cannot extend the shared hold');
@@ -267,7 +269,7 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
       assert.equal(native.values['2201'],1);assert.deepEqual(r.circulation,[]);
     }
   }
-  // This fixture has no complete observed heat-input trajectory. The fixed
+  // The fixture includes an interval without outdoor evidence. The fixed
   // native hold still restores on time; its expiry cannot prove recovery.
   assert.equal(status.decision.phase,'normal');
   assert.equal(r.engine.cycles.active(),null);
@@ -284,7 +286,7 @@ test('recovery releases AUX for cold rooms, then restores DHW and scheduled circ
   assert.ok(status.decision.reasons.includes('heating-planning-in-progress'));
   await r.engine.heatingPlanning.pending?.promise;
   status=r.engine.tick();await r.settle();
-  assert.equal(status.decision.dhwr.requested,true);
+  assert.equal(status.decision.dhwr.requested,true,JSON.stringify({ reasons: status.decision.reasons, dhwr: status.decision.dhwr }));
   assert.deepEqual(r.circulation,[{at:deadline,on:true}]);
 });
 

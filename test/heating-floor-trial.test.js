@@ -31,11 +31,19 @@ for (const mode of ['unknown', 'partial']) test(`a reduction-only learning trial
     outdoorC: 0, solarRadiationWm2: 0, thermalCompressorDuty: 0, thermalAuxKw: 0,
     floorOverrideMode: mode, eligible: true };
   const cycle = { plan };
-  const poisoned = observedState(cycle, plan.initialState, row, []);
-  assert.equal(poisoned, null, 'This evidence cannot support the cycle stored-heat observer');
-  assert.equal(observedState(cycle, poisoned, { ...row, start: row.end,
-    end: row.end + HOUR, floorOverrideMode: 'off' }, []), null,
-  'A later report cannot reconstruct the missing earlier floor state');
+  assert.equal(observedState(cycle, plan.initialState, row, [], { bridge: false }), null,
+    'A trial cost comparison still requires attributable evidence');
+  const observer = observedState(cycle, plan.initialState, row, []);
+  const resumed = observedState(cycle, observer, { ...row, start: row.end,
+    end: row.end + HOUR, floorOverrideMode: 'off' }, []);
+  if (mode === 'unknown') {
+    assert.equal(observer.gapMs, 60_000);
+    assert.equal(resumed.gapMs, 0);
+    assert.ok(resumed.upper, 'A fresh OFF readback resumes the comparison with bounds');
+  } else {
+    assert.equal(observer, null, 'Observed partial treatment remains a barrier');
+    assert.equal(resumed, null);
+  }
   value.equipment.floorOverrideMode = mode;
   assert.notEqual(chooseCycle(value).plan?.trial, true);
   assert.equal(revalidatePlan({ ...value, plan }).valid, false);
