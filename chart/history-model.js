@@ -95,6 +95,8 @@ const seriesInfo = {
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
   property_current_max: ['Property highest phase', 'A · highest simultaneous phase-current estimate', 'property'],
+  ev1_current_max: ['Charger 1 highest phase', 'A · highest simultaneous phase-current estimate', 'ev', 'fill'],
+  ev2_current_max: ['Charger 2 highest phase', 'A · highest simultaneous phase-current estimate', 'ev2', 'fill'],
   ev1_current_allowance: ['Charger 1 allowance', 'A · native Equalizer minimum phase allowance', 'ev'],
   ev2_current_allowance: ['Charger 2 allowance', 'A · available current allowance, including fallback', 'outdoor'],
   ev1_current_l1: ['Charger 1 L1', 'A', 'phase1'],

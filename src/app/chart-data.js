@@ -471,7 +471,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const phaseNames = ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)).filter(name => names.includes(name));
   const aggregatePower = powerNames.some(name => ['property_power', 'charger_power'].includes(name));
   const maximumPropertyCurrent = names.includes('property_current_max');
-  const aggregatePhases = aggregatePower || maximumPropertyCurrent;
+  const aggregatePhases = aggregatePower || maximumPropertyCurrent || names.includes('ev1_current_max');
   const selectedHas = candidates => leftNames.some(name => candidates.includes(name));
   const envelopes = Object.fromEntries(names.map(name => [name, projecting
     ? new RelatedStepSampler(range.from, range.to, _relatedTimes)
@@ -530,7 +530,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const currentPowerHistory = new Map();
   const learningMetadata = {};
   const requested = new Set(projecting && _priceProjection ? ['spot_price']
-    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !VOLTAGE_SIGNALS.includes(name) && !CHARGING_ALLOWANCE_SERIES.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['garage_away_mode', 'caravan_energy', 'caravan_power', 'property_power', 'property_current_max', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
+    : [...names.filter(name => !Object.hasOwn(MODEL_INPUT_INFO, name) && !Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && !Object.hasOwn(SESSION_CHECK_INFO, name) && !AUDIT_SIGNALS.includes(name) && !VOLTAGE_SIGNALS.includes(name) && !CHARGING_ALLOWANCE_SERIES.includes(name) && !FIREWOOD_OUTCOME_NAMES.includes(name) && !['garage_away_mode', 'caravan_energy', 'caravan_power', 'property_power', 'property_current_max', 'ev1_current_max', 'ev2_current_max', 'charger2_power', 'heat_pump_power', 'outdoor_forecast', 'solar_forecast', 'all_in_price', ...ENERGY_SIGNALS].includes(name)),
       ...(aggregatePhases ? PHASES : []),
       ...(!projecting ? ['garage_compressor_active', 'spot_price', 'requested_heat_mode', 'auxiliary_output', ...H66_SIGNALS] : []),
       ...(names.includes('auxiliary_power') ? ['auxiliary_output'] : [])]);
@@ -760,11 +760,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
       }
       for (const [prefix, group] of candidates) {
         if (time >= energyStarts[prefix]) continue;
-        if (prefix === 'property' && lines.property_current_max) {
-          const line = lines.property_current_max, maximum = propertyMaximum(group.values), previous = line.previous;
+        if (lines[`${prefix}_current_max`]) {
+          const line = lines[`${prefix}_current_max`], maximum = propertyMaximum(group.values), previous = line.previous;
           // Snapshot curves connect only complete neighbouring observations
           // inside their existing continuity bound. No inferred final tail.
-          if (previous && Number.isFinite(previous.y) && maximum.currentA !== null && time - previous.x <= line.gap)
+          if (prefix === 'property' && previous && Number.isFinite(previous.y) && maximum.currentA !== null && time - previous.x <= line.gap)
             propertyHighestPhase?.add(previous.x, time, previous.phases);
           line.add(time, maximum.currentA,
             { source: group.source ?? (group.imported ? 'csv:easee' : undefined), transport: group.transport,
@@ -932,7 +932,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (Number.isFinite(energyStarts.ev1)) timing.add('charger1',energyStarts.ev1,null);
   const energyProgress = traversalProgress('reading-energy');
   const recordedEnergy = !drawingOnly || names.some(name => ENERGY_SIGNALS.includes(name) || PHASES.includes(name)
-    || ['property_power', 'property_current_max', 'charger_power', 'charger2_power', 'caravan_power'].includes(name))
+    || ['property_power', 'property_current_max', 'ev1_current_max', 'ev2_current_max', 'charger_power', 'charger2_power', 'caravan_power'].includes(name))
     ? addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress:energyProgress,propertyHighestPhase,
       propertySnapshot: lines.property_current_max?.previous
         ? { ...lines.property_current_max.previous, gap: lines.property_current_max.gap } : null }) : { rows: 0, intervals: 0 };

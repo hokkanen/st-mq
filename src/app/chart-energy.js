@@ -47,7 +47,7 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
       ? { basis: 'native-meter-counter-delta' } : {}) };
     project(prefix === 'ev1' ? 'charger_power' : prefix === 'ev2' ? 'charger2_power' : 'property_power',
       start,end,total === null ? null : total*HOUR/duration,totalMetadata);
-    if ([1,2,3].some(phase => envelopes[`${prefix}_current_l${phase}`]) || prefix === 'property' && envelopes.property_current_max)
+    if ([1,2,3].some(phase => envelopes[`${prefix}_current_l${phase}`]) || envelopes[`${prefix}_current_max`])
       for (const segment of voltageSegments(voltageReader,Math.max(start,range.from),Math.min(end,range.to,now))) {
         const currents = [];
         for (let phase=0;phase<3;phase++) {
@@ -61,15 +61,15 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
         }
         // Reduce a complete original phase group before display decimation.
         // Independent phase envelopes can retain extrema from different times.
+        const maximum = propertyMaximum(currents);
+        project(`${prefix}_current_max`, segment.start, segment.end, maximum.currentA,
+          { ...phaseMetadata, ...voltageMetadata(segment.estimate), equivalentCurrent: true, maximumPhase: true,
+            phases: maximum.phases });
         if (prefix === 'property') {
-          const maximum = propertyMaximum(currents);
           if (propertySnapshot && maximum.currentA !== null && Number.isFinite(propertySnapshot.y)
             && segment.start - propertySnapshot.x <= propertySnapshot.gap)
             propertyHighestPhase?.add(propertySnapshot.x, segment.start, propertySnapshot.phases);
           propertySnapshot = null;
-          project('property_current_max', segment.start, segment.end, maximum.currentA,
-            { ...phaseMetadata, ...voltageMetadata(segment.estimate), equivalentCurrent: true, maximumPhase: true,
-              phases: maximum.phases });
           propertyHighestPhase?.add(segment.start, segment.end, maximum.phases);
         }
       }

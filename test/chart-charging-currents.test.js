@@ -16,10 +16,10 @@ import { charger2AllowanceState } from '../src/app/chart-charging-allowances.js'
 const start = Date.parse('2026-10-05T06:00:00Z'), MINUTE = 60_000;
 const query = (store, extra = {}) => getChartData({ store, input: 'providers', now: start + 60 * MINUTE,
   startDate: '2026-10-05', endDate: '2026-10-05', view: 'charging_currents', ...extra });
-function propertyInterval(store, index, currents, duration = MINUTE) {
+function propertyInterval(store, index, currents, duration = MINUTE, prefix = 'property') {
   const from = start + index * duration, end = from + duration;
   for (const [phase, current] of currents.entries()) store.observation({ source: 'easee', device: 'synthetic-property',
-    signal: `property_energy_l${phase + 1}`, value: current === null ? null : current * 230 / 1000 * duration / 3600_000,
+    signal: `${prefix}_energy_l${phase + 1}`, value: current === null ? null : current * 230 / 1000 * duration / 3600_000,
     unit: 'kWh', sourceTime: end, receivedAt: end, quality: current === null ? ['missing'] : ['estimated'],
     raw: { intervalStart: from, intervalEnd: end, durationMs: duration, basis: 'integrated-power-phase-allocation' } });
 }
@@ -33,7 +33,7 @@ const put = (history, chargerId, mode, allowanceA, offset) => history.observe({ 
 test('charging currents has allowance and phase bars while All series preserves C1 native checks', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const view = selectedChartView({ view: 'charging_currents' });
-  assert.deepEqual(view.leftSignals, ['property_current_max', 'ev1_current_allowance', 'ev2_current_allowance']);
+  assert.deepEqual(view.leftSignals, ['property_current_max', 'ev1_current_max', 'ev2_current_max', 'ev1_current_allowance', 'ev2_current_allowance']);
   assert.equal(view.unit, 'A'); assert(view.rightSignals.includes('model_indoor_temperature'));
   assert.deepEqual(view.tracks, ['propertyHighestPhase', 'charger2Allowance']);
   assert(view.tracks.every(key => view.defaults[key] === true));
@@ -120,17 +120,58 @@ test('allowance series preserve zero and fallback zero, exact transitions, gaps 
   assert.doesNotMatch(text, /st-mq|source measured/i);
 });
 
-test('charging allowance styles remain stepped and unfilled with temperature context', () => {
+test('charging currents keeps allowance lines and independent charger fills with temperature context', () => {
   const view = selectedChartView({ view: 'charging_currents' });
   for (const interpolation of [true, false]) {
     const datasets = historyDatasets({}, view, view.defaults, defaultPalette, { interpolation });
     for (const key of view.leftSignals) {
       const row = datasets.find(row => row.key === key);
-      assert.equal(row.stepped, true); assert.equal(row.fill, false); assert.equal(row.spanGaps, false); assert.equal(row.yAxisID, 'left');
+      const chargerFill = ['ev1_current_max', 'ev2_current_max'].includes(key);
+      assert.equal(row.stepped, true); assert.equal(row.fill, chargerFill ? 'origin' : false);
+      assert.equal(row.kind, chargerFill ? 'fill' : 'line'); assert.equal(row.hidden, false);
+      assert.equal(row.spanGaps, false); assert.equal(row.yAxisID, 'left');
       assert.deepEqual(row.borderDash, []);
     }
     assert.notEqual(datasets.find(row => row.key === 'ev1_current_allowance').borderColor, datasets.find(row => row.key === 'ev2_current_allowance').borderColor);
     assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
+  }
+});
+
+test('charger maxima use simultaneous original phases before reduction, retaining zero, gaps and voltage boundaries', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const currents = [[10, 9.5, 6], [0, 0, 0], [5, null, 12], [4, 8, 16]];
+  for (const prefix of ['ev1', 'ev2']) currents.forEach((values, index) => propertyInterval(store, index, values, MINUTE, prefix));
+  for (const key of ['ev1_current_max', 'ev2_current_max']) assert(query(store).series[key].every(point => point.y === null));
+  seedVoltage(store, start);
+  seedVoltage(store, start + MINUTE / 2, [250, 230, 230]);
+  const before = store.observations({ limit: 100 });
+  for (const key of ['ev1_current_max', 'ev2_current_max']) {
+    const curve = query(store, { points: 100, viewFrom: start, viewTo: start + 4 * MINUTE }).series[key];
+    assert.equal(curve.find(point => point.x === start).y, 10);
+    assert.equal(curve.find(point => point.x === start + MINUTE / 2).y, 9.5);
+    assert.equal(curve.find(point => point.x === start + MINUTE).y, 0);
+    assert(curve.filter(point => point.x >= start + 2 * MINUTE && point.x < start + 3 * MINUTE).every(point => point.y === null));
+    assert.equal(curve.find(point => point.x === start + 3 * MINUTE).y, 16);
+    assert.equal(curve.at(-1).y, null);
+    const detail = query(store, { view: undefined, left: key, viewFrom: start + 20_000, viewTo: start + 50_000 }).series[key];
+    assert.equal(detail.find(point => point.x === start + 20_000).y, 10);
+    assert.equal(detail.find(point => point.x === start + 30_000).y, 9.5);
+    assert.match(historyTooltipLabel({ dataset: { key, label: key, unit: 'A' }, parsed: curve[0], raw: curve[0] }),
+      /highest simultaneous phase.*interval average.*unity power factor/);
+  }
+  assert.deepEqual(store.observations({ limit: 100 }), before, 'Charger maxima are derived without new recording streams');
+  // Independent phase decimation would retain three peaks of 12 A at
+  // different instants. The maximum must keep its actual original timestamp.
+  for (const prefix of ['ev1', 'ev2']) {
+    for (let index = 0; index < 500; index++) {
+      const values = [2, 3, 4]; values[index % 3] = index % 3 === 0 ? 12 : index % 3 === 1 ? 10 : 8;
+      propertyInterval(store, 300 + index, values, 1000, prefix);
+    }
+    const curve = query(store, { points: 100 }).series[`${prefix}_current_max`];
+    for (const point of curve.filter(point => Number.isFinite(point.y) && point.x >= start + 300_000)) {
+      const index = Math.floor((point.x - start - 300_000) / 1000);
+      assert(Math.abs(point.y - (index % 3 === 0 ? 12 * 230 / 250 : index % 3 === 1 ? 10 : 8)) < 1e-8);
+    }
   }
 });
 

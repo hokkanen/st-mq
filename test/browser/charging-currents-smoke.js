@@ -28,6 +28,12 @@ try {
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => now, installSignalHandlers: false });
   seedChartFixture(app.store, now);
+  for (let at = now - 7 * 3600_000; at < now; at += 5 * 60_000) {
+    for (const phase of [1, 2, 3]) app.store.observation({ source: 'simulation', device: 'visual-test-charger2',
+      signal: `ev2_energy_l${phase}`, value: phase * 2 * [228, 230, 232][phase - 1] / 1000 / 12, unit: 'kWh',
+      sourceTime: at + 5 * 60_000, receivedAt: at + 5 * 60_000, quality: ['simulated', 'estimated'],
+      raw: { intervalStart: at, intervalEnd: at + 5 * 60_000, basis: 'native-meter-counter-phase-allocation' } });
+  }
   const recorder = new ChargingAllowanceHistory({ store: app.store, input: 'simulated' });
   const states = [
     ['unrestricted', 16, 'hardware-restriction'], ['limited', 8, 'priority-allocation'], ['limited', 0, 'fuse-limit'],
@@ -103,7 +109,7 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     localStorage.setItem('home-energy-chart-views', JSON.stringify({view:'charging_currents',views:{},prices:{}}));
-    window.currentCharts = []; window.currentStrokes = [];
+    window.currentCharts = []; window.currentStrokes = []; window.currentFills = [];
     const WorkerOriginal = window.Worker;
     window.Worker = class extends WorkerOriginal {
       constructor(...args) {
@@ -114,6 +120,14 @@ try {
       }
     };
     const fetchOriginal = window.fetch.bind(window), stroke = CanvasRenderingContext2D.prototype.stroke;
+    const fill = CanvasRenderingContext2D.prototype.fill;
+    CanvasRenderingContext2D.prototype.fill = function(...args) {
+      if (this.canvas.id === 'history') {
+        window.currentFills.push(this.fillStyle);
+        if (window.currentFills.length > 5000) window.currentFills.splice(0,1000);
+      }
+      return fill.apply(this,args);
+    };
     window.fetch = async (...args) => {
       const response = await fetchOriginal(...args);
       if (String(args[0]).includes('/api/chart?')) window.currentCharts.push(await response.clone().json());
@@ -133,7 +147,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-activity-key=shellyLimiter]') !== null"), false);
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev2_current_fallback]') !== null"), false);
   const payload = await evaluate("window.currentCharts.find(row => row.view === 'charging_currents' && row.series?.ev2_current_allowance?.some(point => point.y === 12 && point.mode === 'fallback'))");
-  for (const key of ['property_current_max','ev1_current_allowance','ev2_current_allowance'])
+  for (const key of ['property_current_max','ev1_current_max','ev2_current_max','ev1_current_allowance','ev2_current_allowance'])
     assert(payload.series[key].some(point => Number.isFinite(point.y)), `${key}: real chart response has recorded evidence`);
   assert.equal(Object.hasOwn(payload.series, 'ev2_current_fallback'), false);
   assert(payload.series.ev2_current_allowance.some(point => point.y === 0 && point.mode === 'limited'));
@@ -170,9 +184,18 @@ try {
     const style = await evaluate(`(() => {
       const css=getComputedStyle(document.documentElement);
       const normalize=value=> { const ctx=document.createElement('canvas').getContext('2d'); ctx.fillStyle=value; return ctx.fillStyle; };
+      const opaque=value=> { const color=normalize(value); return color.startsWith('#') ? color.slice(0,7)
+        : '#'+color.slice(color.indexOf('(')+1).split(',').slice(0,3).map(part=>Number(part.trim()).toString(16).padStart(2,'0')).join(''); };
       const phases=document.querySelector('[data-activity-key=propertyHighestPhase]');
       const allowance=document.querySelector('[data-activity-key=charger2Allowance]');
       return {
+        fills:['ev1_current_max','ev2_current_max'].map(key=> {
+          const entry=document.querySelector('[data-chart-key='+key+']');
+          const swatch=entry.querySelector('.chart-legend-swatch');
+          const color=normalize(getComputedStyle(swatch).color);
+          return {kind:swatch.dataset.kind,visible:entry.getAttribute('aria-pressed')==='true',color,
+            painted:window.currentFills.some(fill=>opaque(fill)===opaque(color))};
+        }),
         ordinary:['property_current_max','ev1_current_allowance','ev2_current_allowance'].map(key=> {
           const item=document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch');
           const line=document.createElement('canvas').getContext('2d'); line.strokeStyle=getComputedStyle(item).color;
@@ -192,6 +215,8 @@ try {
       };
     })()`);
     assert.deepEqual(style.ordinary.map(row => row.pattern), ['solid','solid','solid']);
+    assert(style.fills.every(row => row.kind === 'fill' && row.visible && row.painted), `${theme} ${width}: both charger maxima are painted fills`);
+    assert.notEqual(style.fills[0].color, style.fills[1].color, 'Charger fills have distinct colours');
     assert(style.ordinary.every(row => row.stroke), `${theme} ${width}: property and both allowance lines are drawn`);
     assert.equal(new Set(style.ordinary.map(row => row.color)).size, 3, 'Both chargers and property have distinct line colors');
     assert.equal(style.temperature, 'right');
