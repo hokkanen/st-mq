@@ -1178,6 +1178,21 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       if (!time(startAt)) return display('unavailable', 'Waiting for a charging plan.');
       startAt = Math.ceil(startAt / 1000) * 1000;
+      // A replacement that cannot be installed does not supersede the accepted
+      // program. Recheck its existing native pause below, with the same expiry
+      // and execution; the minimum duration applies only to a new profile.
+      const owned = state.owned, accepted = state.execution, now = clock();
+      const acceptedStart = accepted?.periods.find(row => row.startAt > now)?.startAt;
+      if (!identification && !state.pending && !state.provisional && owned && owned.purpose === undefined
+        && owned.transactionId === snapshot.transactionId && time(state.session?.connectedAt)
+        && owned.requestedAt >= state.session.connectedAt && owned.confirmedAt >= state.session.connectedAt
+        && owned.confirmedAt <= now && owned.startAt > now
+        && time(acceptedStart) && Math.ceil(acceptedStart / 1000) * 1000 === owned.startAt
+        && !accepted.periods.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now))
+        && startAt !== owned.startAt && startAt > now && startAt - now < MIN_PAUSE_MS) {
+        startAt = owned.startAt;
+        execution = clone(accepted);
+      }
       const expiredProbeClear = identification?.mode === 'probe' && clock() >= identification.probeUntil && state.pending?.action === 'clear';
       if (state.pending && !expiredProbeClear && (state.pending.action === 'clear' || state.pending.instruction.startAt === startAt))
         if (!await dispatch(current, signal)) return display('unconfirmed', 'The native command is waiting for its bounded retry.');

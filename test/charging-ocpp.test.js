@@ -1168,6 +1168,82 @@ test('gap replanning changes remaining periods while preserving elapsed executio
   assert.deepEqual(view.execution.periods, [{ startAt: START, endAt: START + 20 * MINUTE }, { startAt: START + 45 * MINUTE, endAt: null }]);
 });
 
+for (const gap of [false, true]) for (const replacementOffset of [-2, 2])
+  test(`an imminent ${gap ? 'gap' : 'initial'} pause retains accepted execution when a replacement moves its start by ${replacementOffset} minutes`, async t => {
+    const f = fixture(); t.after(() => f.controller.close());
+    const startAt = START + 40 * MINUTE;
+    const original = plan(gap ? START : startAt, { id: 'accepted-program', periods: gap
+      ? [{ startAt: START, endAt: START + 20 * MINUTE }, { startAt, endAt: null }]
+      : [{ startAt, endAt: null }] });
+    await f.controller.update({ enabled: true, plan: original });
+    if (gap) { f.advance(20 * MINUTE); await f.controller.update(); }
+    const accepted = structuredClone(f.stored), before = f.calls.length;
+    f.advance((gap ? 15 : 35) * MINUTE);
+    const replacement = plan(startAt + replacementOffset * MINUTE, { id: 'proposed-replacement' });
+    const view = await f.controller.update({ enabled: true, plan: replacement });
+    assert.equal(view.phase, 'paused'); assert.equal(view.errorCode, null);
+    assert.equal(view.pauseConfirmed, true);
+    assert.deepEqual(view.owned, accepted.owned);
+    assert.deepEqual(view.execution, accepted.execution, 'A rejected proposal cannot become accepted execution');
+    assert.ok(f.calls.slice(before).length > 0, 'The accepted pause receives fresh native readback');
+    assert.ok(f.calls.slice(before).every(row => row.action === 'GetCompositeSchedule'), 'Retaining the pause sends no replacement or release');
+    f.advance(5 * MINUTE);
+    const released = await f.controller.update({ enabled: true, plan: replacement });
+    assert.equal(released.phase, 'released'); assert.equal(released.errorCode, null);
+    assert.equal(released.execution.planId, original.id);
+    assert.equal(released.owned, null);
+    assert.deepEqual(writes(f).map(row => row.action), ['SetChargingProfile', 'ClearChargingProfile']);
+  });
+
+test('an unsendable pause replacement cannot hide contrary native readback', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE) });
+  f.advance(35 * MINUTE);
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'GetCompositeSchedule') reply.chargingSchedule.chargingSchedulePeriod[0].limit = 16;
+    return reply;
+  });
+  const view = await f.controller.update({ enabled: true, plan: plan(START + 42 * MINUTE, { id: 'proposed-replacement' }) });
+  assert.equal(view.errorCode, 'readback-mismatch');
+  assert.equal(view.pauseConfirmed, false); assert.equal(view.ownsInstruction, false);
+  assert.equal(writes(f).length, 1);
+});
+
+test('restart reconfirms the accepted pause before retaining it over a short replacement', async t => {
+  const first = fixture();
+  await first.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE, { id: 'accepted-program' }) });
+  const saved = structuredClone(first.stored), profiles = structuredClone(first.profiles);
+  await first.controller.close();
+  const f = fixture({ initialState: saved }); t.after(() => f.controller.close());
+  for (const [id, profile] of profiles) f.profiles.set(id, profile);
+  f.advance(35 * MINUTE);
+  const view = await f.controller.update({ enabled: true, plan: plan(START + 42 * MINUTE, { id: 'proposed-replacement' }) });
+  assert.equal(view.phase, 'paused'); assert.equal(view.pauseConfirmed, true); assert.equal(view.errorCode, null);
+  assert.deepEqual(view.owned, saved.owned); assert.deepEqual(view.execution, saved.execution);
+  assert.ok(f.calls.some(row => row.action === 'GetCompositeSchedule'));
+  assert.equal(writes(f).length, 0);
+});
+
+test('a short replacement cannot fall back over an unresolved native replacement command', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE, { id: 'accepted-program' }) });
+  f.advance(20 * MINUTE);
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'SetChargingProfile') throw Error('synthetic lost reply');
+    return reply;
+  });
+  await f.controller.update({ enabled: true, plan: plan(START + 50 * MINUTE, { id: 'uncertain-replacement' }) });
+  const pending = structuredClone(f.stored.pending), count = writes(f).length;
+  assert.equal(pending.action, 'install');
+  f.intercept(null); f.advance(15 * MINUTE);
+  const view = await f.controller.update({ enabled: true, plan: plan(START + 38 * MINUTE, { id: 'short-replacement' }) });
+  assert.notEqual(view.phase, 'paused'); assert.equal(view.pauseConfirmed, false);
+  assert.deepEqual(view.pending, pending); assert.equal(view.execution.planId, 'accepted-program');
+  assert.equal(writes(f).length, count);
+});
+
 test('backend preparation permits an empty drained controller despite unrelated readback unavailability', async () => {
   const { fake, item } = transitionFixture(async () => ({ owned: null, pending: null, handoverConfirmed: false }));
   await fake.pauseForBackendChange('charger1', { target: 'cloud' }); assert.equal(item.backendTransition.ready, true);

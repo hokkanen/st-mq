@@ -448,6 +448,11 @@ transition. A command dispatched while charging and every identification pause
 still require power evidence after the command; an existing stop cannot establish
 a causal vehicle response.
 
+A proposed OCPP replacement inside the minimum new-pause duration leaves the
+accepted program and its original release time in place. Fresh native readback
+must still confirm that pause; a pending replacement, changed session or contrary
+readback cannot borrow the previous confirmation.
+
 ## Missing feeds and controller outages
 
 Charging does not require vehicle identification: editable current charge,
