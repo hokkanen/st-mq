@@ -255,6 +255,8 @@ export function heatingTrialDetails(result) {
       ? 'Based on recorded operation and an estimated Normal heating reference.'
       : outcome.basis === 'unassessed-indoor-observation-gap'
         ? 'The cycle ended using conservative control estimates. Gaps in indoor observations prevent assessment of savings and physical recovery.'
+        : outcome.basis === 'unassessed-thermal-input-gap'
+          ? 'Recovery met the limits using conservative stored-heat bounds. Gaps in equipment observations leave savings unassessed.'
         : 'A savings assessment is unavailable. Recorded operation alone does not establish savings.'
       : active ? 'Available after the cycle and recovery, if recorded evidence is sufficient.'
         : 'No complete outcome assessment is available. Savings remain unassessed.',

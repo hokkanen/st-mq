@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCyclePair, phaseAt, trialCostScenarios } from '../control/planner.js';
-import { advanceReference, observedState, rebuildCycleWorking, assessCycle,
+import { advanceReference, observedState, missingCycleThermalInput, rebuildCycleWorking, assessCycle,
   initialTrialCostPrefix, advanceTrialCostPrefix } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { normalOperationHours } from '../control/heating-trials.js';
@@ -361,10 +361,10 @@ export class CycleTracker {
         a.spaceHeatingKwh+=spaceKwh;a.spaceHeatingCostCents+=spaceCents;a.routeCoveredHours+=hours;
         a.dhwKwh+=Math.max(0,energy-spaceKwh);a.dhwCostCents+=Math.max(0,energy-spaceKwh)*price;
         if (phase==='recovery') {a.spaceHeatingRecoveryKwh+=spaceKwh;a.spaceHeatingRecoveryCostCents+=spaceCents;}
-      } else {a.routeMissingHours+=hours;cycle.observerState=null;}
+      } else a.routeMissingHours += hours;
       if (values.energyBasis !== 'measured') a.metered = false;
       } else { a.missingHours += hours; a.compressorActivityObserved = false; a.auxiliaryObserved = false;
-        a.auxiliaryRouteKnown = false; a.metered = false; cycle.observerState=null; }
+        a.auxiliaryRouteKnown = false; a.metered = false; }
       rows.push({ start: cursor, end, ...(end !== now ? { indoorEndpoint: false } : {}),
         outdoorC: dt > 0.5 && !segment ? null : values.outdoorC,
         solarRadiationWm2: dt > 0.5 && !segment ? null : values.solarRadiationWm2,
@@ -419,7 +419,8 @@ export class CycleTracker {
     const measuredRecovery = number(measuredIndoorEndpoint(sample)) && !controlIndoor?.estimated;
     const waitingForTemperature = cycle.temperatureCoverage.initialMeasured
       && cycle.temperatureCoverage.maximumGapMs <= TRIAL_TEMPERATURE_GAP_MS && !measuredRecovery;
-    const settled = !waitingForTemperature && (!temperatureCoverageUsable(cycle.temperatureCoverage) || measuredRecovery && rows.every(row => row.temperatureAvailable))
+    const settled = rows.every(row => !missingCycleThermalInput(cycle, row))
+      && !waitingForTemperature && (!temperatureCoverageUsable(cycle.temperatureCoverage) || measuredRecovery && rows.every(row => row.temperatureAvailable))
       && number(recoveryIndoor) && number(sourceUncertainty)
       && (!controlIndoor?.estimated || now <= controlIndoor.validUntil)
       && recoveryIndoor - sourceUncertainty >= reference.endState.indoorC - 0.2
@@ -431,7 +432,7 @@ export class CycleTracker {
     cycle.stableSince = settled ? cycle.stableSince ?? now : null;
     if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
-      if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
+      if (a.missingHours > 0.05 && !cycle.observerState?.upper) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
       if (cycle.assessmentUnavailableReason || !temperatureCoverageUsable(cycle.temperatureCoverage) || !measuredRecovery) {
         // The control operation ended conservatively. An inferred endpoint or
         // unobserved trajectory cannot establish measured recovery or savings.

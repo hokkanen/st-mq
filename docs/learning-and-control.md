@@ -189,8 +189,12 @@ Held readings are not independent new sensor observations. Genuine report lineag
 limits which temperature changes supply new fitting evidence, while integrated
 heat inputs retain their complete elapsed time. Fitting scores temperatures along later trajectories, separated from training
 by a 12-hour embargo. It compares the candidate with the previous model and holding
-the initial temperature. Missing intervals close and score preceding usable
-fragments; complete short cycles receive their own checks. A dip followed by a
+the initial temperature. The split rolls with recent observations, even when few
+actions complete. Equipment-response validation still requires later complete
+episodes. A bounded telemetry interruption can preserve the causal warm-up and
+the usable parts of a Normal trajectory. Intervals spanning the gap add no
+fitting target, and validation uses the worse error across any remaining room
+temperature bounds. A dip followed by a
 return to the initial temperature cannot score zero error. Coefficient eligibility
 requires independent observed variation and sensitivity, not merely many rows.
 
@@ -457,6 +461,17 @@ Missing temperature, energy or routing evidence can leave an outcome unassessed
 without ending control. A long observation gap is recorded as missing coverage,
 not extrapolated measured consumption. Recovery assessment and its timeout never
 extend native setting restrictions.
+An interruption of up to ten continuous minutes in equipment evidence can
+retain lower and upper stored-heat estimates when outdoor input remains covered
+and no partial floor treatment is observed. The bounds use the frozen model and
+the range of missing compressor, auxiliary and floor-routing inputs. Fresh
+observations resume the comparison. Recovery needs one covered hour with the
+lower stored-heat estimates meeting the same limits as a fully observed cycle.
+The observation tape retains the gap. Covered equipment response can contribute
+to learning, while the cycle supplies no full-cycle savings or advance forecast
+check. Command readiness and native deadlines still require their original
+feedback and authority.
+
 If an evidence gap makes the cycle's stored-heat state or Normal reference
 unrecoverable, the attempt ends as incomplete after treatment and the fixed
 recovery hold have ended. Later readings do not fill the gap or establish

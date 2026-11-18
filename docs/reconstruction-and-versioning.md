@@ -543,7 +543,7 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v21-bounded-native-demand-projection`, with
+The Home learning algorithm is `committed-house-v22-rolling-fit-bounded-input-gaps`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -575,7 +575,13 @@ prefix. A new aggregate endpoint requires a genuine source update; partial room
 updates receive only their newly observed weight, while all-held values earn no
 independent target. Complete retained heat segments can span a sparse genuine
 endpoint interval up to 24 hours (at most 2,048 segments); raw acquisition/reporting
-gaps still split the evidence.
+gaps remain unscored. Up to ten continuous minutes of missing equipment inputs
+can carry bounding thermal states across a gap with covered outdoor input.
+Reported indoor-only interruptions up to 30 minutes can preserve causal state
+with their original heat-input windows. Neither interruption supplies a fitted
+endpoint. Unsupported inputs or measurement-epoch changes remain barriers.
+The chronological training split rolls with recent samples, with a 12-hour
+embargo before validation. Earlier archived cycles cannot hold that split back.
 The recent sample cache and retained episode count remain bounded, with up to two
 additional hours of input windows for a delayed genuine endpoint. These are
 checkpoint fitting caches, not duplicate source journals.

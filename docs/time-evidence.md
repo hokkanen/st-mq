@@ -92,9 +92,10 @@ publication cannot renew source freshness: native OCPP snapshots retain their
 60-second source bound, ordinary electrical inputs retain their five-minute
 bound, and existing held-value exceptions require independent device telemetry.
 
-Home learning uses `committed-house-v21-bounded-native-demand-projection` because admission
-changes input selection. Current journals replay deterministically under that
-algorithm. The current schema includes an index for bounded startup rejection of unsupported
+Home learning uses `committed-house-v22-rolling-fit-bounded-input-gaps` for the
+rolling fit boundary and bounded propagation through short telemetry gaps.
+Current journals replay deterministically under that algorithm. The current
+schema includes an index for bounded startup rejection of unsupported
 learning algorithms, including inactive journal epochs. Earlier development
 algorithms are rejected before mutation and need a deliberate fresh start;
 no migration, historical timestamp repair, older

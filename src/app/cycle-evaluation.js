@@ -1,5 +1,5 @@
 import { advanceCycleEvaluation, trialCostScenarios } from '../control/planner.js';
-import { predictThermalStep, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
+import { predictThermalStep, fireplaceEvidenceReady, advanceThermalBounds, MAX_THERMAL_INPUT_GAP_MS } from '../control/adaptive-learning.js';
 import { initialTemperatureCoverage, advanceTemperatureCoverage } from '../domain/temperature-coverage.js';
 import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
 
@@ -9,16 +9,31 @@ export function evaluationInputs(cycle, fireplaceEvents) {
     config: cycle.modelConfig, occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,
     maxRiseC: cycle.plan.maxRiseC, equipment: { ...cycle.plan.equipment, fireplaceEvents }, includeTail: false };
 }
-export function observedState(cycle, state, row, fireplaceEvents) {
-  if (!state || row.eligible === false || ![row.outdoorC, row.thermalCompressorDuty, row.thermalAuxKw].every(number)
-    || ['partial', 'unknown'].includes(row.floorOverrideMode)
-    || cycle.plan.schedule.floorOverride && !['on', 'off'].includes(row.floorOverrideMode)) return null;
-  const next = predictThermalStep(cycle.plan.model, state, { outdoorC: row.outdoorC,
+export function missingCycleThermalInput(cycle, row) {
+  return row.eligible === false || ![row.thermalCompressorDuty, row.thermalAuxKw].every(number)
+    || row.floorOverrideMode === 'unknown'
+    || (cycle.plan.model.floor?.enabled || cycle.plan.schedule.floorOverride) && !['on', 'off'].includes(row.floorOverrideMode);
+}
+
+export function observedState(cycle, state, row, fireplaceEvents, { bridge = true } = {}) {
+  if (!state || !number(row.outdoorC) || row.floorOverrideMode === 'partial') return null;
+  const missing = missingCycleThermalInput(cycle, row);
+  const gapMs = missing ? (state.gapMs ?? 0) + row.end - row.start : 0;
+  if (missing && (!bridge || gapMs > MAX_THERMAL_INPUT_GAP_MS)) return null;
+  const inputs = { outdoorC: row.outdoorC,
     solarRadiationWm2: row.solarRadiationWm2, phase: row.phase, targetC: cycle.plan.targetC,
     roomBoostC: row.roomBoostC ?? 0, compressorDuty: row.thermalCompressorDuty, auxKw: row.thermalAuxKw,
-    supplyC: row.supplyC, brineC: row.brineC, floorOverrideMode: row.floorOverrideMode,
-    treatmentKey: row.treatmentKey, fireplaceKgPerHour: fireplaceRate(fireplaceEvents, row.start, row.end) }, (row.end-row.start)/HOUR);
-  if (row.indoorEndpoint !== false && number(row.indoorC)) next.indoorC = row.indoorC;
+    supplyC: row.supplyC, brineC: row.brineC, floorOverrideMode: row.floorOverrideMode ?? 'unknown',
+    treatmentKey: row.treatmentKey, fireplaceKgPerHour: fireplaceRate(fireplaceEvents, row.start, row.end) };
+  const duration = (row.end - row.start) / HOUR;
+  const endpoint = row.indoorEndpoint !== false && number(row.indoorC) ? row.indoorC : null;
+  if (missing || state.upper) {
+    const { lower, upper } = advanceThermalBounds(cycle.plan.model, { lower: state, upper: state.upper ?? state }, inputs, duration, missing);
+    if (endpoint !== null) lower.indoorC = upper.indoorC = endpoint;
+    return { ...lower, upper, gapMs };
+  }
+  const next = predictThermalStep(cycle.plan.model, state, inputs, duration);
+  if (endpoint !== null) next.indoorC = endpoint;
   return { indoorC: next.indoorC, reserveC: next.reserveC, ...(next.slabC === undefined ? {} : { slabC: next.slabC }) };
 }
 export function advanceReference(cycle, rows, fireplaceEvents, saved = null, captureTrajectory = false) {
@@ -65,7 +80,7 @@ export function advanceTrialCostPrefix(cycle, rows, fireplaceEvents, previous) {
       const spaceKw = (row.thermalCompressorDuty === 0 ? 0
         : row.thermalCompressorDuty * (compressorKw * scenario.config.scenarioElectricalScale + circulationKw)) + row.thermalAuxKw;
       actualCostCents += spaceKw * (row.end - row.start) / HOUR * row.price;
-      actualState = observedState(altered, actualState, row, fireplaceEvents);
+      actualState = observedState(altered, actualState, row, fireplaceEvents, { bridge: false });
       if (!actualState) return { ...next, available: false };
       if (row.phase === 'reduction' && row.price < 0) {
         while (referenceIndex < trajectory.length && trajectory[referenceIndex].at <= row.start) referenceIndex++;
@@ -187,16 +202,19 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
   }
   if (!originalCoverage) predicted = null;
   const originalRecoveryAvailable = Boolean(predicted);
-  const comparableSpace = floorTreatmentComparable && a.routeMissingHours <= 0.001 && a.routeCoveredHours > 0
+  const boundedRecovery = Boolean(cycle.observerState?.upper);
+  const comparableSpace = !boundedRecovery && floorTreatmentComparable && a.routeMissingHours <= 0.001 && a.routeCoveredHours > 0
     && !cycle.fireplaceCorrectionRevision && (!firePresent || fireplaceEvidenceReady(cycle.plan.model));
   const phases = [...phaseSet];
       cycle.assessment = { profitCents: comparableSpace ? reference.spaceHeatingCostCents - a.spaceHeatingCostCents : null,
         wholeCycleProfitCents:null, wholeCycleProfitReason:'DHW demand, delivery and tank recovery are not counterfactually modelled.',
-        referenceCostCents: reference.spaceHeatingCostCents, actualCostCents: a.costCents,
-        actualSpaceHeatingCostCents:a.spaceHeatingCostCents,dhwCostCents:a.dhwCostCents,
+        referenceCostCents: reference.spaceHeatingCostCents, actualCostCents: a.missingHours > 0 ? null : a.costCents,
+        actualSpaceHeatingCostCents: a.routeMissingHours > 0 || a.missingHours > 0 ? null : a.spaceHeatingCostCents,
+        dhwCostCents: a.routeMissingHours > 0 || a.missingHours > 0 ? null : a.dhwCostCents,
         recoveryErrorCents: originalRecoveryAvailable && comparableSpace ? Math.abs(originalRecovery.costCents - a.spaceHeatingRecoveryCostCents) : null,
         uncertaintyCents: Math.max(5, reference.uncertaintyCents + (a.metered ? 0 : Math.abs(a.costCents) * 0.35)),
         basis: comparableSpace ? 'estimated-space-heating-execution-and-reference'
+          : boundedRecovery ? 'unassessed-thermal-input-gap'
           : !floorTreatmentComparable ? 'unassessed-floor-treatment-not-confirmed'
           : cycle.fireplaceCorrectionRevision ? 'unassessed-corrected-fireplace-history'
           : firePresent && !fireplaceEvidenceReady(cycle.plan.model) ? 'unassessed-fireplace-response' : 'unassessed-missing-space-heating-attribution',
@@ -204,7 +222,8 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
           : cycle.adjustments?.length ? 'Unavailable: executed schedule changed' : 'Unavailable: original forecast did not cover the complete cycle',
         calibrationBasis: 'Executed actions and contemporaneous weather estimates; frozen model',
         temperatureCoverage: cycle.temperatureCoverage,
-        recoveryBasis: 'Comparable room temperature and reserve reconstructed with the frozen cycle model, and selected slab when configured, held for one hour; DHW service excluded',
+        recoveryBasis: boundedRecovery ? 'Comparable room temperature and lower bounds on stored heat, held for one covered hour after telemetry returned'
+          : 'Comparable room temperature and reserve reconstructed with the frozen cycle model, and selected slab when configured, held for one hour; DHW service excluded',
         referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
       const episode = { id: cycle.id, treatmentKey: cycle.treatmentKey ?? 'native', complete: true, recoveryComplete: true, startedAt: cycle.startedAt, endedAt: now,
         ...(cycle.plan.userTrial ? { userTrial: cycle.plan.userTrial } : {}),
@@ -233,10 +252,10 @@ export function assessCycle(store, { id, count, now, fireplaceEvents = [] }) {
           basis:'frozen-advance-forecast',adjusted:Boolean(cycle.adjustments?.length)},
         phases: phases,
         provenance: { basis: 'committed-history', forecastAlgorithm: cycle.plan.algorithmVersion ?? 'unversioned-frozen-forecast', forecastVersion: cycle.lastForecastVersion ?? null } };
-      if (!floorTreatmentComparable
+      if (boundedRecovery || !floorTreatmentComparable
         || cycle.fireplaceCorrectionRevision || firePresent && !fireplaceEvidenceReady(cycle.plan.model)) {
-        // Keep the attempt and actual observations, without letting assumed wood
-        // heat calibrate recovery energy or certify advance control performance.
+        // The covered response can still contribute. Recovery bounds and
+        // uncertain inputs cannot calibrate energy or certify advance forecasts.
         episode.complete = false;
         episode.responseComplete = true;
       }

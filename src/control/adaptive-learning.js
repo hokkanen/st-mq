@@ -4,8 +4,10 @@ import { HEAT_PUMP_PERFORMANCE, estimateHeatPumpPerformance, estimateHydronicHea
 import { updateComfortLearning, validComfortLearning, validComfortReference, goodQuality, hasEstimatedIndoor } from './learning.js';
 import { fireplaceBurnGroups, fireplaceAffectsLearning, FIREPLACE_RELEVANCE } from '../domain/fireplace.js';
 import { initialHomeState, initialActionResponse, DEFAULT_HOME_MODEL, DEFAULT_HOME_ENERGY, validHomeModelEstimate } from '../domain/home-model.js';
+import { indoorAvailability, TRIAL_TEMPERATURE_GAP_MS } from '../domain/temperature-coverage.js';
 
 const HOUR = 3_600_000;
+export const MAX_THERMAL_INPUT_GAP_MS = 10 * 60_000;
 const MAX_SAMPLES = 1536;
 const REFIT_RECORDS = 12;
 const MIN_PHASE_EPISODES = 3;
@@ -218,6 +220,10 @@ export function thermalUncertaintyC(model, hours, inputs = {}) {
  * Thermal fitting requires observed inputs; equipment forecasts have separate
  * evidence. No artificial indoor upper temperature cap is applied. */
 export function predictThermalStep(model, state, inputs, dtHours) {
+  return integrateThermalStep(model, state, inputs, dtHours);
+}
+
+function integrateThermalStep(model, state, inputs, dtHours, bound = null) {
   if (!validModel(model) || !finite(state?.indoorC) || !finite(inputs?.outdoorC)
     || !finite(dtHours) || dtHours <= 0 || dtHours > 72) throw new TypeError('Valid thermal model, temperatures and a bounded positive duration required');
   const p = model.parameters, phase = PHASES.includes(inputs.phase) ? inputs.phase : 'normal';
@@ -229,6 +235,15 @@ export function predictThermalStep(model, state, inputs, dtHours) {
   const internal=model.initialModel?.internalCPerHour??0;
   let indoorC = state.indoorC, reserveC = finite(state.reserveC) ? state.reserveC : indoorC;
   const floor = model.floor?.enabled ? model.floor : null;
+  const allocation = floor ? (inputs.floorOverrideMode === 'on'
+    ? floor.openAllocationFraction : floor.closedAllocationFraction) : 0;
+  const allocationUnknown = floor && bound !== null && inputs.floorOverrideMode === 'unknown';
+  const lowAllocation = allocationUnknown ? Math.min(floor.openAllocationFraction, floor.closedAllocationFraction) : allocation;
+  const highAllocation = allocationUnknown ? Math.max(floor.openAllocationFraction, floor.closedAllocationFraction) : allocation;
+  // The passive update has nonnegative state weights. Bound each heat path
+  // independently so even a change of routing inside the gap is enclosed.
+  const native = 1 - (bound === 'upper' ? lowAllocation : highAllocation);
+  const slabAllocation = bound === 'upper' ? highAllocation : lowAllocation;
   let slabC = finite(state.slabC) ? state.slabC : indoorC;
   const initialSlabC = slabC;
   const initialReserveC = reserveC;
@@ -246,8 +261,6 @@ export function predictThermalStep(model, state, inputs, dtHours) {
       floor ? (floor.exchangeKwPerC + floor.groundLossKwPerC) / floor.capacityKwhPerC : 0);
     const dt = Math.min(0.25, 0.1 / fastestRate, remaining);
     const source = estimateHeatPumpPerformance({ ...model.performance, ...inputs });
-    const allocation = floor ? (inputs.floorOverrideMode === 'on'
-      ? floor.openAllocationFraction : floor.closedAllocationFraction) : 0;
     const reserveRatio = floor ? floor.nativeCapacityKwhPerC * p.hydronicCPerKwh
       : p.memoryExchangePerHour * p.reserveTimeHours;
     const rates = (room, reserve, slab) => {
@@ -258,10 +271,10 @@ export function predictThermalStep(model, state, inputs, dtHours) {
       const slabExchangeKw = floor ? floor.exchangeKwPerC * (slab - room) : 0;
       const slabGroundKw = floor ? floor.groundLossKwPerC * (slab - floor.groundC) : 0;
       return { duty, heat, loss, slabGroundKw,
-        room: -loss + (1 - SLOW_HEAT_FRACTION) * heat * (1 - allocation)
+        room: -loss + (1 - SLOW_HEAT_FRACTION) * heat * native
           + solar + fireplace + internal + exchange + slabExchangeKw * p.hydronicCPerKwh,
-        reserve: (-exchange + SLOW_HEAT_FRACTION * heat * (1 - allocation)) / reserveRatio,
-        slab: floor ? (allocation * heat / p.hydronicCPerKwh - slabExchangeKw - slabGroundKw) / floor.capacityKwhPerC : 0 };
+        reserve: (-exchange + SLOW_HEAT_FRACTION * heat * native) / reserveRatio,
+        slab: floor ? (slabAllocation * heat / p.hydronicCPerKwh - slabExchangeKw - slabGroundKw) / floor.capacityKwhPerC : 0 };
     };
     // SSP Heun is an average of two passive Euler updates. The complete-row
     // bound keeps both stages positive; averaging their physical fluxes retains
@@ -292,6 +305,22 @@ export function predictThermalStep(model, state, inputs, dtHours) {
     solarCPerHour: solar, fireplaceCPerHour: fireplace, reserveChangeC: reserveC - initialReserveC,
     solarKnown, phaseEvidence: checkedPhase ? 'checked' : phaseCoverage >= 12 ? 'observed-unchecked' : 'prior',
     actionEvidence: actionEvidenceReady(model, phase,inputs.phaseHours??dtHours,inputs.treatmentKey,inputs.roomBoostC) ? 'checked' : 'unvalidated' };
+}
+
+/** Engineering bounds under the current thermal model. No value derived here
+ * supplies an observation, a power total or command authority. */
+export function advanceThermalBounds(model, { lower, upper }, inputs, durationHours, missing) {
+  const step = (state, bound, high) => {
+    const next = integrateThermalStep(model, state, missing ? { ...inputs,
+      compressorDuty: inputs.compressorDuty ?? (high ? 1 : 0),
+      auxKw: inputs.auxKw ?? (high ? 20 : 0),
+      supplyC: inputs.supplyC ?? (high ? 30 : 50),
+      solarRadiationWm2: inputs.solarRadiationWm2 ?? (high ? 2000 : 0),
+    } : inputs, durationHours, bound);
+    return { indoorC: next.indoorC, reserveC: next.reserveC,
+      ...(finite(next.slabC) ? { slabC: next.slabC } : {}) };
+  };
+  return { lower: step(lower, 'lower', false), upper: step(upper, 'upper', true) };
 }
 
 function validSample(sample) {
@@ -429,6 +458,16 @@ function thermalInterval(model, state, segments) {
   return predicted;
 }
 
+function boundedThermalInterval(model, bounds, segments, missing) {
+  for (const [index, segment] of segments.entries())
+    bounds = advanceThermalBounds(model, bounds, segment, (segment.end - segment.start) / HOUR, missing[index]);
+  return bounds;
+}
+
+function midpoint({ lower, upper }) {
+  return Object.fromEntries(Object.keys(lower).map(key => [key, (lower[key] + upper[key]) / 2]));
+}
+
 function hasFireplace(sample) {
   return fireplaceAffectsLearning(sample);
 }
@@ -457,18 +496,43 @@ function endpointWeight(previous, next) {
 // observation prefix. The prefix is never scored as independent validation.
 const thermalWarmupHours = () => 6;
 
+function recordedIndoorGap(sample, from, to) {
+  const sensors = Object.values(sample.indoorSensors ?? {}).filter(sensor => sensor.weight > 0);
+  if (!Array.isArray(sample.inputSegments) || sample.windowStart !== from || !(to > from)
+    || hasEstimatedIndoor(sample) || sensors.some(sensor => sensor.measurementEligible === false)
+    || !sensors.some(sensor => sensor.reportCoverageComplete === false && Array.isArray(sensor.reportIntervals))) return null;
+  const covered = indoorAvailability(sample, from, to).sort((a, b) => a.start - b.start);
+  let cursor = from, missing = 0;
+  for (const span of covered) {
+    missing += Math.max(0, span.start - cursor);
+    cursor = Math.max(cursor, span.end);
+  }
+  return missing + to - cursor;
+}
+
 /** Integrate the original heat-input windows between genuine new observations.
  * A held room report is control context, not a new independent fitting target. */
 export function thermalObservationIntervals(samples, targetC = 21) {
   const result = [];
-  let anchor = null, previous = null, pending = [], ignitions = new Map();
+  let anchor = null, previous = null, pending = [], indoorGapMs = 0, ignitions = new Map();
   for (const sample of samples) {
-    if (!validSample(sample)) { result.push(sample); anchor = null; previous = null; pending = []; ignitions.clear(); continue; }
+    const valid = validSample(sample);
+    if (!valid) {
+      const from = time(previous?.timestamp), to = time(sample.timestamp);
+      const gap = anchor && recordedIndoorGap(sample, from, to);
+      const segments = gap > 0 && indoorGapMs + gap <= TRIAL_TEMPERATURE_GAP_MS
+        ? intervalSegments(previous, sample, targetC) : [];
+      if (segments.length && segments.every(segment => usableInputs(segment, false))) {
+        pending.push(...segments); previous = sample; indoorGapMs += gap;
+        continue;
+      }
+      result.push(sample); anchor = null; previous = null; pending = []; indoorGapMs = 0; ignitions.clear(); continue;
+    }
     if (!anchor) { result.push(sample); anchor = sample; previous = sample; continue; }
     const segments = intervalSegments(previous, sample, targetC);
     if (!segments.length || (time(sample.timestamp) - time(previous.timestamp)) / HOUR > 2) {
       result.push({ timestamp: sample.timestamp, valid: false });
-      result.push(sample); anchor = sample; previous = sample; pending = []; ignitions.clear(); continue;
+      result.push(sample); anchor = sample; previous = sample; pending = []; indoorGapMs = 0; ignitions.clear(); continue;
     }
     pending.push(...segments);
     for (const ignition of sample.fireplaceIgnitions ?? []) {
@@ -479,10 +543,12 @@ export function thermalObservationIntervals(samples, targetC = 21) {
     previous = sample;
     if (!genuineEndpoint(anchor, sample)) continue;
     result.push({ ...sample, fireplaceIgnitions: [...ignitions.values()], windowStart: time(anchor.timestamp), inputSegments: pending,
+      ...(indoorGapMs ? { unscoredIndoorGap: true } : {}),
       observationIntervalHours: (time(sample.timestamp) - time(anchor.timestamp)) / HOUR });
-    anchor = sample; pending = []; ignitions.clear();
+    anchor = sample; pending = []; indoorGapMs = 0; ignitions.clear();
   }
-  if (pending.length) result.push({ ...previous, fireplaceIgnitions: [...ignitions.values()], windowStart: time(anchor.timestamp), inputSegments: pending,
+  if (pending.length && validSample(previous)) result.push({ ...previous, fireplaceIgnitions: [...ignitions.values()], windowStart: time(anchor.timestamp), inputSegments: pending,
+    ...(indoorGapMs ? { unscoredIndoorGap: true } : {}),
     temperatureObservationFresh: false });
   return result;
 }
@@ -495,8 +561,9 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
   const scoreAt = time(samples[scoreFrom]?.timestamp);
   samples = thermalObservationIntervals(samples, targetC);
   scoreFrom = finite(scoreAt) ? samples.findIndex(sample => time(sample.timestamp) >= scoreAt) : 0;
+  if (scoreFrom < 0) scoreFrom = samples.length;
   const completed = new Map(completeEpisodes.map(episode => [episode.id, episode]));
-  let state = null, block = null, warmupHours = 0, initialCandidates = null;
+  let state = null, bounds = null, gapMs = 0, block = null, warmupHours = 0, initialCandidates = null;
   const requiredWarmupHours = requireWarmup ? thermalWarmupHours(model) : 0;
   const squaredRates = [], predictions = [], blocks = [], excluded = [];
   const finish = reason => {
@@ -505,7 +572,7 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     // A later gap cannot erase an already complete continuous episode. An
     // interior gap splits the block, so neither fragment can cover both edges.
     const wholeEpisode = episode && block.start <= time(episode.startedAt) && block.end >= time(episode.endedAt);
-    if (block.initializationSupported && (block.hours >= 6 && !block.episodeId || wholeEpisode && block.hours >= 0.25)) {
+    if (block.initializationSupported && (block.coveredHours >= 6 && !block.episodeId || wholeEpisode && block.coveredHours >= 0.25)) {
       blocks.push({ ...block, completeEpisode: Boolean(wholeEpisode),
         maeC: block.absoluteDegreeHours / block.scoredHours,
         persistenceMaeC: block.persistenceDegreeHours / block.scoredHours });
@@ -516,10 +583,20 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
   for (let i = 1; i < samples.length; i++) {
     const a = samples[i - 1], b = samples[i], dt = (time(b.timestamp) - time(a.timestamp)) / HOUR;
     const segments = validSample(a) && validSample(b) ? intervalSegments(a, b, targetC) : [];
+    const missing = segments.map(segment => !usableInputs(segment, observedOnly));
+    let missingMs = 0;
+    const bounded = segments.every((segment, index) => {
+      if (!missing[index]) { gapMs = 0; return true; }
+      const duration = segment.end - segment.start;
+      missingMs += duration;
+      gapMs += duration;
+      return gapMs <= MAX_THERMAL_INPUT_GAP_MS && segment.floorOverrideMode !== 'partial' && usableInputs(segment, false);
+    });
+    const unscored = missingMs > 0 || b.unscoredIndoorGap === true;
     if (!segments.length || segments.length > 2048 || dt < 1 / 12 || dt > 24 || Math.abs((b.indoorC - a.indoorC) / dt) > 2
       || excludeFireplace && (hasFireplace(a) || hasFireplace(b) || segments.some(hasFireplace))
-      || !segments.every(segment => usableInputs(segment, observedOnly))) {
-      finish('gap'); state = null; initialCandidates = null; warmupHours = 0; continue;
+      || !bounded) {
+      finish('gap'); state = bounds = null; initialCandidates = null; warmupHours = gapMs = 0; continue;
     }
     if (!state) {
       state = initialHomeState(model, a.indoorC, segments[0].outdoorC, segments[0].solarRadiationWm2);
@@ -532,11 +609,18 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
       // a prediction of that same endpoint.
       for (const candidate of initialCandidates) {
         candidate.state.indoorC = a.indoorC;
-        candidate.state = thermalInterval(model, candidate.state, segments);
-        candidate.error += Math.abs(candidate.state.indoorC - b.indoorC) * dt;
+        if (missingMs || candidate.bounds) {
+          const pair = candidate.bounds ?? { lower: { ...candidate.state }, upper: { ...candidate.state } };
+          pair.lower.indoorC = pair.upper.indoorC = a.indoorC;
+          candidate.bounds = boundedThermalInterval(model, pair, segments, missing);
+          candidate.state = midpoint(candidate.bounds);
+        } else candidate.state = thermalInterval(model, candidate.state, segments);
+        if (!unscored) candidate.error += Math.abs(candidate.state.indoorC - b.indoorC) * dt;
       }
-      warmupHours += dt;
-      state = { ...initialCandidates.reduce((best, item) => item.error < best.error ? item : best).state };
+      warmupHours += unscored ? 0 : dt;
+      const best = initialCandidates.reduce((best, item) => item.error < best.error ? item : best);
+      state = { ...best.state };
+      bounds = best.bounds ?? null;
       if (warmupHours >= requiredWarmupHours) initialCandidates = null;
       continue;
     }
@@ -545,16 +629,25 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
     const episodeId = ids.length === 1 ? ids[0] : null;
     const group = episodeId ? `episode:${episodeId}` : `day:${Math.floor(time(a.timestamp) / (24 * HOUR))}`;
     if (rollout && scoring && block && group !== block.id) finish('boundary');
-    if (!rollout || !scoring || !block) state.indoorC = a.indoorC;
-    if (rollout && scoring && !block) block = { id: group, episodeId, start: time(a.timestamp), end: time(a.timestamp),
-      hours: 0, scoredHours: 0, absoluteDegreeHours: 0, persistenceDegreeHours: 0, maxErrorC: 0,
+    if (unscored && block?.episodeId) finish('gap');
+    if (!rollout || !scoring || !block) {
+      state.indoorC = a.indoorC;
+      if (bounds) bounds.lower.indoorC = bounds.upper.indoorC = a.indoorC;
+    }
+    if (rollout && scoring && !block && !unscored) block = { id: group, episodeId, start: time(a.timestamp), end: time(a.timestamp),
+      hours: 0, coveredHours: 0, scoredHours: 0, absoluteDegreeHours: 0, persistenceDegreeHours: 0, maxErrorC: 0,
       persistenceStartC: a.indoorC, errors: [], phaseHours: {}, initialState: { ...state },
       initializationSupported: warmupHours >= requiredWarmupHours, warmupHours };
     const before = { ...state };
-    state = thermalInterval(model, state, segments);
+    if (missingMs || bounds) {
+      bounds = boundedThermalInterval(model, bounds ?? { lower: state, upper: state }, segments, missing);
+      state = midpoint(bounds);
+    } else state = thermalInterval(model, state, segments);
+    if (unscored) continue;
     warmupHours += dt;
     if (!scoring || b.temperatureObservationFresh === false) continue;
-    const errorC = Math.abs(b.indoorC - state.indoorC);
+    const errorC = rollout && bounds ? Math.max(Math.abs(b.indoorC - bounds.lower.indoorC), Math.abs(b.indoorC - bounds.upper.indoorC))
+      : Math.abs(b.indoorC - state.indoorC);
     const weight = endpointWeight(a,b);
     if (!rollout) {
       if (warmupHours < requiredWarmupHours) continue;
@@ -564,7 +657,9 @@ export function evaluateThermalModel(model, samples, { targetC = 21, scoreFrom =
         initializationSupported: warmupHours >= requiredWarmupHours,
         fireplaceIgnitions: (b.windowStart === time(a.timestamp) ? b : a).fireplaceIgnitions ?? [] });
     } else {
-      block.hours += dt; block.end = time(b.timestamp);
+      block.end = time(b.timestamp);
+      block.hours = (block.end - block.start) / HOUR;
+      block.coveredHours += dt;
       block.scoredHours += dt*weight;
       block.absoluteDegreeHours += errorC * dt*weight;
       block.persistenceDegreeHours += Math.abs(b.indoorC - block.persistenceStartC) * dt*weight;
@@ -752,17 +847,11 @@ export function fitAdaptiveModel(cp, config = {}) {
   const byTime = new Map([...(cp.episodeArchive ?? []).flatMap(entry => entry.samples), ...cp.samples]
     .map(sample => [time(sample.timestamp), sample]));
   const samples = [...byTime.values()].sort((a, b) => time(a.timestamp) - time(b.timestamp));
-  let split = Math.floor(samples.length * 0.7);
-  const currentEpisodes = (cp.episodeArchive ?? []).filter(episode => !finite(cp.equipmentEpochAt)
-    || time(episode.startedAt) >= cp.equipmentEpochAt).sort((a, b) => time(a.endedAt) - time(b.endedAt));
-  // Reserve independent cycles, not merely thirty percent of frequent normal
-  // observations. Otherwise a few cycles per week can never supply three held-
-  // out examples inside the tail of a sixteen-day sample cache.
-  if (currentEpisodes.length >= 6) {
-    const heldoutStart = time(currentEpisodes.at(-3).startedAt) - 12 * HOUR;
-    const beforeEpisodes = samples.findIndex(sample => time(sample.timestamp) >= heldoutStart);
-    if (beforeEpisodes >= 0) split = Math.min(split, beforeEpisodes);
-  }
+  // The recent observation window moves even if action episodes stop arriving.
+  // Archived episodes still have to lie wholly on the eligible side of the split.
+  const recent = cp.samples.length ? cp.samples : samples;
+  const boundary = time(recent[Math.floor(recent.length * 0.7)]?.timestamp);
+  let split = samples.findIndex(sample => time(sample.timestamp) >= boundary);
   const splitDay = Math.floor(time(samples[split]?.timestamp) / (24 * HOUR));
   while (split > 0 && (Math.floor(time(samples[split - 1].timestamp) / (24 * HOUR)) === splitDay
     || samples[split]?.episodeId && samples[split - 1].episodeId === samples[split].episodeId)) split--;
@@ -984,6 +1073,7 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
   } : { timestamp: new Date(at).toISOString(), valid: false, quality: ['invalid-observation'],
     phase: sample.phase ?? null, regime: sample.regime ?? null, roomBoostC: sample.roomBoostC ?? null,
     preheat: sample.preheat === true, recovering: sample.recovering === true,
+    ...(hasEstimatedIndoor(sample) ? { indoorEstimated: true } : {}),
     ...(sample.inputSegments ? { inputSegments: structuredClone(sample.inputSegments), windowStart: sample.windowStart } : {}) };
   if (sample.indoorSensors) normalized.indoorSensors = structuredClone(sample.indoorSensors);
   if (sample.measurementEpochAt !== undefined) normalized.measurementEpochAt = sample.measurementEpochAt;

@@ -50,12 +50,14 @@ test('joint route segments separate DHW compressor and AUX from space recovery',
   assert.equal(a.recoveryAuxKwh,0);
 });
 
-test('missing thermal interval invalidates reserve even if a newer live model says recovered',t=>{
+test('short thermal gaps keep frozen-model reserve bounds even if a newer live model says recovered',t=>{
   const {tracker}=rig(t,[{start:now,end:now+H,price:10,outdoorC:21,solarRadiationWm2:0}]);
   tracker.record(sample(now,now+60000,null,{thermalCompressorDuty:null}),now+60000,{thermalState:{reserveC:50}});
   tracker.record(sample(now+60000,now+120000,3),now+120000,{thermalState:{reserveC:50}});
-  assert.equal(tracker.active().observerState,null);
-  assert.equal(tracker.active().stableSince,null);
+  const cycle = tracker.active();
+  assert.ok(cycle.observerState.reserveC < cycle.observerState.upper.reserveC);
+  assert.ok(cycle.observerState.upper.reserveC < 22);
+  assert.equal(cycle.stableSince,null);
 });
 
 test('incomplete attempts retain covered cost and remain visible outside completed profit',t=>{

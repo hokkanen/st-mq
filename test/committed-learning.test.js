@@ -445,7 +445,7 @@ test('an unsupported inactive learning row rejects before writable setup even wi
   const raw = new DatabaseSync(path); registerJournalFunctions(raw);
   raw.function('journal_capture_enabled', () => 0);
   raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
-    VALUES('unselected-epoch','mqtt','unsupported','context',?,'committed-house-v16-observed-input-admission','{}')`).run(start);
+    VALUES('unselected-epoch','mqtt','unsupported','context',?,'committed-house-v21-bounded-native-demand-projection','{}')`).run(start);
   raw.close();
   const before = readFileSync(path);
   for (const readOnly of [false, true]) {
@@ -489,7 +489,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v21-bounded-native-demand-projection');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v22-rolling-fit-bounded-input-gaps');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

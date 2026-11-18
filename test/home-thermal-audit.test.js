@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialAdaptiveModel, predictThermalStep, thermalObservationIntervals, thermalUncertaintyC,
+import { initialAdaptiveModel, predictThermalStep, evaluateThermalModel, fitAdaptiveModel, thermalObservationIntervals, thermalUncertaintyC,
   thermalErrorEnvelope, restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { withFireplaceInputs } from '../src/app/fireplace-inputs.js';
 import { fireplaceBurnGroups } from '../src/domain/fireplace.js';
@@ -104,6 +104,45 @@ test('held temperature aggregation preserves all causal ignition identities and 
   assert(!gap.at(-1).fireplaceIgnitions?.some(event => event.id === 'first'));
 });
 
+test('old cycle archives cannot pin the general house training window', () => {
+  const from = Date.UTC(2027, 0, 1);
+  const samples = Array.from({ length: 960 }, (_, index) => ({
+    ...zero, timestamp: from + index * HOUR / 4, indoorC: 21, outdoorC: 5 + Math.sin(index / 27),
+    compressorDuty: index % 7 === 0 ? 1 : 0, regime: 'occupied',
+  }));
+  const episodeArchive = Array.from({ length: 6 }, (_, index) => ({ id: `episode-${index}`,
+    startedAt: from + index * 6 * HOUR, endedAt: from + (index * 6 + 2) * HOUR, samples: [], phases: ['reduction'] }));
+  const cp = { samples, model: initialAdaptiveModel(), baselineC: 21 };
+  const rolling = fitAdaptiveModel(cp);
+  const sparse = fitAdaptiveModel({ ...cp, episodeArchive });
+  assert.ok(sparse.parameterEvidence.lossPerHour.observedDays >= 6);
+  assert.deepEqual(sparse.parameterEvidence.lossPerHour, rolling.parameterEvidence.lossPerHour);
+});
+
+test('short committed gaps pause fitting scores while retaining the preceding thermal warmup', () => {
+  const period = HOUR / 4, duration = 38_000;
+  const rows = Array.from({ length: 51 }, (_, index) => {
+    const at = start + index * period;
+    const covered = { ...zero, regime: 'occupied', floorOverrideMode: 'off', start: at - period, end: at };
+    return { ...covered, timestamp: at, windowStart: at - period, indoorC: 21, inputSegments: [covered] };
+  });
+  const equipmentGap = rows[16], segment = equipmentGap.inputSegments[0];
+  equipmentGap.inputSegments = [
+    { ...segment, end: segment.start + duration, compressorDuty: null, auxKw: null, floorOverrideMode: 'unknown' },
+    { ...segment, start: segment.start + duration },
+  ];
+  const indoorGap = rows[32];
+  indoorGap.indoorC = null;
+  indoorGap.indoorSensors = { room: { weight: 1, value: null, reportCoverageComplete: false,
+    reportIntervals: [{ start: indoorGap.windowStart + duration, end: indoorGap.timestamp }] } };
+  const options = { rollout: false, requireWarmup: true };
+  const { predictions } = evaluateThermalModel(initialAdaptiveModel(), rows, options);
+  assert.equal(predictions[0].timestamp, rows[26].timestamp, 'A short gap pauses initial warmup instead of starting it over');
+  assert(!predictions.some(row => row.timestamp === rows[33].timestamp), 'The first real endpoint after the indoor gap is not a score');
+  assert(predictions.some(row => row.timestamp === rows[34].timestamp), 'The next fully observed interval contributes');
+  assert(predictions.every(row => row.segments.every(input => Number.isFinite(input.compressorDuty))));
+});
+
 test('hourly endpoint evidence cannot claim measured quarter-hour or half-hour support', () => {
   const envelope = thermalErrorEnvelope({ blocks: Array.from({ length: 3 }, () => ({ hours: 2,
     errors: [{ hours: 1, errorC: 0.1 }, { hours: 2, errorC: 0.2 }] })), maxErrorC: 0.2, horizons: [2, 2, 2] });
@@ -126,5 +165,5 @@ test('obsolete native Home checkpoints and payloads reject without journal mutat
   assert.throws(() => restoreAdaptiveCheckpoint({ version: 1, model: { version: 3 }, samples: [] }), /Unsupported Home checkpoint/);
   assert.throws(() => appendLearningRecord(store, 'mqtt', 'sample', { timestamp: start, intervalInputs: {} }), /Unsupported Home sample/);
   assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v21-bounded-native-demand-projection');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v22-rolling-fit-bounded-input-gaps');
 });

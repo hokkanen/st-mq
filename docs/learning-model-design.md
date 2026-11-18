@@ -21,13 +21,13 @@ they do not prove optimal settings or savings for the actual house.
 | Reduction imposed an artificial compressor-capacity ceiling. Preheat received extra heat merely because it was requested. | Separate observed thermal input from estimated equipment response. A reduction can run the compressor fully. No direct preheat heat credit. |
 | The slow state could not charge before the room warmed. | Put hydronic heat into a slow node with conservation-weighted exchange; keep the unobserved topology/memory constants explicit priors. |
 | A thermal fit could authorize a long economic action without tested control response. | Keep separate conditional thermal, equipment-response and frozen advance-cycle accuracy checks; initial estimates support bounded operation before those checks pass; preheat uses one configured ROOM increase, default +5 °C, above the saved normal setting. |
-| Sparse weekly cycles could never fit three held-out episodes into a short rolling tail. | Preserve complete episode samples with causal thermal warmup, and reserve the latest three episodes chronologically once enough exist, with an embargo. |
+| Sparse cycles could pin the training cutoff and keep new Normal observations out of fitting. | Roll the house validation split with recent observations and keep the chronological embargo. Preserve complete episode samples with causal warm-up for independent treatment checks. |
 | A queued plan could start using stale benefit calculations. | Re-evaluate the promised schedule against current evidence, settings, prices and weather before dispatch. |
 | Multiplying every reduction by every preheat duration/boost could block the control loop for seconds. | Evaluate the reduction grid first, then expand a bounded set of promising preheat choices while retaining trial opportunities. This remains an approximate search. |
 | Trial admission and continuation used different safety criteria; coupled pulses and acknowledgement latency could prevent useful trial exposure. | Reuse the bounded trial stress check while active; keep fixed ROOM/floor deadlines independent of normal DHWR, and use actual observed exposure when growing support. |
 | Completed interval power was charged into the following interval and price. | Integrate the current completed sample, split on price/action/input boundaries, and start the cycle at acknowledged execution time. |
 | DHW compressor/AUX costs contaminated space-heating calibration and profit. | Keep attributed space-heating energy and recovery AUX separate; show covered total costs independently. Whole-cycle profit remains unavailable without a DHW service model. |
-| A newer model's reserve could make an older cycle appear recovered. | Maintain an observer with the frozen cycle model. Missing thermal input invalidates its reserve claim. |
+| A newer model's reserve could make an older cycle appear recovered. | Maintain an observer with the frozen cycle model. For short equipment gaps, carry stored-heat bounds and require their lower end to support recovery. |
 | Failed attempts disappeared from completed-only benefit means. | Show all-attempt outcomes, incomplete counts, covered costs and missing hours alongside the completed subset. |
 | Unbounded recovery restrictions can delay hot-water service; releasing all restrictions when rooms are cold can redirect capacity. | Use one 60-minute AUX/DHW/DHWR hold. A latched cold-average fallback releases AUX only; normal DHW settings and scheduled circulation resume at the original deadline, independently of thermal assessment completion. |
 | Ending the valve override could prematurely reduce the floor uncertainty allowance. | Keep the explicit slab allowance at 0.15√h °C in every valve mode because stored heat and its uncertainty persist. |
@@ -200,7 +200,9 @@ A causal six-hour observation prefix estimates the initial reserve from bounded
 hypotheses. Scored targets begin after that prefix. A fresh reading in one room
 can update the aggregate, with evidence weight limited to that room's configured
 contribution. Held components earn no independent target. Full required room-report
-coverage remains necessary; real gaps are not filled or normalized away.
+coverage remains necessary for a scored interval. A bounded interruption can
+carry the preceding heat state through to later observations. It contributes no
+room target or warm-up time of its own.
 
 Manual treatments, paused periods and automatic operation share thermal evidence.
 Closed manual interventions additionally supply response-only episodes. They can
