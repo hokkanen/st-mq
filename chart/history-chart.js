@@ -224,7 +224,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       label.textContent = historyLegendLabel(axis, view, datasets);
       group.setAttribute('aria-label', label.textContent); if (!label.parentElement) group.append(label); return group;
     });
-    function add(group, key, label, detail, swatchColor, kind, dash = []) {
+    function add(group, key, label, detail, swatchColor, kind, dash = [], width) {
       const retained = buttons.get(key), button = retained ?? document.createElement('button'); button.type = 'button'; button.className = 'chart-legend-button';
       buttons.delete(key);
       button.dataset.chartKey = key; button.dataset.axis = group.dataset.axis;
@@ -232,6 +232,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       const swatch = document.createElement('span'); swatch.className = 'chart-legend-swatch'; swatch.dataset.kind = kind;
       swatch.dataset.pattern = dash.length > 2 ? 'dash-dot' : dash[0] === 1 ? 'dotted' : dash.length ? 'dashed' : 'solid';
       swatch.style.color = swatchColor;
+      if (width !== undefined) swatch.style.height = `${width}px`;
       swatch.style.backgroundColor = ['audit', 'session', 'interval-energy'].includes(kind) ? 'transparent'
         : kind === 'fill' ? color(swatchColor).alpha(0.4).rgbString() : swatchColor;
       swatch.style.borderColor = swatchColor; swatch.setAttribute('aria-hidden', 'true');
@@ -243,7 +244,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       if (button.parentElement !== group) group.append(button);
     }
     for (const dataset of datasets) add(groups[dataset.yAxisID === 'left' ? 0 : 1], dataset.visibilityKey,
-      dataset.label, dataset.unit, dataset.borderColor, dataset.kind, dataset.borderDash);
+      dataset.label, dataset.unit, dataset.borderColor, dataset.kind, dataset.borderDash,
+      view.key === 'charging_currents' && dataset.yAxisID === 'left' ? dataset.borderWidth : undefined);
     for (const track of tracksForView(view)) add(groups[2], track.key, track.label, track.detail, palette[track.color ?? track.key], 'strip');
     for (const button of buttons.values()) button.remove();
     const oldReset = reuse && actions.querySelector('.chart-legend-reset');
@@ -416,6 +418,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       + 'Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
     if (hasPriceForecast) notes.push('Sparse dots extend published electricity prices with predictions from Energy Price Forecast EU. Forecasts are estimates, available up to 48 hours from download; they are not recorded prices or bills.');
     if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
+    if (chartView.key === 'charging_currents') notes.push('Thick lines show charger allowances; thin lines show the highest property and charger phase currents. Teal identifies Charger 1 and purple Charger 2. Each charger’s current and allowance share a colour. Equal values can overlap; use the legend to inspect either series separately.');
     if (keys.includes('property_current_max')) notes.push('Property highest phase is the maximum of the simultaneous phase-current estimates, calculated before display reduction. It is an interval average, not an instantaneous peak. Its activity row identifies the phase with the phase chart colours; inspection explains ties. Charger allowances show available current, independently of actual draw, native settings and permission to start. Charger 2 includes fallback periods in its allowance line; its activity row explains the allowance basis. Missing evidence stays blank.');
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
     if (keys.some(key => ['charger_power', 'charger2_power'].includes(key))) notes.push('Translucent fills show the two chargers, stacked only where their recorded intervals overlap. Tooltips show each charger’s own power. Auxiliary and whole heat-pump estimates are separate lines; the whole estimate includes auxiliary.');

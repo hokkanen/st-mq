@@ -300,10 +300,13 @@ headroom or that charging is permitted.
 The **Charging currents** view replaces the dedicated session-check view. It
 plots the highest property phase current at each timestamp and both charger
 allowances on the ampere axis, retaining temperature context on the right axis.
-Two translucent fills show each charger's highest simultaneous phase current,
-independently from zero, without stacking the maxima. They use the same original
-phase history and voltage basis as Phase loading, before display reduction;
-missing phase evidence leaves gaps and known zero remains zero.
+Thick allowance lines appear first in the legend, followed by thin lines for the
+property, Charger 1 and Charger 2 highest simultaneous phase currents. Each
+charger's current and allowance share a colour: teal for Charger 1 and purple for
+Charger 2. Currents use the same original phase history and voltage basis as
+Phase loading, before display reduction; missing phase evidence leaves gaps and
+known zero remains zero. Equal current and allowance values can overlap; the
+legend allows either series to be inspected separately.
 Property current is derived from existing phase history; its reconstructed
 interval-average meaning remains explicit. Allowance lines use steps; Charger 2
 includes fallback periods in its single allowance line, including zero. Neither

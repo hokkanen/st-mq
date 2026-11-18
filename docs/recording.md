@@ -576,13 +576,14 @@ voltage-change boundaries, and shows the lowest phase number for ties with all
 tied phases in its details. Missing evidence remains unknown; dense phase changes
 retain each phase and tie's occupied duration across the entire selected period.
 Temperature context keeps its existing right axis.
-Two independent translucent fills show Charger 1 and Charger 2 highest phase
-currents using the same complete original phase groups and historical voltage
-basis as Phase loading. Maxima are calculated before display reduction, add no
-recording streams and remain interval-average estimates rather than instantaneous
-peaks or allowances. Missing phases leave gaps; valid zero remains zero. The
-fills start at zero independently because the maxima may belong to different
-phases and their sum would not represent a property phase current.
+Thin lines show Charger 1 and Charger 2 highest phase currents using the same
+complete original phase groups and historical voltage basis as Phase loading.
+Maxima are calculated before display reduction, add no recording streams and
+remain interval-average estimates rather than instantaneous peaks or allowances.
+Missing phases leave gaps; valid zero remains zero. Thick allowance lines appear
+first in the legend, followed by property and charger current lines. Teal pairs
+Charger 1's current and allowance; purple pairs Charger 2's. The currents are
+independent lines rather than a sum across potentially different phases.
 
 Both charger cards show the same compact allowance beside their footer status.
 Full allowance is green, a reduced positive allowance blue, ordinary zero red

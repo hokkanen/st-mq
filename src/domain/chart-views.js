@@ -26,9 +26,9 @@ view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents 
 view('voltage_estimates', 'Phase voltage estimates', 'Electricity', 'Saved smoothed voltage estimates for each supply phase, not live measurements. Inspect a point for the contributing sources and the feed used for its latest update.', 'V',
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3'], [], [],
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);
-view('charging_currents', 'Charging currents', 'Electricity', 'Compare the highest property and charger phase-current estimates with each charger’s allowance. Fills show each charger’s highest phase independently. The bars identify the property phase and Charger 2 allowance basis, including fallback. Allowances do not establish actual draw or permission to charge.', 'A',
-  ['property_current_max', 'ev1_current_max', 'ev2_current_max', 'ev1_current_allowance', 'ev2_current_allowance'], property, ['propertyHighestPhase', 'charger2Allowance'],
-  ['property_current_max', 'ev1_current_max', 'ev2_current_max', 'ev1_current_allowance', 'ev2_current_allowance', 'propertyHighestPhase', 'charger2Allowance']);
+view('charging_currents', 'Charging currents', 'Electricity', 'Compare charger allowances with the highest property and charger phase currents.', 'A',
+  ['ev1_current_allowance', 'ev2_current_allowance', 'property_current_max', 'ev1_current_max', 'ev2_current_max'], property, ['propertyHighestPhase', 'charger2Allowance'],
+  ['ev1_current_allowance', 'ev2_current_allowance', 'property_current_max', 'ev1_current_max', 'ev2_current_max', 'propertyHighestPhase', 'charger2Allowance']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'],
   ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', 'garage_frost_active', ...garageRows],

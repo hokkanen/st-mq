@@ -1849,7 +1849,9 @@ run by the installation user.
 
 The charging-currents browser suite seeds actual allowance observations and
 compact coverage in a fresh synthetic database, then reads them through the
-chart API. It checks the property maximum, both chargers' allowance lines,
+chart API. It checks the property and charger maxima, allowance-first legend
+order, thick allowances and thin current lines with matching charger colours,
+independent toggles, Series explorer line styles and concise view descriptions,
 fallback including zero within Charger 2's allowance line, both allowance-basis
 and highest-phase bars, matching phase colours, missing coverage, unchanged
 right-axis meaning and removal of the separate fallback series. The runtime allowance

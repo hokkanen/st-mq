@@ -12,6 +12,7 @@ import { activityTracks } from '../chart/chart-overlays.js';
 import { historyDatasets, historySeriesAt, defaultPalette } from '../chart/history-model.js';
 import { historyTooltipLabel } from '../chart/history-tooltips.js';
 import { charger2AllowanceState } from '../src/app/chart-charging-allowances.js';
+import { chartGeometryKey, prepareChartGeometry, styleChartGeometry } from '../chart/chart-geometry.js';
 
 const start = Date.parse('2026-10-05T06:00:00Z'), MINUTE = 60_000;
 const query = (store, extra = {}) => getChartData({ store, input: 'providers', now: start + 60 * MINUTE,
@@ -33,7 +34,7 @@ const put = (history, chargerId, mode, allowanceA, offset) => history.observe({ 
 test('charging currents has allowance and phase bars while All series preserves C1 native checks', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const view = selectedChartView({ view: 'charging_currents' });
-  assert.deepEqual(view.leftSignals, ['property_current_max', 'ev1_current_max', 'ev2_current_max', 'ev1_current_allowance', 'ev2_current_allowance']);
+  assert.deepEqual(view.leftSignals, ['ev1_current_allowance', 'ev2_current_allowance', 'property_current_max', 'ev1_current_max', 'ev2_current_max']);
   assert.equal(view.unit, 'A'); assert(view.rightSignals.includes('model_indoor_temperature'));
   assert.deepEqual(view.tracks, ['propertyHighestPhase', 'charger2Allowance']);
   assert(view.tracks.every(key => view.defaults[key] === true));
@@ -120,21 +121,51 @@ test('allowance series preserve zero and fallback zero, exact transitions, gaps 
   assert.doesNotMatch(text, /st-mq|source measured/i);
 });
 
-test('charging currents keeps allowance lines and independent charger fills with temperature context', () => {
+test('charging currents gives allowances priority with paired colours and thin current lines', () => {
   const view = selectedChartView({ view: 'charging_currents' });
   for (const interpolation of [true, false]) {
     const datasets = historyDatasets({}, view, view.defaults, defaultPalette, { interpolation });
     for (const key of view.leftSignals) {
       const row = datasets.find(row => row.key === key);
-      const chargerFill = ['ev1_current_max', 'ev2_current_max'].includes(key);
-      assert.equal(row.stepped, true); assert.equal(row.fill, chargerFill ? 'origin' : false);
-      assert.equal(row.kind, chargerFill ? 'fill' : 'line'); assert.equal(row.hidden, false);
+      assert.equal(row.borderWidth, key.endsWith('_allowance') ? 2.5 : 1);
+      assert.equal(row.stepped, true); assert.equal(row.fill, false);
+      assert.equal(row.kind, 'line'); assert.equal(row.hidden, false);
       assert.equal(row.spanGaps, false); assert.equal(row.yAxisID, 'left');
       assert.deepEqual(row.borderDash, []);
     }
     assert.notEqual(datasets.find(row => row.key === 'ev1_current_allowance').borderColor, datasets.find(row => row.key === 'ev2_current_allowance').borderColor);
+    for (const prefix of ['ev1', 'ev2']) {
+      const current = datasets.find(row => row.key === `${prefix}_current_max`);
+      const allowance = datasets.find(row => row.key === `${prefix}_current_allowance`);
+      assert.equal(current.borderColor, allowance.borderColor);
+      const explorer = historyDatasets({}, explorerSelection(current.key)).find(row => row.key === current.key);
+      assert.equal(explorer.fill, false); assert.equal(explorer.kind, 'line');
+      assert.equal(explorer.borderColor, allowance.borderColor);
+    }
     assert.equal(datasets.find(row => row.key === 'model_indoor_temperature').yAxisID, 'right');
   }
+});
+
+test('overlapping current and allowance keep independent values through geometry reuse, toggles and themes', () => {
+  const view = CHART_VIEW_BY_KEY.charging_currents;
+  const series = Object.fromEntries(view.leftSignals.map(key => [key, [{ x: 0, y: 16 }, { x: 10, y: 16 }]]));
+  const before = structuredClone(series);
+  const geometry = prepareChartGeometry({ series, descriptor: view, visibility: view.defaults });
+  const visibility = { ...view.defaults, ev1_current_allowance: false };
+  assert.equal(chartGeometryKey(view, view.defaults, true), chartGeometryKey(view, visibility, true));
+  styleChartGeometry(geometry, view, visibility, { ...defaultPalette, ev: '#237e75', ev2: '#8050a6' });
+  assert.equal(geometry[0].hidden, true); assert.equal(geometry[3].hidden, false);
+  assert.deepEqual(geometry.slice(0, 5).map(row => row.borderWidth), [2.5, 2.5, 1, 1, 1]);
+  assert(geometry.every(row => row.kind !== 'fill' && !row.powerFill));
+  for (const [current, allowance] of [[geometry[3], geometry[0]], [geometry[4], geometry[1]]]) {
+    assert.equal(current.borderColor, allowance.borderColor);
+    assert.equal(current.data[0].y, 16); assert.equal(allowance.data[0].y, 16);
+    assert.match(historyTooltipLabel({ dataset: current, raw: current.data[0], parsed: current.data[0] }), /highest phase: 16 A/);
+    assert.match(historyTooltipLabel({ dataset: allowance, raw: allowance.data[0], parsed: allowance.data[0] }), /allowance: 16 A/);
+  }
+  styleChartGeometry(geometry, view, view.defaults, defaultPalette);
+  assert.equal(geometry[0].hidden, false); assert.equal(geometry[0].borderColor, defaultPalette.ev);
+  assert.deepEqual(series, before);
 });
 
 test('charger maxima use simultaneous original phases before reduction, retaining zero, gaps and voltage boundaries', t => {
@@ -150,7 +181,8 @@ test('charger maxima use simultaneous original phases before reduction, retainin
     assert.equal(curve.find(point => point.x === start).y, 10);
     assert.equal(curve.find(point => point.x === start + MINUTE / 2).y, 9.5);
     assert.equal(curve.find(point => point.x === start + MINUTE).y, 0);
-    assert(curve.filter(point => point.x >= start + 2 * MINUTE && point.x < start + 3 * MINUTE).every(point => point.y === null));
+    const missing = curve.filter(point => point.x >= start + 2 * MINUTE && point.x < start + 3 * MINUTE);
+    assert(missing.length > 0 && missing.every(point => point.y === null));
     assert.equal(curve.find(point => point.x === start + 3 * MINUTE).y, 16);
     assert.equal(curve.at(-1).y, null);
     const detail = query(store, { view: undefined, left: key, viewFrom: start + 20_000, viewTo: start + 50_000 }).series[key];
@@ -160,8 +192,8 @@ test('charger maxima use simultaneous original phases before reduction, retainin
       /highest simultaneous phase.*interval average.*unity power factor/);
   }
   assert.deepEqual(store.observations({ limit: 100 }), before, 'Charger maxima are derived without new recording streams');
-  // Independent phase decimation would retain three peaks of 12 A at
-  // different instants. The maximum must keep its actual original timestamp.
+  // Independent phase decimation can retain peaks from different instants.
+  // The maximum must keep its actual original timestamp.
   for (const prefix of ['ev1', 'ev2']) {
     for (let index = 0; index < 500; index++) {
       const values = [2, 3, 4]; values[index % 3] = index % 3 === 0 ? 12 : index % 3 === 1 ? 10 : 8;

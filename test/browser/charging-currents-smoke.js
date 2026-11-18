@@ -109,7 +109,7 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     localStorage.setItem('home-energy-chart-views', JSON.stringify({view:'charging_currents',views:{},prices:{}}));
-    window.currentCharts = []; window.currentStrokes = []; window.currentFills = [];
+    window.currentCharts = []; window.currentStrokes = [];
     const WorkerOriginal = window.Worker;
     window.Worker = class extends WorkerOriginal {
       constructor(...args) {
@@ -120,14 +120,6 @@ try {
       }
     };
     const fetchOriginal = window.fetch.bind(window), stroke = CanvasRenderingContext2D.prototype.stroke;
-    const fill = CanvasRenderingContext2D.prototype.fill;
-    CanvasRenderingContext2D.prototype.fill = function(...args) {
-      if (this.canvas.id === 'history') {
-        window.currentFills.push(this.fillStyle);
-        if (window.currentFills.length > 5000) window.currentFills.splice(0,1000);
-      }
-      return fill.apply(this,args);
-    };
     window.fetch = async (...args) => {
       const response = await fetchOriginal(...args);
       if (String(args[0]).includes('/api/chart?')) window.currentCharts.push(await response.clone().json());
@@ -135,7 +127,7 @@ try {
     };
     CanvasRenderingContext2D.prototype.stroke = function(...args) {
       if (this.canvas.id === 'history') {
-        window.currentStrokes.push({color:this.strokeStyle,dash:this.getLineDash()});
+        window.currentStrokes.push({color:this.strokeStyle,dash:this.getLineDash(),width:this.lineWidth});
         if (window.currentStrokes.length > 5000) window.currentStrokes.splice(0,1000);
       }
       return stroke.apply(this,args);
@@ -167,6 +159,8 @@ try {
   assert(!Object.keys(payload.series).some(key => key.includes('session')));
   assert(Object.hasOwn(payload.series, 'outdoor_temperature'));
   assert.equal(payload.limiterHistory, undefined);
+  assert.equal(await evaluate("document.getElementById('chart-view-description').textContent"),
+    'Compare charger allowances with the highest property and charger phase currents.');
   await evaluate("document.querySelector('[data-chart-key=outdoor_temperature]').click(); true");
   const choose = async (kind, name) => {
     await evaluate("document.getElementById('chart-series-toggle').click(); true");
@@ -184,24 +178,18 @@ try {
     const style = await evaluate(`(() => {
       const css=getComputedStyle(document.documentElement);
       const normalize=value=> { const ctx=document.createElement('canvas').getContext('2d'); ctx.fillStyle=value; return ctx.fillStyle; };
-      const opaque=value=> { const color=normalize(value); return color.startsWith('#') ? color.slice(0,7)
-        : '#'+color.slice(color.indexOf('(')+1).split(',').slice(0,3).map(part=>Number(part.trim()).toString(16).padStart(2,'0')).join(''); };
       const phases=document.querySelector('[data-activity-key=propertyHighestPhase]');
       const allowance=document.querySelector('[data-activity-key=charger2Allowance]');
       return {
-        fills:['ev1_current_max','ev2_current_max'].map(key=> {
+        lines:['ev1_current_allowance','ev2_current_allowance','property_current_max','ev1_current_max','ev2_current_max'].map(key=> {
           const entry=document.querySelector('[data-chart-key='+key+']');
           const swatch=entry.querySelector('.chart-legend-swatch');
           const color=normalize(getComputedStyle(swatch).color);
-          return {kind:swatch.dataset.kind,visible:entry.getAttribute('aria-pressed')==='true',color,
-            painted:window.currentFills.some(fill=>opaque(fill)===opaque(color))};
+          const width=parseFloat(getComputedStyle(swatch).height);
+          return {kind:swatch.dataset.kind,visible:entry.getAttribute('aria-pressed')==='true',color,width,pattern:swatch.dataset.pattern,
+            stroke:window.currentStrokes.some(row=>row.color===color&&row.dash.length===0&&row.width===width)};
         }),
-        ordinary:['property_current_max','ev1_current_allowance','ev2_current_allowance'].map(key=> {
-          const item=document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch');
-          const line=document.createElement('canvas').getContext('2d'); line.strokeStyle=getComputedStyle(item).color;
-          return {pattern:item.dataset.pattern,color:line.strokeStyle,
-            stroke:window.currentStrokes.some(row=>row.color===line.strokeStyle&&row.dash.length===0)};
-        }),
+        legendOrder:[...document.querySelectorAll('#chart-legend [data-axis="left"] [data-chart-key]')].map(item=>item.dataset.chartKey),
         temperature:document.querySelector('[data-chart-key=outdoor_temperature]').dataset.axis,
         phaseColors:[...phases.querySelectorAll('.mode-segment')].every(item=>
           normalize(item.style.backgroundColor)===normalize(css.getPropertyValue('--chart-phase-'+item.dataset.value).trim()) && item.style.opacity==='1'),
@@ -214,11 +202,12 @@ try {
         aligned:Math.abs(phases.querySelector('.mode-track').getBoundingClientRect().left-allowance.querySelector('.mode-track').getBoundingClientRect().left)<1,
       };
     })()`);
-    assert.deepEqual(style.ordinary.map(row => row.pattern), ['solid','solid','solid']);
-    assert(style.fills.every(row => row.kind === 'fill' && row.visible && row.painted), `${theme} ${width}: both charger maxima are painted fills`);
-    assert.notEqual(style.fills[0].color, style.fills[1].color, 'Charger fills have distinct colours');
-    assert(style.ordinary.every(row => row.stroke), `${theme} ${width}: property and both allowance lines are drawn`);
-    assert.equal(new Set(style.ordinary.map(row => row.color)).size, 3, 'Both chargers and property have distinct line colors');
+    assert.deepEqual(style.legendOrder, ['ev1_current_allowance','ev2_current_allowance','property_current_max','ev1_current_max','ev2_current_max']);
+    assert.deepEqual(style.lines.map(row => row.width), [2.5,2.5,1,1,1]);
+    assert(style.lines.every(row => row.pattern === 'solid' && row.kind === 'line' && row.visible && row.stroke), `${theme} ${width}: all five lines have their legend width and are drawn`);
+    assert.equal(style.lines[0].color, style.lines[3].color, 'Charger 1 current and allowance match');
+    assert.equal(style.lines[1].color, style.lines[4].color, 'Charger 2 current and allowance match');
+    assert.equal(new Set(style.lines.map(row => row.color)).size, 3, 'Both chargers and property have distinct colours');
     assert.equal(style.temperature, 'right');
     assert.equal(style.visible, true, `${theme} ${width}: both categorical bars are visible by default`);
     assert.equal(style.aligned, true, `${theme} ${width}: bars share their time axis`);
@@ -232,6 +221,13 @@ try {
     const shot=await send('Page.captureScreenshot',{format:'png'});
     writeFileSync(join(artifacts,`charging-currents-${theme}-${width}.png`),Buffer.from(shot.data,'base64'));
   }
+  // Toggle each line independently, exercising reuse of the cached geometry.
+  for (const key of ['ev1_current_allowance','ev2_current_allowance','ev1_current_max','ev2_current_max']) {
+    await evaluate(`document.querySelector('[data-chart-key=${key}]').click(); true`);
+    await until(`document.querySelector('[data-chart-key=${key}]').getAttribute('aria-pressed') === 'false'`);
+    await evaluate(`document.querySelector('[data-chart-key=${key}]').click(); true`);
+    await until(`document.querySelector('[data-chart-key=${key}]').getAttribute('aria-pressed') === 'true'`);
+  }
   for (const [kind,name] of [['view','power'],['view','phases'],['series','charger2_power']]) {
     await choose(kind,name);
     assert.equal(await evaluate("document.querySelector('[data-activity-key=shellyLimiter]') !== null"), false, `${name}: retired balancing strip absent`);
@@ -239,11 +235,15 @@ try {
   await choose('series','ev1_session_energy_check');
   await until("window.currentCharts.some(row=>row.left==='ev1_session_energy_check'&&row.series?.ev1_session_energy_check?.some(point=>point.y===12))");
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev1_session_energy_check] .chart-legend-swatch').dataset.kind"), 'session');
+  for (const key of ['ev1_current_max','ev2_current_max']) {
+    await choose('series',key);
+    assert.equal(await evaluate(`document.querySelector('[data-chart-key=${key}] .chart-legend-swatch').dataset.kind`), 'line');
+  }
   await choose('view', 'charging_currents');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev1_current_allowance]').getAttribute('aria-pressed')"), 'true');
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev2_current_allowance]').getAttribute('aria-pressed')"), 'true');
   assert.deepEqual(errors, []);
-  console.log(`Charging currents browser checks passed: unified native and controller allowance lines, zero and fallback zero, allowance-basis and phase bars, exact phase colours, temperature context, retired strips absent, C1 All series session check, 320/390/1440px dark and light. Synthetic screenshots: ${artifacts}`);
+  console.log(`Charging currents browser checks passed: allowance-first legend, thick allowances and thin maxima, paired charger colours, independent toggles, concise description, maxima as lines in Series explorer, zero and gaps, allowance-basis and phase bars, temperature context, C1 session check, 320/390/1440px dark and light. Synthetic screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   await app?.close();

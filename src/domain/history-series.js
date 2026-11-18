@@ -151,7 +151,8 @@ export const HISTORY_AXES = Object.freeze([
     ['charger2_power', 'Charger 2 electrical power', 'kW', 'Sum of recorded phase energies divided by their shared interval; native meter increments preserve measured total consumption'],
     ['property_current_max', 'Property highest phase', 'A', 'Highest of the three simultaneous property phase-current estimates from recorded energy and historical voltage; an interval average, not an instantaneous peak. Missing phase evidence leaves a gap'],
     ...['ev1', 'ev2'].map((prefix, index) => [`${prefix}_current_max`, `Charger ${index + 1} highest phase`, 'A',
-      'Highest of the three simultaneous charger phase-current estimates from recorded energy and historical voltage; an interval average, not an instantaneous peak or allowance. Supported older current snapshots retain their observed values. Missing phase evidence leaves a gap']),
+      'Highest simultaneous phase-current estimate; an interval average from recorded energy and historical voltage. Missing phase evidence leaves a gap.'
+        + (index === 0 ? ' Supported older current snapshots retain their observed basis.' : '')]),
     ['ev1_current_allowance', 'Charger 1 allowance', 'A', 'Recorded minimum native Equalizer allowance across all three phases, capped by fixed equipment limits; not measured draw or charging permission'],
     ['ev2_current_allowance', 'Charger 2 allowance', 'A', 'Recorded controller allowance including explicitly marked fallback periods; actual draw, native current setting and charging permission remain separate. Unknown allowance leaves a gap'],
     ...['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => [`${prefix}_current_l${phase}`,

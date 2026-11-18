@@ -95,10 +95,10 @@ const seriesInfo = {
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
   property_current_max: ['Property highest phase', 'A · highest simultaneous phase-current estimate', 'property'],
-  ev1_current_max: ['Charger 1 highest phase', 'A · highest simultaneous phase-current estimate', 'ev', 'fill'],
-  ev2_current_max: ['Charger 2 highest phase', 'A · highest simultaneous phase-current estimate', 'ev2', 'fill'],
+  ev1_current_max: ['Charger 1 highest phase', 'A · highest simultaneous phase-current estimate', 'ev'],
+  ev2_current_max: ['Charger 2 highest phase', 'A · highest simultaneous phase-current estimate', 'ev2'],
   ev1_current_allowance: ['Charger 1 allowance', 'A · native Equalizer minimum phase allowance', 'ev'],
-  ev2_current_allowance: ['Charger 2 allowance', 'A · available current allowance, including fallback', 'outdoor'],
+  ev2_current_allowance: ['Charger 2 allowance', 'A · available current allowance, including fallback', 'ev2'],
   ev1_current_l1: ['Charger 1 L1', 'A', 'phase1'],
   ev1_current_l2: ['Charger 1 L2', 'A', 'phase2'],
   ev1_current_l3: ['Charger 1 L3', 'A', 'phase3'],
@@ -311,6 +311,8 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
     const kind = phaseKeys.has(key) ? 'fill' : baseKind;
     const visibilityKey = key;
     const isLeft = leftSignals.includes(key);
+    const chargingCurrent = descriptor.key === 'charging_currents' && isLeft;
+    const chargingAllowance = /^ev[12]_current_allowance$/.test(key);
     const isPrice = key.endsWith('_price');
     const temperature = isInterpolatedTemperature(key);
     const points = stackedData.get(key) ?? series[key] ?? [];
@@ -338,7 +340,7 @@ export function historyDatasets(series = {}, descriptor, preferences = {}, palet
       ...style,
       yAxisID: axis,
       borderColor: color, backgroundColor: kind === 'fill' ? fillColor(color) : color,
-      borderWidth: kind === 'fill' ? 1 : isPrice ? 1.25 : key === 'property_power' ? 2 : 1.65,
+      borderWidth: chargingCurrent ? chargingAllowance ? 2.5 : 1 : kind === 'fill' ? 1 : isPrice ? 1.25 : key === 'property_power' ? 2 : 1.65,
       fill: stackBase ? keys.indexOf(stackBase) : kind === 'fill' ? 'origin' : false,
       order: fillOrder.get(key) ?? (kind === 'fill' ? 2 : 1),
       pointBackgroundColor: kind === 'daily' ? data.map(point => point.status === 'validated' ? color : 'transparent')
