@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
+import { currentChargingAllocation } from '../src/charging/planner.js';
 
 const NOW = 1_800_000_000_000;
 const phases = value => ({ healthy: true, currents: [value, value, value], times: [NOW, NOW, NOW],
@@ -106,4 +107,40 @@ test('Shelly priority uses configured fallback for unavailable or contradictory 
     assert.equal(result.modelAvailable, false); assert.equal(result.guaranteedProtection, false);
     assert.equal(shellyCurrentLimit({ ...args, ...restriction, nativeCurrentA: 6 }).currentA, 6);
   }
+});
+
+test('a completed vehicle target keeps permitted continuing load in live sharing without a stop/start feedback loop', () => {
+  const reading = value => ({ value, available: true, assumed: false });
+  const chargers = ['charger1', 'charger2'].map((id, index) => ({
+    id, requiredGridKwh: 0, deadlineAt: NOW - 10 * 60_000,
+    settings: { enabled: true }, control: {}, telemetry: { currentSharingActive: true },
+    capabilities: { scheduling: true, currentControl: index === 1, externalLoadBalancing: index === 0 },
+    values: { connected: reading(true), soc: reading(index ? 100 : 85), minimumSoc: reading(index ? 100 : 85),
+      vehicleCeilingSoc: reading(100), maximumCurrentA: reading(16), currentA: reading(12), voltageV: reading(230) },
+  }));
+  const limit = (draw, householdA = 2) => {
+    let selected;
+    const result = shellyCurrentLimit({ config: { ...config, marginA: [0, 0, 0] }, now: NOW, priority: 'balanced',
+      property: { ...phases(0), currents: draw.map(value => value + householdA) }, easee: phases(0),
+      shelly: { ...phases(0), currents: draw },
+      allocateCurrent: budgetCurrentA => {
+        selected = currentChargingAllocation({ now: NOW, chargers, budgetCurrentA, priority: 'balanced' });
+        return { allocationA: selected.charger2?.currentLimitA ?? null, reservationA: selected.charger1?.currentA ?? 0 };
+      } });
+    return { result, selected };
+  };
+  for (const draw of [[0, 0, 0], [5, 0, 0], [0, 0, 0], [0, 5, 0], [0, 0, 5], [5, 5, 5]]) {
+    const { result, selected } = limit(draw);
+    assert.ok(selected.charger2, 'Reaching the native target does not revoke an independently permitted continuing load');
+    assert.ok(result.currentA >= 6, 'Its own uneven draw must not alternate an available shared pilot with Stop');
+    assert.equal(result.pause, false);
+    assert.ok(selected.charger1.currentA + result.currentA <= Math.min(...result.phaseHeadroomA),
+      'Continuing loads share the same conservative headroom without borrowing peer entitlement');
+  }
+  const overloaded = limit([5, 0, 0], 20).result;
+  assert.equal(overloaded.currentA, 0, 'A real household shortage still requests Stop');
+  chargers[1].values.vehicleCurrentA = reading(0);
+  assert.equal(limit([0, 0, 0]).result.currentA, 0, 'An explicit vehicle zero remains binding after completion');
+  chargers[1].telemetry.currentSharingActive = false;
+  assert.equal(limit([0, 0, 0]).selected.charger2, undefined, 'A completed target grants no native participation');
 });

@@ -144,6 +144,12 @@ by Equalizer does not release its entitlement to Shelly. Accepted progress,
 changed requests, deadlines, priority, native restrictions and session changes
 can legitimately revise the plan.
 
+Reaching a reported vehicle target removes the outstanding energy request, not
+its independently established native participation. A permitted continuing load
+uses only capacity left after outstanding requests; when neither charger has an
+outstanding request, their continuing loads share capacity under the selected
+priority. This does not grant Start permission or change the charging periods.
+
 A started cloud program's planned pause does not withdraw Charger 1's current
 commitment until the native pause is confirmed. An unsent or unconfirmed
 replacement retains its admitted native permission, including a zero draw

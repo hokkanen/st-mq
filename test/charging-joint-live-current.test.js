@@ -112,6 +112,34 @@ test('balanced live allocation preserves an open peer entitlement while its actu
   assert.equal(f.fields.start_charging.value, true);
 });
 
+test('completed targets retain shared native permission through uneven continuing draw without repeated Stop and Start', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 0;
+  f.cars.charger2.phaseDemandA = [0, 0, 0];
+  f.household.currentA = 2;
+  const views = f.runtime.views.bind(f.runtime);
+  t.mock.method(f.runtime, 'views', (...args) => views(...args).map(charger => {
+    const target = charger.id === 'charger2' ? 100 : 85;
+    const reading = value => ({ value, available: true, assumed: false });
+    return { ...charger, requiredGridKwh: 0, values: { ...charger.values,
+      soc: reading(target), minimumSoc: reading(target), vehicleCeilingSoc: reading(100) } };
+  }));
+  f.advance(5000); await f.runtime.reconcileShellyObservation();
+  const commandCount = f.commands.length;
+  for (const draw of [[5, 0, 0], [0, 0, 0], [0, 5, 0], [0, 0, 5], [5, 5, 5], [0, 0, 0]]) {
+    f.cars.charger2.phaseDemandA = draw;
+    f.advance(31_000); await f.runtime.reconcileShellyObservation();
+    assert.equal(f.fields.start_charging.value, true, 'Continuing load must not repeatedly lose and regain its shared allocation');
+    assert.ok(f.view('charger2').control.limiter.currentA >= 6);
+    assert.equal(f.view('charger2').settings.enabled, false, 'Native permission retains its independent owner');
+  }
+  assert.equal(f.commands.slice(commandCount).some(command => command.role === 'start_charging'), false);
+  f.household.currentA = 20; f.cars.charger2.phaseDemandA = [5, 0, 0];
+  f.advance(31_000); await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.start_charging.value, false, 'A real shortage still applies the owned balancing Stop');
+});
+
 for (const feedsSynchronized of [false, true])
   test(`unscheduled Charger 1 priority respects its planned share despite zero measured peer draw; synchronized feeds ${feedsSynchronized}`, async t => {
     const f = await fixture(t, { budgetA: 25, feedsSynchronized });

@@ -253,8 +253,10 @@ export function currentChargingAllocation({ now, chargers, budgetCurrentA, prior
   if (!three(budgetCurrentA)) return {};
   const active = chargers.flatMap(charger => {
     if (value(charger, 'connected') !== true || charger.request?.pause || nativeStopped(charger)
-      || charger.requiredGridKwh <= EPS && targetKnown(charger)
       || charger.telemetry?.currentSharingActive !== true || value(charger, 'vehicleNotBefore') > now) return [];
+    // Target attainment ends outstanding service, not native permission. Keep
+    // permitted continuing loads in the allocator's zero-remaining tier so they
+    // share spare capacity instead of becoming an unallocated residual load.
     const electric = chargingElectrical(charger);
     if (!electric.available) return [];
     return [{ charger, electric, priority, remaining: charger.requiredGridKwh,

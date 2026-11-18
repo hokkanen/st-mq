@@ -584,15 +584,22 @@ test('live current allocation uses energy and deadlines without measured peer de
 });
 
 
-test('completed native vehicle targets release current entitlement without using observed draw', () => {
-  const chargers = [job('charger1', 0), job('charger2', 4.14)];
-  for (const charger of chargers) charger.telemetry.currentSharingActive = true;
-  const input = { now, chargers, priority: 'charger1', budgetCurrentA: [16, 16, 16] };
-  for (const draw of [0, 8]) {
-    chargers[0].values.actualCurrentA = v(draw);
-    chargers[0].values.charging = v(draw > 0);
-    const selected = currentChargingAllocation(input);
-    assert.equal(selected.charger1, undefined);
-    assert.equal(selected.charger2.currentLimitA, 16);
+test('completed native vehicle targets yield to outstanding requests while retaining only spare current', () => {
+  for (const completedId of ['charger1', 'charger2']) for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const chargers = ['charger1', 'charger2'].map(id => job(id, id === completedId ? 0 : 4.14));
+    for (const charger of chargers) charger.telemetry.currentSharingActive = true;
+    const completed = chargers.find(charger => charger.id === completedId), pending = chargers.find(charger => charger !== completed);
+    completed.values.soc = v(80);
+    const input = { now, chargers, priority, budgetCurrentA: [16, 16, 16] };
+    for (const draw of [0, 8]) {
+      completed.values.actualCurrentA = v(draw);
+      completed.values.charging = v(draw > 0);
+      const selected = currentChargingAllocation(input);
+      assert.equal(selected[completed.id].currentA, 0);
+      assert.equal(selected[pending.id].currentA, 16);
+      const spare = currentChargingAllocation({ ...input, budgetCurrentA: [25, 25, 25] });
+      assert.equal(spare[pending.id].currentA, 16, 'A completed target cannot take priority over outstanding service');
+      assert.equal(spare[completed.id].currentA, 9, 'Continuing native permission can use only the remaining capacity');
+    }
   }
 });

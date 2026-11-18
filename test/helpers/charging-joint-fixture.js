@@ -41,8 +41,9 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     && profile.transactionId === cars.charger1.connectedAt / 1000);
   // A test may explicitly model physical current persisting after permission
   // Stop; default device behavior remains immediate physical return.
-  const amps2 = () => cars.charger2.connected && cars.charger2.allows && (fields.start_charging.value || cars.charger2.stopStillDrawing === true)
-    ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
+  const phaseAmps2 = () => cars.charger2.connected && cars.charger2.allows && (fields.start_charging.value || cars.charger2.stopStillDrawing === true)
+    ? (cars.charger2.phaseDemandA ?? triple(cars.charger2.demandA)).map(value => Math.min(value, fields.current_limit.value)) : triple(0);
+  const amps2 = () => Math.max(...phaseAmps2());
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()
     ? Math.max(0, Math.min(cars.charger1.demandA, cars.charger1.equalizerResponds === false
       ? cars.charger1.demandA : budgetA - household.currentA - amps2())) : 0;
@@ -50,9 +51,11 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     const state = !cars.charger2.connected ? 'charger_free' : amps2() > 0 ? 'charger_charging'
       : !fields.start_charging.value ? 'charger_pause' : 'charger_wait';
     if (fields.work_state.value !== state) fields.work_state = { value: state, at: now };
-    return { total_power: amps2() * .69, total_act_energy: 0,
-      ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
-        { voltage: 230, current: amps2(), power: amps2() * .23 }])) };
+    const currents = phaseAmps2();
+    return { total_power: cars.charger2.phaseDemandA ? currents.reduce((sum, value) => sum + value, 0) * .23 : amps2() * .69,
+      total_act_energy: 0,
+      ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map((phase, index) => [phase,
+        { voltage: 230, current: currents[index], power: currents[index] * .23 }])) };
   };
   const roles = ['current_limit', 'start_charging', 'work_state', 'phase_info'];
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: true }, serviceStatus = { state: 'running' };
@@ -103,8 +106,8 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     }
     runtime.teslaCapture = capture;
     const scope = runtime.chargers.charger1.association;
-    const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),
-      propertyCurrentA: triple(household.currentA + amps1() + amps2()), chargerCurrentA: triple(amps1()),
+    const supply = () => ({ availableCurrentA: phaseAmps2().map(value => Math.max(0, budgetA - household.currentA - value)),
+      propertyCurrentA: phaseAmps2().map(value => household.currentA + amps1() + value), chargerCurrentA: triple(amps1()),
       feedEvidence: Object.fromEntries(['property','charger','allowance'].map(key => [key,
         {connected:true,online:true,synchronized:household.feedsSynchronized,epoch:'fixture-epoch'}])),
       voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(household.sourceAt ?? now), charger: triple(now), voltage: triple(now) } });
