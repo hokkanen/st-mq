@@ -296,6 +296,44 @@ test('heat-pump native fields retain their current labels, units and valid zero'
   assert.doesNotMatch(JSON.stringify(several), /private-unknown/);
 });
 
+test('both Home views omit old H66 confirmations without register evidence, including previously visible rows', t => {
+  const { store, read } = fixture(t);
+  const add = (type, payload, offset) => id('event', store.event(type, payload, NOW - offset));
+  const recentEmpty = add('h66-settings-confirmed', { registers: [], reason: 'reduction' }, 1000);
+  const warning = add('restoration-pending', {}, 2000);
+  const batch = add('h66-settings-confirmed', { registers: ['0208', '2201'] }, 3000);
+  const olderEmpty = add('h66-settings-confirmed', { registers: [], reason: 'recovery-hold' }, 4000);
+  const unknown = add('h66-settings-confirmed', { registers: ['synthetic-unknown'] }, 5000);
+  const missing = add('h66-settings-confirmed', {}, 6000);
+  const manual = add('h66-native-setting-confirmed', { register: '0203', value: 20, sent: false }, 7000);
+  const checkpoint = readCheckpoint(store.db);
+  for (const view of ['important', 'all']) {
+    const head = read(`view=${view}&area=home&limit=2&visible=${[recentEmpty, batch, olderEmpty, unknown, missing, manual].join(',')}`);
+    assert.deepEqual(head.events.map(event => event.id), [warning, batch]);
+    assert.equal(head.events[0].severity, 'warning');
+    assert.equal(head.events[1].evidence, 'Device readback');
+    assert.deepEqual(head.retainedIds, [batch, manual]);
+    assert.ok(head.nextBefore);
+    const older = read(`view=${view}&area=home&limit=2&before=${head.nextBefore}`);
+    assert.deepEqual(older.events.map(event => event.id), [manual]);
+    assert.equal(older.nextBefore, null);
+  }
+  assert.equal(store.events().length, 7);
+  assert.deepEqual(readCheckpoint(store.db), checkpoint);
+});
+
+test('the Home timeline discloses bounded coverage after a long run of empty H66 confirmations', t => {
+  const { store, read } = fixture(t);
+  store.event('h66-settings-confirmed', { registers: ['0208'] }, NOW - 200_000);
+  store.write(() => {
+    for (let index = 0; index < 129; index++) store.event('h66-settings-confirmed', { registers: [] }, NOW - index * 1000);
+  });
+  store.event('control-execution-failed', {}, NOW - 100);
+  const result = read('view=all&area=home');
+  assert.deepEqual(result.events.map(event => event.title), ['Heating command was unconfirmed']);
+  assert.match(result.coverage, /only part of some available source history/);
+});
+
 test('Garage one-shot settings identify the exact current allowlisted choice', () => {
   for (const [setting, value, title, shown] of [['power', 'off', 'Power', 'Off'], ['mode', 'heat', 'Operating mode', 'Heating'],
     ['targetC', 20.5, 'Temperature target', '20.5 °C'], ['fan', 2, 'Fan speed', 'Speed 2'], ['vane', 'swing', 'Vertical vane', 'Swing'], ['wideVane', 'far-left', 'Horizontal vane', 'Far left']]) {

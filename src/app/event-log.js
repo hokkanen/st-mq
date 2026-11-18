@@ -74,7 +74,7 @@ function selectionMatches(row, epoch, segments) {
 }
 function sourceInputs(input) { return input === 'offline' ? ['mqtt', 'providers', 'simulated'] : [input]; }
 function reportNamespaces(input) { return sourceInputs(input).map(value => `charging:${value}:session-diagnostics`); }
-function admitted(out, query) { return (query.area === 'all' || out.area === query.area) && (query.view === 'all' || out.important); }
+function admitted(out, query) { return Boolean(out) && (query.area === 'all' || out.area === query.area) && (query.view === 'all' || out.important); }
 function entry(source, row, out) {
   const { important, ...safe } = out;
   return { id: stableId(source, row.id), at: row.at, ...safe };

@@ -8,7 +8,8 @@ const reading = (value, unit) => number(value) === null ? null : `${number(value
 const detail = (label, value) => value === null || value === undefined ? [] : [{ label, value: String(value) }];
 const lookup = (map, value) => typeof value === 'string' && Object.hasOwn(map, value) ? map[value] : undefined;
 const phase = value => lookup({ normal: 'Normal heating', preheat: 'Preheating', reduction: 'Reduced heating', recovery: 'Recovery heating', circulation: 'Hot-water circulation' }, value) ?? 'Heating';
-const register = value => lookup({ '0203': 'ROOM temperature', '0208': 'Hot-water stop temperature', '0212': 'Hot-water start temperature', '2201': 'Operating mode' }, value) ?? 'Native setting';
+const H66_REGISTER_LABELS = { '0203': 'ROOM temperature', '0208': 'Hot-water stop temperature', '0212': 'Hot-water start temperature', '2201': 'Operating mode' };
+const register = value => lookup(H66_REGISTER_LABELS, value) ?? 'Native setting';
 const reason = value => lookup({ 'automatic-control-disabled': 'Automatic heating control was unavailable.', 'restart-with-automation-disabled': 'Restoration was checked after restart while automatic heating control was unavailable.',
   'model-rebuilding': 'The learning model was being rebuilt.', 'execution-not-established': 'Command execution was not established.',
   'insufficient-cycle-energy-coverage': 'Recorded energy coverage was incomplete.', 'sensor-measurement-changed': 'A sensor change interrupted this cycle.',
@@ -106,7 +107,7 @@ for (const type of ['mqtt-error', 'mqtt-ha-error', 'mqtt-offline', 'mqtt-ha-offl
 DEFINITIONS['mqtt-connected'] = ['system', 'MQTT connection established', 'The MQTT transport connected. Individual subscriptions and device readiness are checked separately.', { evidence: 'Transport connection' }];
 export const GENERAL_EVENT_TYPES = Object.freeze([...Object.keys(DEFINITIONS), 'decision', 'heating-phase-changed', 'heating-automation-changed', 'heating-pause-changed', 'heating-pause-ended', 'occupancy-changed', 'occupancy-expired', 'charging-control-changed', 'caravan-control-changed']);
 
-export function presentGeneral(type, payload = {}) {
+export function presentGeneral(type, payload) {
   const p = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
   let out = Object.hasOwn(DEFINITIONS, type) ? fixed(...DEFINITIONS[type]) : fixed('system', 'Other recorded event', 'An event without a supported public explanation was recorded. Private payload details are omitted.', { important: false });
   const rpc = chargingRpcDiagnostic(type, p);
@@ -149,9 +150,11 @@ export function presentGeneral(type, payload = {}) {
       ...detail('Native report received', validTime(p.receivedAt) ? new Date(p.receivedAt).toISOString() : null),
       ...detail('Source measurement clock', 'Not recorded'));
   }
-  if (type === 'h66-settings-confirmed' && Array.isArray(p.registers)) {
-    const fields = [...new Set(p.registers.filter(index => ['0203', '0208', '0212', '2201'].includes(index)).map(register))];
-    if (fields.length) out.details.push(...detail('Confirmed settings', fields.join(', ')));
+  // The reader can preview a type before it loads any records of that type.
+  if (type === 'h66-settings-confirmed' && payload !== undefined) {
+    const fields = Array.isArray(p.registers) ? p.registers.map(index => lookup(H66_REGISTER_LABELS, index)).filter(Boolean) : [];
+    if (!fields.length) return null;
+    out.details.push(...detail('Confirmed settings', [...new Set(fields)].join(', ')));
   }
   if (type.startsWith('heating-test-')) out.details.push(...detail('Action', phase(p.command)));
   if (type === 'heating-test-sent' && p.sent !== true) {

@@ -18,6 +18,10 @@ selected filters. If browser form restoration clears either dropdown, the next
 read restores the last selection before constructing its query. An empty native
 selection does not change filters or clear fetched history.
 
+Home records batch heat-pump confirmations for native writes with matching
+readback. Both views omit older batch records without confirmed registers. The
+original records remain in the database.
+
 The Charging area includes Charger 2 RPC reply timeouts and late replies, with
 operation, timing and original session context. An existing original session
 report owns these entries; otherwise they are operational events. Report-owned

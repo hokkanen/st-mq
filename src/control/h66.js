@@ -508,7 +508,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       }
       finally { attempt?.finish(); }
     }
-    await writeState(() => event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase }));
+    if (changes.length) await writeState(() => event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase }));
     armExpiry();
     return changes;
   }

@@ -151,6 +151,32 @@ test('the 45 C hot-water override restores its captured 48/55 C Normal settings 
   assert.deepEqual(restarted.controller.status().obligations, {});
 });
 
+test('H66 logs confirmed writes but omits unchanged reduction and recovery passes', async t => {
+  const original = { ...baselines, '0212': 48, '0208': 55 };
+  const r = rig({ values: original }); t.after(() => r.controller.close());
+  const expiresAt = r.now + 6 * 60_000;
+  const confirmations = () => r.store.events.filter(event => event.type === 'h66-settings-confirmed');
+  const first = await r.controller.setPhase({ phase: 'reduction', expiresAt });
+  assert.deepEqual(first.changed, ['0212', '0208', '2201']);
+
+  for (const phase of ['reduction', 'reduction', 'recovery', 'recovery']) {
+    r.setNow(r.now + 60_000);
+    for (const index of Object.keys(r.native)) r.feed(index);
+    const result = await r.controller.setPhase({ phase, expiresAt, holdDhwReduced: true, compressorOnly: true });
+    assert.equal(result.status, 'confirmed');
+    assert.equal(result.expiresAt, expiresAt);
+    assert.deepEqual(result.changed, []);
+  }
+  assert.equal(r.sent.length, 3);
+  assert.deepEqual(confirmations().map(event => event.detail.registers), [first.changed]);
+  assert.deepEqual(Object.keys(r.controller.status().obligations).sort(), [...first.changed].sort());
+
+  const restored = await r.controller.restore();
+  assert.deepEqual(r.native, original);
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.deepEqual(confirmations().map(event => event.detail.registers), [first.changed, restored.changed]);
+});
+
 for (const action of ['temporary', 'native']) {
   for (const scenario of ['commit-failure', 'unchanged', 'non-storage', 'pre-admission', 'after-dispatch'])
     test(`H66 ${action} command storage evidence distinguishes ${scenario}`, async t => {
