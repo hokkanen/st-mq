@@ -12,6 +12,21 @@ const number = value => finite(value) ? `${new Intl.NumberFormat('en-GB', { maxi
 const words = value => typeof value === 'string' ? value.replaceAll('-', ' ').replace(/^./, letter => letter.toUpperCase()) : '';
 const modeName = mode => ({ normal: 'Normal', away: 'Away' })[mode] ?? 'Not selected';
 const regulationInputs = new WeakMap();
+const garageReadOnly = status => status?.garage?.readOnly === true || status?.readOnly === true
+  || status?.input === 'offline' || isReadOnlyReplica(status);
+const targetConfirmedText = 'Confirmed by the heat-pump controller';
+const targetPendingText = 'Waiting for heat-pump controller confirmation';
+
+function garageTargetFeedback(garage, now) {
+  if (garage.readOnly === true) return { text: 'Recorded selection · live confirmation unavailable' };
+  const adapter = garage.adapter;
+  const expired = finite(adapter?.controlExpiresAt) && adapter.controlExpiresAt <= now;
+  if (garage.targetConfirmed === true && !expired) return { confirmed: true, text: targetConfirmedText };
+  if (!Number.isFinite(garage.requestedTargetC)) return { text: 'Waiting for a room target from the heat-pump controller' };
+  if (!adapter?.control || expired) return { text: 'Current room target confirmation unavailable' };
+  if (adapter.control.externalEnabled === false) return { text: 'The controller reports room regulation disabled' };
+  return { text: `Controller room target · ${number(adapter.control.targetC)}` };
+}
 
 function protectionDisplay(garage) {
   const protection = garage.protection ?? {};
@@ -61,29 +76,30 @@ function protectionDisplay(garage) {
     protectionEffective: fallback || temperatureFallback ? `${number(effective)} · native fallback` : number(effective) };
 }
 
-export function garageDisplay(garage = {}) {
+export function garageDisplay(garage = {}, now = Date.now()) {
+  const expired = finite(garage.adapter?.controlExpiresAt) && garage.adapter.controlExpiresAt <= now;
   return { mode: modeName(garage.mode), target: number(garage.requestedTargetC),
-    effectiveTarget: number(garage.effectiveTargetC), normalTarget: number(garage.normalTargetC), awayTarget: number(garage.awayTargetC),
-    confirmation: garage.targetConfirmed === true ? 'Confirmed by the heat-pump controller' : 'Waiting for heat-pump controller confirmation',
+    effectiveTarget: number(expired ? null : garage.effectiveTargetC), normalTarget: number(garage.normalTargetC), awayTarget: number(garage.awayTargetC),
+    confirmation: garageTargetFeedback(garage, now).text,
     ...protectionDisplay(garage),
-    reason: [garage.controlReason, garage.regulationReason].filter(Boolean).join(' ') || (garage.controlAvailable === true
-      ? 'The selected mode stays until you change it, including across restarts.' : 'Waiting for the garage heating connection.') };
+    reason: [garage.controlReason, garage.regulationReason].filter(Boolean).join(' ') || (garage.controlAvailable === true && !expired
+      ? '' : 'Waiting for the garage heating connection.') };
 }
 
 export function renderGarage(document, status = {}) {
   const garage = status.garage ?? {}, adapter = garage.adapter ?? {}, now = status.now ?? Date.now();
-  const display = garageDisplay(garage);
-  const set = (id, value) => { const node = document.getElementById(id); if (node) node.textContent = value; };
+  const display = garageDisplay(garage, now);
+  const set = (id, value) => { const node = document.getElementById(id); if (node && node.textContent !== value) node.textContent = value; };
   const detail = (id, label, title, description, stale = false) => {
     const node = document.getElementById(id); if (!node) return;
     node.classList.toggle('stale', stale);
     setStatusDetail(node, { label, title, detail: description, key: id });
   };
-  const readOnly = status.readOnly === true || status.input === 'offline' || isReadOnlyReplica(status);
+  const readOnly = garageReadOnly(status);
   set('garage-control-mode', display.mode);
   set('garage-requested-label', readOnly ? 'Recorded room target' : 'Room target');
   detail('garage-requested', display.target, 'Garage room target',
-    `${readOnly ? 'Recorded selection. Live confirmation is unavailable' : display.mode + '. ' + display.confirmation}. The saved selection has no expiry. A target is a request, not measured room temperature.`, garage.targetConfirmed !== true);
+    `${readOnly ? 'Recorded selection. Live confirmation is unavailable' : display.mode + '. ' + display.confirmation}. The saved selection has no expiry. A target is a request, not measured room temperature.`, readOnly || !garageTargetFeedback(garage, now).confirmed);
   const devices = status.equipment?.devices ?? [];
   const temperatureDevice = devices.find(device => device.enabled !== false && device.readings?.garage_temperature);
   const rear = garage.observations?.rear;
@@ -121,7 +137,7 @@ export function renderGarage(document, status = {}) {
   detail('garage-current-room', display.effectiveTarget, 'Effective garage target',
     `${readOnly ? 'Recorded selected' : 'Selected'} target: ${display.target}. ${display.mode}. ${readOnly ? 'Live confirmation is unavailable.' : `${display.confirmation}.`} `
       + `The effective target includes any independent freeze-protection minimum without changing your saved selection. `
-      + 'It is a control target, not measured room temperature or proof that the compressor is running.', !finite(garage.effectiveTargetC));
+      + 'It is a control target, not measured room temperature or proof that the compressor is running.', display.effectiveTarget === 'Unavailable');
   const sensor = adapter.control;
   const sensorAge = finite(sensor?.sensorAgeMs) && finite(adapter.observedAt)
     ? sensor.sensorAgeMs + Math.max(0, now - adapter.observedAt) : null;
@@ -220,10 +236,16 @@ export function renderGarage(document, status = {}) {
 export function createGarageControls({ document, request, onStatus = () => {}, onBusy = () => {},
   beforeRequest = () => {}, afterRequest = () => {}, blocked = () => false }) {
   const $ = id => document.getElementById(id), input = $('garage-normal-target'), form = $('garage-target-form');
-  const message = $('garage-heating-message');
+  const message = $('garage-heating-message'), current = $('garage-target-confirmation');
+  const targetDetails = $('garage-target-details');
+  let targetFormAction = false;
+  const placeMessage = () => {
+    const host = $(targetFormAction && targetDetails?.open ? 'garage-target-feedback' : 'garage-mode-feedback');
+    if (host && message && message.parentNode !== host) host.append(message);
+  };
   let status = null, busy = false, closed = false, dirty = false, selectionFeedback = null;
-  const available = () => status?.garage?.controlAvailable === true && status?.readOnly !== true
-    && status?.input !== 'offline' && !isReadOnlyReplica(status);
+  const available = () => status?.garage?.controlAvailable === true && !garageReadOnly(status)
+    && !(finite(status.garage.adapter?.controlExpiresAt) && status.garage.adapter.controlExpiresAt <= status.now);
   const locked = () => closed || busy || blocked() || !available();
   const refreshControls = () => {
     for (const mode of ['normal', 'away']) {
@@ -241,38 +263,53 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     form?.setAttribute('aria-busy', String(busy));
   };
   const render = () => {
-    const garage = status?.garage ?? {};
+    const garage = status?.garage ?? {}, now = status?.now ?? Date.now(), readOnly = garageReadOnly(status);
     const savedReceipt = garage.selectionReceipt;
-    if (savedReceipt && actionReceiptRecent(savedReceipt.at, status?.now ?? Date.now())
-      && (!selectionFeedback || !selectionFeedback.error && savedReceipt.at > selectionFeedback.at))
-      selectionFeedback = { ...savedReceipt };
+    if (savedReceipt && !busy && actionReceiptRecent(savedReceipt.at, now)) {
+      if (savedReceipt.commandId === selectionFeedback?.commandId) selectionFeedback.result = savedReceipt.result ?? selectionFeedback.result;
+      else if (!selectionFeedback || savedReceipt.commandId !== selectionFeedback.previousId && savedReceipt.at >= selectionFeedback.at)
+        selectionFeedback = { ...savedReceipt };
+    }
     if (input && !dirty) input.value = finite(garage.normalTargetC) ? String(garage.normalTargetC) : '';
     const help = $('garage-heating-status');
     if (help) help.textContent = available() ? 'Control available' : 'Control unavailable';
-    if (message && selectionFeedback && !busy) {
-      const now = status?.now ?? Date.now(), receipt = selectionFeedback;
-      if (!actionReceiptRecent(receipt.at, now)) { selectionFeedback = null; message.textContent = ''; message.classList.remove('form-error'); }
-      else {
+    const target = garageTargetFeedback(garage, now);
+    let showCurrent = true, pendingReceipt = false;
+    if (!busy && message) {
+      if (selectionFeedback && !actionReceiptRecent(selectionFeedback.at, now)) selectionFeedback = null;
+      const receipt = selectionFeedback;
+      let text = receipt?.error ?? '', isError = Boolean(text);
+      if (receipt && !text) {
         const matches = garage.mode === receipt.mode && garage.requestedTargetC === receipt.targetC;
-        if (!matches && !receipt.error) receipt.superseded = true;
-        if (matches && garage.targetConfirmed === true && !receipt.superseded && !receipt.rejected) {
-          receipt.confirmed = true;
-          if (garage.adapter?.observedAt >= receipt.at) receipt.error = null;
-        }
-        const confirmation = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
-          ? 'Recorded selection · live confirmation unavailable' : receipt.superseded ? 'Selection superseded by a newer choice'
-            : receipt.confirmed ? 'Confirmed by the heat-pump controller' : 'Waiting for heat-pump controller confirmation';
-        message.textContent = receipt.error ?? `${modeName(receipt.mode)} selected · ${number(receipt.targetC)}. ${confirmation}.`;
-        message.classList.toggle('form-error', Boolean(receipt.error));
+        if (!matches && !readOnly) receipt.superseded = true;
+        const outcome = receipt.result?.status;
+        const failed = ['failed', 'rejected', 'uncertain'].includes(outcome);
+        const currentMatches = matches && target.confirmed && !readOnly && !receipt.superseded;
+        if (outcome === 'applied' || !outcome && !receipt.commandId && currentMatches) receipt.confirmed = true;
+        let result;
+        if (receipt.superseded) result = 'Selection superseded by a newer choice';
+        else if (readOnly) { result = 'Recorded selection · live confirmation unavailable'; showCurrent = false; }
+        else if (outcome === 'rejected') { result = 'The controller rejected this change'; isError = true; }
+        else if (failed) { result = 'The controller did not confirm this change'; isError = true; }
+        else if (receipt.confirmed || !outcome && currentMatches) {
+          result = target.confirmed ? targetConfirmedText : 'Previously confirmed by the heat-pump controller';
+          showCurrent = !target.confirmed;
+        } else if (!outcome && receipt.commandId) result = '';
+        else { result = targetPendingText; showCurrent = false; pendingReceipt = true; }
+        text = `${modeName(receipt.mode)} selected · ${number(receipt.targetC)}.${result ? ` ${result}.` : ''}`;
       }
+      if (message.textContent !== text) message.textContent = text;
+      message.classList.toggle('form-error', isError);
     }
+    if (current) current.hidden = !showCurrent;
     const reason = $('garage-control-detail');
     if (reason) {
-      const text = status?.readOnly === true || status?.input === 'offline' || isReadOnlyReplica(status)
+      const text = readOnly
         ? 'Recorded selection. Change heating on the live controller.'
-        : garage.controlReason && garage.controlReason === message?.textContent
-          ? garage.regulationReason : garageDisplay(garage).reason;
-      reason.textContent = text ?? '';
+        : garage.controlReason && (garage.controlReason === message?.textContent
+          || pendingReceipt && garage.controlReason === 'Waiting for the previous command confirmation.')
+          ? garage.regulationReason : garageDisplay(garage, now).reason;
+      if (reason.textContent !== (text ?? '')) reason.textContent = text ?? '';
       reason.hidden = !text;
     }
     renderGarage(document, status ?? {});
@@ -280,15 +317,15 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   };
   const send = async payload => {
     if (locked()) return;
+    targetFormAction = Object.hasOwn(payload, 'targetC'); placeMessage();
     selectionFeedback = { at: status?.now ?? Date.now(), mode: payload.mode,
-      targetC: payload.targetC ?? status?.garage?.[`${payload.mode}TargetC`] };
+      targetC: payload.targetC ?? status?.garage?.[`${payload.mode}TargetC`], previousId: status?.garage?.selectionReceipt?.commandId };
     busy = true; beforeRequest(); onBusy(true); refreshControls();
     if (message) { message.classList.remove('form-error'); message.textContent = 'Saving garage temperature…'; }
     try {
       status = await request('/api/garage/heating', payload); dirty = false; onStatus(status);
     } catch (error) {
       selectionFeedback.error = error.message;
-      selectionFeedback.rejected = error.status >= 400 && error.status < 500;
       if (message) { message.classList.add('form-error'); message.textContent = error.message; }
     } finally { busy = false; onBusy(false); render(); }
     await afterRequest();
@@ -299,6 +336,7 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
   const submit = event => {
     event.preventDefault();
     if (locked() || !dirty) return;
+    targetFormAction = true; placeMessage();
     const targetC = input?.value?.trim() ? Number(input.value) : NaN;
     if (!finite(targetC) || targetC < 0 || targetC > 31 || !Number.isInteger(targetC * 2)) {
       selectionFeedback = { at: status?.now ?? Date.now(), error: 'Choose a Normal target from 0 to 31 °C in 0.5 °C steps.' };
@@ -308,10 +346,12 @@ export function createGarageControls({ document, request, onStatus = () => {}, o
     void send({ mode: 'normal', targetC });
   };
   $('garage-mode-normal')?.addEventListener('click', normal); $('garage-mode-away')?.addEventListener('click', away);
+  targetDetails?.addEventListener('toggle', placeMessage);
   form?.addEventListener('submit', submit); input?.addEventListener('input', edit); refreshControls();
   return { update(value) { status = value; render(); }, refreshControls,
     close() { closed = true; $('garage-mode-normal')?.removeEventListener('click', normal);
       $('garage-mode-away')?.removeEventListener('click', away); form?.removeEventListener('submit', submit);
+      targetDetails?.removeEventListener('toggle', placeMessage);
       input?.removeEventListener('input', edit);
       refreshControls(); } };
 }

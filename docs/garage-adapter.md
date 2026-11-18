@@ -33,7 +33,10 @@ Acceptance, serial acknowledgement and confirmed native settings are distinct.
 Confirmed receipts survive delayed MQTT publication failures; each transport
 completion remains bound to its original command. A rejection, failure or uncertain
 outcome already known at publication completion leaves the room-mode selection
-unchanged. Native target edits are
+unchanged. A post-dispatch change to the matching durable room target can verify
+the outcome if the result packet was lost. An unchanged target needs its own
+controller receipt. The first native confirmation keeps its original timestamp
+when later status reports repeat it. Native target edits are
 unavailable during HEAT regulation or an active HEAT protection floor, and in
 any mode during local frost rescue, including the unavailable-protection fallback.
 There are no leases, renewals, timed power restoration or Normal/Away labels in

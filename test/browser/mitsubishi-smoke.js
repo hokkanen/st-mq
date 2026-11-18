@@ -226,20 +226,24 @@ try {
   assert.match(controlHelp,/Native power and operating-mode changes remain in effect/);
   await evaluate("document.querySelector('.status-detail-close').click()");
   await evaluate(`globalThis.pumpSmokeRoom={targetC:10,confirmed:true};globalThis.pumpSmokeValues={...globalThis.pumpSmokeValues,power:'off',mode:'heat',targetC:17};globalThis.pumpSmokeResult=null;globalThis.refreshPumpSmoke()`);
-  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Room setting 10 °C')");
+  await until("document.getElementById('garage-room-temperature-status').textContent === 'Selected room target · 10 °C'");
   assert.equal(await evaluate("document.getElementById('garage-native-target').textContent"),'17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-reported').textContent"),'17 °C');
   assert.equal(await evaluate("document.getElementById('garage-native-power').textContent"),'Off');
   assert.equal(await evaluate("document.getElementById('garage-native-submit').disabled"),true,
     'Native thermostat edit is unavailable while the heat-pump controller owns room regulation');
-  assert.match(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/Room setting 10 °C.*heat-pump controller confirmed/);
+  assert.doesNotMatch(await evaluate("document.getElementById('garage-room-temperature-status').textContent"),/confirmed/i);
   await evaluate("globalThis.pumpSmokeRoom.confirmed=false;globalThis.refreshPumpSmoke()");
-  await until("document.getElementById('garage-room-temperature-status').textContent.includes('Waiting for heat-pump controller confirmation')");
+  await evaluate("document.getElementById('garage-native-setting').value='fan';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'))");
+  assert.equal(await evaluate("document.getElementById('garage-room-temperature-status').hidden"),true);
+  await evaluate(`globalThis.pumpSmokeResult={setting:'fan',value:4,status:'uncertain',requestedAt:${now}};globalThis.refreshPumpSmoke()`);
+  await until("document.getElementById('garage-native-message').textContent.includes('Outcome uncertain')");
   assert.doesNotMatch(await evaluate("document.body.innerText"),/ST-MQ|\bPill\b|\bGen3\b/i);
-  for(const width of [1440,390,320])for(const theme of ['dark','light']){
-    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+  for(const width of [1440,768,640,390,320])for(const theme of ['dark','light']){
+    await send('Emulation.setDeviceMetricsOverride',{width,height:width===640?360:1000,deviceScaleFactor:1,mobile:false});
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}');document.getElementById('garage-controller-details').scrollIntoView({block:'start',behavior:'instant'})`);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=window.innerWidth'),true,`${width} ${theme} page overflow`);
+    assert.equal(await evaluate("document.getElementById('garage-native-message').scrollWidth <= document.getElementById('garage-native-message').clientWidth"),true,`${width} ${theme} receipt wraps`);
     const overflow=await evaluate("(()=>{const root=document.getElementById('garage-controller-details'),bounds=root.getBoundingClientRect();return [...root.querySelectorAll('.app-select-trigger,input,table')].filter(node=>node.offsetParent).filter(node=>{const r=node.getBoundingClientRect();return r.left<bounds.left-1||r.right>bounds.right+1;}).map(node=>node.id||node.tagName);})()");
     assert.deepEqual(overflow,[],`${width} ${theme} equipment content stays inside the card`);
     await evaluate("globalThis.pumpSmokeCompressor='stale';globalThis.refreshPumpSmoke()");
@@ -256,7 +260,7 @@ try {
     await capture('');
     await evaluate("document.querySelector('[data-reading=telemetry-indoorTemperature]').scrollIntoView({block:'start',behavior:'instant'})");
     await capture('temperatures-');
-    await evaluate("document.getElementById('garage-native-temperature-help').scrollIntoView({block:'start',behavior:'instant'});document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
+    await evaluate("document.getElementById('garage-native-setting').value='targetC';document.getElementById('garage-native-setting').dispatchEvent(new Event('change'));document.getElementById('garage-native-temperature-help').scrollIntoView({block:'start',behavior:'instant'});document.querySelector('#garage-native-temperature-details .status-detail-trigger').click()");
     assert.equal(await evaluate("(()=>{const panel=document.getElementById('status-detail-popover'),r=panel.getBoundingClientRect();return !panel.hidden&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})()"),true,`${width} ${theme} popup stays inside the viewport`);
     await capture('help-');
     await evaluate("document.querySelector('.status-detail-close').click()");

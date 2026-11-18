@@ -340,6 +340,8 @@ try {
   await evaluate(`garageFixture.confirmed = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-heating-message').textContent.includes('Confirmed by the heat-pump controller')`);
   assert.doesNotMatch(await evaluate(`document.getElementById('garage-heating-message').textContent`), /Waiting/);
+  assert.equal(await evaluate(`document.getElementById('garage-target-confirmation').hidden`), true);
+  assert.equal(await evaluate(`document.getElementById('garage-control-detail').hidden`), true);
   assert.equal(await evaluate(`document.getElementById('garage-warming-warning').hidden`), true);
   await evaluate(`document.getElementById('garage-mode-normal').focus()`); await keyPress('Enter');
   await until(`!document.getElementById('garage-warming-warning').hidden`);
@@ -353,6 +355,11 @@ try {
   assert.equal(await evaluate(`document.activeElement.id`), 'garage-normal-target');
   await evaluate(`document.getElementById('garage-target-submit').click()`);
   await until(`document.getElementById('garage-mode-normal-target').textContent === '9.5 °C'`);
+  assert.equal(await evaluate(`document.querySelector('#garage-target-form #garage-heating-message')?.textContent.includes('9.5 °C')`), true);
+  await evaluate(`document.getElementById('garage-target-details').open = false`);
+  await until(`Boolean(document.querySelector('#garage-mode-feedback #garage-heating-message'))`);
+  await evaluate(`document.getElementById('garage-target-details').open = true`);
+  await until(`Boolean(document.querySelector('#garage-target-form #garage-heating-message'))`);
   assert.deepEqual(await evaluate(`garageFixture.calls`), [
     ['/api/garage/heating', { mode: 'away' }], ['/api/garage/heating', { mode: 'normal' }],
     ['/api/garage/heating', { mode: 'normal', targetC: 9.5 }],
@@ -401,8 +408,8 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-protection-operation-details').open`), true);
   assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /When protection activates.*higher of this minimum and the selected target.*removed after recovery.*saved selection remains unchanged/);
   assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /ten minutes.*powered on/s);
-  for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
+  for (const width of [320, 390, 640, 768, 1440]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: width === 640 ? 360 : 1200, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`); await pause(100);
     await checkDashboardLayout({ evaluate, width });
     assert.equal(await evaluate(`(() => {

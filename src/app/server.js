@@ -735,8 +735,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const cancellation = new AbortController(), disconnected = () => cancellation.abort();
             const isAuthorized = () => {
               const latest = access();
+              const role = identity(latest)?.role;
               return !res.destroyed && !unavailable() && !writesBlocked() && current === getEngine()
-                && latest.enabled && (ingress || latest === acceptedAccess) && identity(latest)?.role === 'admin';
+                && latest.enabled && (ingress || latest === acceptedAccess)
+                && (role === 'admin' || role === 'family' && familyActionAllowed(url.pathname, input, current));
             };
             res.once('close', disconnected);
             try {

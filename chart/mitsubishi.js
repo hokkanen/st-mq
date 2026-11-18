@@ -43,6 +43,11 @@ const words = value => String(value ?? '').replace(/([a-z])([A-Z])/g, '$1 $2').r
 const clock = at => Number.isFinite(at) ? new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
   month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(at) : null;
 const scalar = value => typeof value === 'boolean' || typeof value === 'string' && value.length > 0 || Number.isFinite(value);
+const nativeCurrent = (reading, now) => reading?.usable === true && Number.isFinite(reading.measuredAt)
+  && reading.measuredAt <= now && (Object.hasOwn(reading, 'expiresAt') ? reading.expiresAt > now : now - reading.measuredAt < 120_000);
+const nativeReadOnly = status => !status || status.readOnly === true || status.garage?.readOnly === true
+  || status.input === 'offline' || isReadOnlyReplica(status);
+const nativePending = result => ['pending', 'published', 'accepted'].includes(result?.status);
 export function mitsubishiValue(setting, value, unit = mitsubishiSettings[setting]?.unit ?? '') {
   if (setting === 'compressorActive') return typeof value === 'boolean' ? value ? 'Running' : 'Idle' : 'Unavailable';
   if (!scalar(value)) return 'Unavailable';
@@ -75,7 +80,8 @@ function mitsubishiReadingCandidates(garage = {}, now = Date.now()) {
     const at = reading?.measuredAt ?? reading?.sourceTime ?? (key === 'power' && nativeSetting ? native.powerAt : null);
     const quality = Array.isArray(reading?.quality) ? reading.quality : reading?.quality ? [reading.quality] : [];
     const supported = reading?.supported !== false;
-    const fresh = connected && Number.isFinite(at) && at <= now && now - at < 120_000
+    const fresh = connected && Number.isFinite(at) && at <= now
+      && (nativeSetting && Object.hasOwn(reading ?? {}, 'expiresAt') ? reading.expiresAt > now : now - at < 120_000)
       && reading?.stale !== true && !quality.some(value => /stale|invalid|unavailable|unsupported|unknown|sentinel/i.test(value));
     const valid = scalar(value) && (key !== 'compressorActive' || typeof value === 'boolean');
     const observed = supported && valid && Number.isFinite(at) && at <= now
@@ -187,20 +193,25 @@ export function renderMitsubishiReadings(document, status) {
 
 export function mitsubishiControl(status, setting) {
   const controls = status?.garage?.nativeControls ?? {}, selected = controls.settings?.[setting] ?? {};
-  const writable = Boolean(status && status.readOnly !== true && !isReadOnlyReplica(status));
+  const writable = !nativeReadOnly(status);
+  const hasCurrent = !Object.hasOwn(selected, 'expiresAt') || nativeCurrent(selected, status.now ?? Date.now());
   return { ...selected, available: writable && controls.available === true && selected.available === true
-    && selected.supported === true && scalar(selected.value) && !controls.busy && !controls.pending,
+    && selected.supported === true && scalar(selected.value) && hasCurrent && !controls.busy && !controls.pending,
   reason: !writable ? 'This view is read-only. Use the master controller to change settings.'
-    : selected.reason ?? controls.reason ?? 'Waiting for a supported native control connection.' };
+    : selected.reason ?? controls.reason ?? (controls.pending ? 'Waiting for the previous heat-pump change.'
+      : !hasCurrent ? 'Waiting for a current report of this setting.' : 'Waiting for a supported native control connection.') };
 }
 export function mitsubishiResult(result, now = Date.now()) {
   if (!result || !actionReceiptRecent(result.requestedAt, now)) return '';
   const setting = mitsubishiSettings[result.setting]?.label ?? 'Heat-pump setting';
-  const request = `${setting}: ${mitsubishiValue(result.setting, result.value)}.`;
-  if (result.superseded) return `${request} Latest pump report: ${mitsubishiValue(result.setting, result.observedValue)}. Request superseded.`;
+  const request = `${setting} · ${mitsubishiValue(result.setting, result.value)} requested.`;
+  if (result.superseded) return `${request} Previously confirmed. The pump later reported ${mitsubishiValue(result.setting, result.observedValue)}.`;
   if (result.confirmed || result.status === 'native-confirmed') return `${request} Confirmed by the pump${clock(result.nativeConfirmedAt) ? ` at ${clock(result.nativeConfirmedAt)}` : ''}.`;
-  if (['pending', 'published', 'accepted'].includes(result.status)) return `${request} Requested; waiting for fresh pump confirmation.`;
-  if (result.status === 'uncertain') return `${request} Outcome uncertain. Check the reported pump setting before retrying.`;
+  if (nativePending(result)) return `${request} Still waiting for fresh pump confirmation.`;
+  if (result.status === 'uncertain' && result.matchesReadback) return `${request} The pump now reports this value. The request outcome is uncertain.`;
+  if (result.status === 'uncertain') return `${request} Outcome uncertain. ${scalar(result.currentValue)
+    ? `The latest pump report shows ${mitsubishiValue(result.setting, result.currentValue)}.`
+    : 'Check the reported value for this setting before retrying.'}`;
   if (result.status === 'superseded') return `${request} Request superseded.${result.reason ? ` ${words(result.reason)}.` : ''}`;
   return `${request} ${words(result.status ?? 'unconfirmed')}.${result.reason ? ` ${words(result.reason)}.` : ''}`;
 }
@@ -210,9 +221,10 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
   const $ = id => document.getElementById(id), form = $('garage-native-form'), setting = $('garage-native-setting');
   const select = $('garage-native-value'), input = $('garage-native-temperature'), submit = $('garage-native-submit');
   const message = $('garage-native-message'), seenSettings = new Set();
-  let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, requestError = null, pointerSelection = false;
-  let requestErrorAt, requestedAfter = null;
+  let status = null, busy = false, closed = false, edited = false, optionSignature = null, settingSignature = null, pointerSelection = false;
+  let localFeedback = null;
   const trackReceipt = createReceiptTracker();
+  const receiptKey = receipt => receipt && (receipt.commandId ?? `${receipt.requestedAt}:${receipt.setting}:${receipt.value}`);
   const refreshControls = () => {
     if (!form) return;
     const control = mitsubishiControl(status, setting.value), locked = closed || busy || blocked();
@@ -233,11 +245,6 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     const fold = $('garage-native-control-details');
     if (fold) fold.hidden = !known.length;
     form.hidden = !known.length;
-    const room = mitsubishiRoomTemperature(status?.garage), roomStatus = $('garage-room-temperature-status');
-    if (roomStatus) {
-      roomStatus.hidden = !room;
-      roomStatus.textContent = room ? `Room setting ${room.value}. ${room.progress}` : '';
-    }
     if (settingSignature !== JSON.stringify(known)) {
       const previous = setting.value;
       setting.replaceChildren();
@@ -249,6 +256,11 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     }
     if (!known.length) { refreshControls(); return; }
     const key = setting.value, control = mitsubishiControl(status, key), numeric = key === 'targetC';
+    const room = mitsubishiRoomTemperature(status?.garage), roomStatus = $('garage-room-temperature-status');
+    if (roomStatus) {
+      roomStatus.hidden = !numeric || !room;
+      roomStatus.textContent = numeric && room ? `${room.basis} · ${room.value}` : '';
+    }
     const temperatureHelp = $('garage-native-temperature-help');
     if (temperatureHelp) temperatureHelp.hidden = !numeric;
     setStatusDetail($('garage-native-temperature-details'), { key: 'mitsubishi-temperature-control',
@@ -272,37 +284,37 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
     const reading = mitsubishiReadings(status?.garage, status?.now).find(row => row.key === `native-${key}`);
     setStatusDetail($('garage-native-reported'), { key: `mitsubishi-selected-${key}`, title: mitsubishiSettings[key].label,
       label: reading?.value ?? 'Unavailable', detail: reading?.detail ?? 'Waiting for a current native readback.' });
-    const statusText = control.available
-      ? 'Changes the heat pump’s device setting. Wait for pump confirmation.'
-      : /\s/.test(control.reason) ? control.reason : words(control.reason);
+    let statusText = control.available ? '' : /\s/.test(control.reason) ? control.reason : words(control.reason);
     if (!busy) {
       const now = status?.now ?? Date.now(), last = status?.garage?.nativeControls?.result;
-      const reading = status?.garage?.adapter?.native?.readbacks?.[last?.setting];
-      const at = reading?.measuredAt ?? reading?.sourceTime;
-      const fresh = status?.garage?.adapter?.connected === true && reading?.usable === true && reading?.stale !== true
-        && Number.isFinite(at) && at > last?.requestedAt && at <= now && now - at < 120_000;
-      const receipt = trackReceipt(last && (last.commandId ?? `${last.requestedAt}:${last.setting}:${last.value}`), last ? { ...last,
-        confirmed: last.status === 'native-confirmed' || fresh && reading.value === last.value,
-        superseded: fresh && reading.value !== last.value, observedValue: fresh ? reading.value : null,
-        evidenceAt: fresh ? at : null } : null, now);
-      if (requestError && (!actionReceiptRecent(requestErrorAt, now) || requestedAfter != null
-        && last?.requestedAt >= requestedAfter)) requestError = null;
-      if (!requestError) {
-        message.textContent = mitsubishiResult(receipt, now);
-        message.classList.toggle('form-error', Boolean(receipt && !receipt.confirmed && !receipt.superseded
-          && ['rejected', 'uncertain', 'failed'].includes(receipt.status)));
-      }
+      const reading = status?.garage?.nativeControls?.settings?.[last?.setting];
+      const at = reading?.measuredAt;
+      const key = receiptKey(last);
+      const current = !nativeReadOnly(status) && status?.garage?.adapter?.connected === true && nativeCurrent(reading, now);
+      const fresh = current && at > (last?.nativeConfirmedAt ?? last?.requestedAt);
+      const receipt = trackReceipt(key, last ? { ...last,
+        confirmed: last.status === 'native-confirmed', matchesReadback: fresh && reading.value === last.value,
+        superseded: last.status === 'native-confirmed' && fresh && reading.value !== last.value,
+        observedValue: fresh ? reading.value : null, evidenceAt: fresh ? at : null } : null, now);
+      if (localFeedback && (!actionReceiptRecent(localFeedback.at, now) || key && key !== localFeedback.previousId
+        && last.requestedAt >= localFeedback.at)) localFeedback = null;
+      const text = localFeedback?.text ?? mitsubishiResult(receipt && { ...receipt, currentValue: current ? reading.value : null }, now);
+      if (message.textContent !== text) message.textContent = text;
+      message.classList.toggle('form-error', localFeedback?.error ?? Boolean(receipt && ['rejected', 'uncertain', 'failed'].includes(receipt.status)));
+      if (text && (statusText === text || nativePending(last) && statusText === status?.garage?.nativeControls?.reason)) statusText = '';
     }
     const note = $('garage-native-status');
-    note.hidden = statusText === message.textContent;
-    note.textContent = note.hidden ? '' : statusText;
+    note.hidden = !statusText;
+    note.textContent = statusText;
     refreshControls();
   };
   const pointerChoice = () => { pointerSelection = true; };
   const keyboardChoice = () => { pointerSelection = false; };
   const change = () => {
     const focusEditor = pointerSelection; pointerSelection = false;
-    edited = false; requestError = null; render({ useReadback: true });
+    edited = false;
+    if (localFeedback?.validation) localFeedback = null;
+    render({ useReadback: true });
     if (focusEditor && document.body.dataset.accessRole === 'admin') {
       // Family users browse settings without moving focus into an editor that
       // the access observer will disable at the end of this event.
@@ -312,31 +324,36 @@ export function createMitsubishiControls({ document, request, onStatus = () => {
       else setting.blur();
     }
   };
-  const edit = () => { edited = true; requestError = null; refreshControls(); };
+  const edit = () => {
+    edited = true;
+    if (localFeedback?.validation) { localFeedback = null; render(); }
+    else refreshControls();
+  };
   const send = async event => {
     event.preventDefault();
     const key = setting.value, control = mitsubishiControl(status, key);
     if (closed || busy || blocked() || !control.available) return;
-    requestError = null; requestErrorAt = status?.now ?? Date.now(); requestedAfter = null;
+    const at = status?.now ?? Date.now(), previousId = receiptKey(status?.garage?.nativeControls?.result);
+    let requestError;
     let value;
     if (key === 'targetC') {
       value = input.value.trim() === '' ? NaN : Number(input.value);
       if (!Number.isFinite(value) || !Number.isFinite(control.min) || !Number.isFinite(control.max)
         || value < control.min || value > control.max || Number.isFinite(control.step) && Math.abs((value - control.min) / control.step - Math.round((value - control.min) / control.step)) > 1e-8) {
-        requestError = `Choose a room setting within the reported range${Number.isFinite(control.min) && Number.isFinite(control.max) ? ` ${control.min}–${control.max} °C` : ''}.`;
+        requestError = `Choose a native thermostat setting within the reported range${Number.isFinite(control.min) && Number.isFinite(control.max) ? ` ${control.min}–${control.max} °C` : ''}.`;
       }
     } else {
       try { value = JSON.parse(select.value); } catch { value = undefined; }
       if (!control.values?.some(allowed => allowed === value)) requestError = 'Choose one of the values supported by the pump.';
     }
-    if (requestError) { message.textContent = requestError; message.classList.add('form-error'); return; }
-    requestedAfter = status?.now ?? Date.now();
+    if (requestError) { localFeedback = { at, previousId, text: requestError, error: true, validation: true }; render(); return; }
+    localFeedback = { at, previousId, text: `${mitsubishiSettings[key].label} · ${mitsubishiValue(key, value)}. Request sent, waiting for fresh pump confirmation.`, error: false };
     busy = true; beforeRequest(); onBusy(true); refreshControls(); message.classList.remove('form-error');
     message.textContent = 'Applying heat-pump setting…';
     try {
-      status = await request('/api/garage/native', { setting: key, value }); edited = false; requestError = null;
+      status = await request('/api/garage/native', { setting: key, value }); edited = false;
       onStatus(status);
-    } catch (error) { requestError = error.message; message.textContent = requestError; message.classList.add('form-error'); }
+    } catch (error) { localFeedback = { at, previousId, text: error.message, error: true }; }
     finally { busy = false; onBusy(false); render(); }
     await afterRequest();
   };

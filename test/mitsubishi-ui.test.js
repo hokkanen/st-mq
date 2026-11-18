@@ -372,19 +372,23 @@ test('a matching native readiness reason and request error render once', async (
   assert.equal(f.nodes.get('garage-native-message').textContent, reason);
   assert.equal(select.value, '4');
   f.panel.update(f.status);
-  assert.equal(f.nodes.get('garage-native-status').hidden, false);
+  assert.equal(f.nodes.get('garage-native-status').hidden, true, 'Ready controls need no redundant helper text');
   assert.equal(select.value, '4');
   assert.equal(select.disabled, false);
 });
 
-test('a native command receipt follows late pump readback, survives later telemetry loss and expires after 24 hours', () => {
+test('native feedback distinguishes matching pump readback from confirmation of an uncertain command', () => {
   const f = panelFixture(), at = now - 1000;
   const latest = structuredClone(f.status);
   latest.garage.nativeControls.result = { commandId: 'fixture-command', setting: 'fan', value: 2,
     requestedAt: at, status: 'uncertain' };
   f.panel.update(latest);
-  assert.match(f.nodes.get('garage-native-message').textContent, /Outcome uncertain/);
-  latest.garage.adapter.native.readbacks.fan = { value: 2, measuredAt: now, usable: true };
+  assert.match(f.nodes.get('garage-native-message').textContent, /Fan setting · 2 requested.*Outcome uncertain.*report shows Auto/);
+  Object.assign(latest.garage.nativeControls.settings.fan, { value: 2, measuredAt: now, expiresAt: now + 1000 });
+  f.panel.update(latest);
+  assert.match(f.nodes.get('garage-native-message').textContent, /pump now reports this value.*outcome is uncertain/);
+  latest.garage.nativeControls.result.status = 'native-confirmed';
+  latest.garage.nativeControls.result.nativeConfirmedAt = now;
   f.panel.update(latest);
   assert.match(f.nodes.get('garage-native-message').textContent, /Confirmed by the pump/);
   latest.garage.adapter.connected = false;
@@ -399,10 +403,10 @@ test('a historical native receipt reports a later setting change and does not re
   const f = panelFixture(), latest = structuredClone(f.status);
   latest.garage.nativeControls.result = { commandId: 'fixture-command', setting: 'fan', value: 2,
     requestedAt: now - 2000, status: 'native-confirmed' };
-  latest.garage.adapter.native.readbacks.fan = { value: 3, measuredAt: now - 1000, usable: true };
+  Object.assign(latest.garage.nativeControls.settings.fan, { value: 3, measuredAt: now - 1000, expiresAt: now + 1000 });
   f.panel.update(latest);
-  assert.match(f.nodes.get('garage-native-message').textContent, /Latest pump report: 3. Request superseded/);
-  latest.garage.adapter.native.readbacks.fan.usable = false;
+  assert.match(f.nodes.get('garage-native-message').textContent, /Previously confirmed. The pump later reported 3/);
+  latest.now = now + 1000;
   f.panel.update(latest);
-  assert.match(f.nodes.get('garage-native-message').textContent, /Request superseded/);
+  assert.match(f.nodes.get('garage-native-message').textContent, /Previously confirmed. The pump later reported 3/);
 });

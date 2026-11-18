@@ -250,8 +250,13 @@ Garage electricity view. The same series retain their colours in every view and
 in the series explorer, with distinct front/rear air and pipe-estimate colours.
 User-facing descriptions name the heat-pump controller and local frost-protection
 unit by role rather than by integration hardware. Selecting Normal or Away shows
-pending confirmation until controller readback confirms the target; polling
-refreshes that feedback without implying the compressor is running.
+one confirmation beside the controls. A Normal temperature edit has its feedback
+beside the editor while it is open. A previous confirmation remains historical
+when live readback becomes unavailable or reports a different target. The native
+settings form shows current reported values and the latest native command outcome
+separately. Room and native receipts have independent histories and expire from
+the dashboard after 24 hours. Neither a room selection nor a native setting
+confirmation establishes that the compressor is running.
 
 Slaves display recorded evidence without granting device control.
 The freeze-protection fold retains the recorded sender's air and pipe estimates,

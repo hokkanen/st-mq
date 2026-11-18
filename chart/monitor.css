@@ -2295,6 +2295,9 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-target-input input { flex:1 1 6rem; min-width:0; width:7rem; max-width:10rem; }
 .garage-target-input button { flex:1 1 12rem; }
 .garage-target-form .muted { margin:0; }
+#garage-mode-feedback:not(:has(> p:not(:empty))), #garage-target-feedback:not(:has(> p:not(:empty))) { display: none; }
+#garage-heating-message, #garage-native-message { overflow-wrap: anywhere; }
+#garage-mode-feedback > p, #garage-target-feedback > p { margin: 0; font-size: 11px; line-height: 1.6; }
 .garage-protection { scroll-margin-top: 20px; }
 .garage-protection .section-fold-body, .garage-protection-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .garage-protection-body { --garage-protection-indent: var(--ui-inset); }

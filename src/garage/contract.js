@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
 import { GARAGE_NATIVE_SETTINGS } from './native-settings.js';
 import { validGarageTarget } from './room-temperature.js';
 import { validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 
 export const SHELLY_CN105_CONTRACT = 'shelly-cn105/v2';
+export const garageTargetIdentity = (settings, deviceId) => createHash('sha256')
+  .update(JSON.stringify([settings.driver, settings.stateTopic, settings.commandTopic, deviceId])).digest('hex');
 const controlStates = ['starting', 'disabled', 'sensor-stale', 'sensor-range', 'native-stale', 'suspended-mode',
   'setting-native-target', 'active', 'frost-rescue', 'frost-unavailable'];
 const controlFields = ['targetC', 'externalEnabled', 'effectiveTargetC', 'status', 'sensorTemperatureC',
@@ -25,6 +28,20 @@ export function decodeGarageControl(value) {
     || value.sensorAgeMs !== null && (value.sensorAgeMs < 0 || !Number.isSafeInteger(value.sensorAgeMs))) return null;
   return Object.fromEntries(controlFields.filter(key => value[key] !== undefined).map(key => [key, value[key]]));
 }
+export function validGarageCommandReceipt(command) {
+  return object(command)
+    && Object.keys(command).every(key => ['commandId', 'action', 'targetC', 'externalEnabled', 'field', 'value',
+      'requestedAt', 'status', 'reason', 'nativeConfirmedAt'].includes(key))
+    && identity(command.commandId) && ['control', 'set'].includes(command.action) && finiteTime(command.requestedAt)
+    && ['published', 'accepted', 'applied', 'native-confirmed', 'rejected', 'failed', 'uncertain'].includes(command.status)
+    && (command.reason === null || typeof command.reason === 'string' && command.reason.length <= 200)
+    && (command.nativeConfirmedAt === undefined || finiteTime(command.nativeConfirmedAt))
+    && (command.action === 'control' ? validGarageTarget(command.targetC) && typeof command.externalEnabled === 'boolean'
+      : Object.hasOwn(GARAGE_NATIVE_SETTINGS, command.field) && (GARAGE_NATIVE_SETTINGS[command.field].values
+        ? GARAGE_NATIVE_SETTINGS[command.field].values.includes(command.value)
+        : Number.isFinite(command.value) && command.value >= 16 && command.value <= 31 && Number.isInteger(command.value * 2)));
+}
+
 export function validateGarageAdapterSnapshot(value) {
   if (value == null) return value;
   const invalid = () => { throw new Error('Unsupported saved Garage adapter state; start a fresh development database.'); };
@@ -53,18 +70,7 @@ export function validateGarageAdapterSnapshot(value) {
     || !['none', 'native-counter', 'native-power'].includes(value.electrical.source)
     || !(value.electrical.lastEnd === null || finiteTime(value.electrical.lastEnd))
     || !(value.electrical.lastIssue === null || typeof value.electrical.lastIssue === 'string' && value.electrical.lastIssue.length <= 200))) invalid();
-  const command = value.lastCommand;
-  if (command !== null && (!object(command)
-    || Object.keys(command).some(key => !['commandId', 'action', 'targetC', 'externalEnabled', 'field', 'value',
-      'requestedAt', 'status', 'reason', 'nativeConfirmedAt'].includes(key))
-    || !identity(command.commandId) || !['control', 'set'].includes(command.action) || !finiteTime(command.requestedAt)
-    || !['published', 'accepted', 'applied', 'native-confirmed', 'rejected', 'failed', 'uncertain'].includes(command.status)
-    || !(command.reason === null || typeof command.reason === 'string' && command.reason.length <= 200)
-    || command.nativeConfirmedAt !== undefined && !finiteTime(command.nativeConfirmedAt)
-    || command.action === 'control' && (!validGarageTarget(command.targetC) || typeof command.externalEnabled !== 'boolean')
-    || command.action === 'set' && (!Object.hasOwn(GARAGE_NATIVE_SETTINGS, command.field)
-      || (GARAGE_NATIVE_SETTINGS[command.field].values ? !GARAGE_NATIVE_SETTINGS[command.field].values.includes(command.value)
-        : !Number.isFinite(command.value) || command.value < 16 || command.value > 31 || !Number.isInteger(command.value * 2))))) invalid();
+  if (value.lastCommand !== null && !validGarageCommandReceipt(value.lastCommand)) invalid();
   return value;
 }
 export const GARAGE_FIELDS = Object.freeze({

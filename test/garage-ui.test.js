@@ -102,8 +102,11 @@ test('selection feedback follows polled confirmation and marks recorded confirma
   f.panel.update(confirmed);
   assert.equal(message.textContent, 'Away selected · 5 °C. Confirmed by the heat-pump controller.');
   assert.equal(f.nodes.get('garage-target-confirmation').textContent, 'Confirmed by the heat-pump controller');
+  assert.equal(f.nodes.get('garage-target-confirmation').hidden, true, 'The receipt is the single visible confirmation');
   f.panel.update(away);
-  assert.equal(message.textContent, 'Away selected · 5 °C. Confirmed by the heat-pump controller.', 'A lost reading does not erase the receipt confirmation');
+  assert.equal(message.textContent, 'Away selected · 5 °C. Previously confirmed by the heat-pump controller.');
+  assert.equal(f.nodes.get('garage-target-confirmation').textContent, 'Current room target confirmation unavailable');
+  assert.equal(f.nodes.get('garage-target-confirmation').hidden, false);
   f.panel.update({ ...confirmed, readOnly: true });
   assert.equal(message.textContent, 'Away selected · 5 °C. Recorded selection · live confirmation unavailable.');
   assert.equal(f.requests.length, 1, 'Status updates must not resend the selection');
@@ -112,18 +115,36 @@ test('selection feedback follows polled confirmation and marks recorded confirma
 test('a new page restores the committed selection receipt without resending or inventing live confirmation', () => {
   const f = fixture(), message = f.nodes.get('garage-heating-message');
   const saved = { ...f.initial, garage: { ...f.initial.garage, targetConfirmed: false,
-    selectionReceipt: { at: now - 1000, mode: 'normal', targetC: 10, commandId: 'saved-action' } } };
+    selectionReceipt: { at: now - 1000, mode: 'normal', targetC: 10, commandId: 'saved-action', result: { status: 'published' } } } };
   f.panel.update(saved);
   assert.match(message.textContent, /Normal selected · 10 °C. Waiting for heat-pump controller confirmation/);
-  f.panel.update({ ...saved, garage: { ...saved.garage, targetConfirmed: true } });
+  f.panel.update({ ...saved, garage: { ...saved.garage, targetConfirmed: true,
+    selectionReceipt: { ...saved.garage.selectionReceipt, result: { status: 'applied' } } } });
   assert.match(message.textContent, /Confirmed by the heat-pump controller/);
   f.panel.update(saved);
-  assert.match(message.textContent, /Confirmed by the heat-pump controller/, 'Later unavailable evidence cannot erase confirmation');
+  assert.match(message.textContent, /Previously confirmed by the heat-pump controller/, 'Later unavailable evidence cannot erase confirmation');
   f.panel.update({ ...saved, readOnly: true });
   assert.match(message.textContent, /Recorded selection · live confirmation unavailable/);
   f.panel.update({ ...saved, now: now + day });
   assert.equal(message.textContent, '');
   assert.deepEqual(f.requests, []);
+});
+
+test('a same-target selection waits for its own outcome and an expired report cannot confirm current state', () => {
+  const f = fixture(), message = f.nodes.get('garage-heating-message'), current = f.nodes.get('garage-target-confirmation');
+  const garage = { ...f.initial.garage, adapter: { controlExpiresAt: now + 2000,
+    control: { targetC: 10, externalEnabled: true } }, selectionReceipt: { at: now - 1000, mode: 'normal', targetC: 10,
+    commandId: 'fixture-same-target', result: { status: 'accepted' } } };
+  f.panel.update({ ...f.initial, garage });
+  assert.match(message.textContent, /Waiting for heat-pump controller confirmation/);
+  assert.equal(current.hidden, true);
+  garage.selectionReceipt.result.status = 'rejected';
+  f.panel.update({ ...f.initial, garage });
+  assert.match(message.textContent, /controller rejected this change/);
+  assert.equal(current.hidden, false, 'A matching current target is distinct from a rejected request');
+  f.panel.update({ ...f.initial, now: now + 2000, garage });
+  assert.match(current.textContent, /Current room target confirmation unavailable/);
+  assert.equal(f.nodes.get('garage-mode-normal').disabled, true);
 });
 
 test('polling preserves target validation and request errors after a successful selection', async () => {

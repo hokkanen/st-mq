@@ -5,6 +5,8 @@ import { validateGarageNativeSetting } from './native-settings.js';
 import { validateGarageModeState, validGarageTarget, GARAGE_WARMING_WARNING } from './room-temperature.js';
 import { confirmedGarageDoor, GARAGE_DOOR_SIGNALS } from './door-state.js';
 import { garageSelectionReceipt } from './selection-receipt.js';
+import { garageCommandFeedbackKey, validateGarageCommandFeedback } from './command-feedback.js';
+import { garageTargetIdentity } from './contract.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { observationTimeAdmitted } from '../domain/time-evidence.js';
@@ -26,12 +28,20 @@ export class GarageRuntime {
     const { adapter: _adapter, sender: _sender, ...settings } = config.garage ?? {};
     this.settings = garageSettings(settings); this.input = config.input;
     this.keys = { mode: `garage:mode:${this.input}`, adapter: `garage:adapter:${this.input}`, sender: `garage:sender:${this.input}` };
+    this.keys.feedback = garageCommandFeedbackKey(this.input);
     const source = mqttSourceIdentity(config, 'primary');
     this.adapterKey = createHash('sha256').update(JSON.stringify({ adapter: Object.fromEntries(
       ['driver', 'stateTopic', 'telemetryTopic', 'commandTopic'].map(key => [key, config.garage?.adapter?.[key] ?? null])),
       broker: { address: source.address ?? null, user: source.username ?? null } })).digest('hex');
     const saved = validateGarageModeState(store.getState(this.keys.mode));
+    const feedback = validateGarageCommandFeedback(store.getState(this.keys.feedback));
     this.selection = saved?.adapterKey === this.adapterKey ? saved : null;
+    const recorded = store.getState(this.keys.adapter);
+    // An older snapshot can seed history only if saved evidence identifies
+    // its installed route and device before any new baseline is adopted.
+    if (recorded?.lastCommand && !(feedback?.adapterKey === this.adapterKey && feedback.deviceId === recorded.deviceId)
+      && this.selection?.targetIdentity !== garageTargetIdentity(config.garage?.adapter ?? {}, recorded.deviceId))
+      this.unscopedCommandId = recorded.lastCommand.commandId;
     this.closed = false; this.busy = false; this.writeLifetime = new AbortController();
     store.transaction(() => {
       store.setState(`garage:configuration:${this.input}`, this.settings);
@@ -45,8 +55,21 @@ export class GarageRuntime {
   setAdapter(adapter) { this.adapter = adapter; this.sync(); }
   setSender(sender) { this.sender = sender; }
   adapterChanged(snapshot) {
-    this.store.setState(this.keys.adapter, snapshot);
-    this.sync();
+    this.store.transaction(() => {
+      this.store.setState(this.keys.adapter, snapshot);
+      const receipt = snapshot.lastCommand;
+      if (receipt && snapshot.deviceId && receipt.commandId !== this.unscopedCommandId) {
+        const feedback = this.commandFeedback(snapshot.deviceId);
+        if (JSON.stringify(feedback?.[receipt.action]) !== JSON.stringify(receipt))
+          this.store.setState(this.keys.feedback, { adapterKey: this.adapterKey, deviceId: snapshot.deviceId,
+            control: feedback?.control ?? null, set: feedback?.set ?? null, [receipt.action]: receipt });
+      }
+      this.sync();
+    });
+  }
+  commandFeedback(deviceId = this.store.getState(this.keys.adapter)?.deviceId) {
+    const saved = this.store.getState(this.keys.feedback);
+    return saved?.adapterKey === this.adapterKey && saved.deviceId === deviceId ? saved : null;
   }
   senderChanged(snapshot) { this.store.setState(this.keys.sender, snapshot); }
   sync(now = this.clock()) {
@@ -144,10 +167,11 @@ export class GarageRuntime {
       return this.status();
     } finally { this.busy = false; }
   }
-  nativeControls(now = this.clock()) {
+  nativeControls(now = this.clock(), feedback = this.commandFeedback()) {
     const controls = this.adapter?.nativeControls(now, true) ?? { available: false, settings: {}, reason: 'Waiting for the heat-pump controller connection.' };
     const reason = this.controlReason(now);
-    return { ...controls, available: !reason && controls.available, busy: this.busy || controls.busy,
+    return { ...controls, result: feedback?.set ? { ...feedback.set, setting: feedback.set.field } : null,
+      available: !reason && controls.available, busy: this.busy || controls.busy,
       reason: reason ?? controls.reason,
       settings: Object.fromEntries(Object.entries(controls.settings).map(([key, value]) => [key,
         reason ? { ...value, available: false, reason } : value])) };
@@ -179,6 +203,9 @@ export class GarageRuntime {
     const changed = this.selection && adapter?.targetIdentity && adapter.targetIdentity !== this.selection.targetIdentity;
     const selection = changed ? null : this.selection;
     const requestedTargetC = selection ? selection.mode === 'away' ? selection.awayTargetC : selection.normalTargetC : null;
+    const feedback = this.commandFeedback();
+    const selectionReceipt = garageSelectionReceipt(this.store, selection);
+    if (selectionReceipt && selectionReceipt.commandId === feedback?.control?.commandId) selectionReceipt.result = feedback.control;
     const reason = this.controlReason(now);
     const row = signal => observationView(this.engine.latest[signal] ?? this.engine.lastKnownTemperatures?.[signal], now, this.settings.maxSensorAgeMs);
     const regulationReason = {
@@ -207,10 +234,10 @@ export class GarageRuntime {
       requestedTargetC, effectiveTargetC: control?.effectiveTargetC ?? null,
       targetConfirmed: Boolean(control && control.externalEnabled && control.targetC === requestedTargetC),
       changedAt: selection?.changedAt ?? null,
-      selectionReceipt: garageSelectionReceipt(this.store, selection),
+      selectionReceipt,
       warmingWarning: selection?.warmingWarning?.until > now ? copy(selection.warmingWarning) : null,
       controlAvailable: !reason, controlReason: reason, regulationReason,
-      nativeControls: this.nativeControls(now), protection,
+      nativeControls: this.nativeControls(now, feedback), protection,
       observations: { rear: row('garage_temperature'), front: row('garage_temperature_2'), outdoor: row('outdoor_temperature') },
       doors: Object.fromEntries(GARAGE_DOOR_SIGNALS.map(signal => { const observed = this.engine.latest[signal];
         return [signal, { open: confirmedGarageDoor(observed, now) ? observed.value === 1 : null,

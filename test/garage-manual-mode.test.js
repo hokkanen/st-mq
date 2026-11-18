@@ -63,16 +63,26 @@ test('selection receipts require a committed action and survive restart and late
   assert.equal(f.runtime.status().selectionReceipt, null, 'Adopting a reported baseline is not a dashboard action');
   await f.runtime.setHeating({ mode: 'away' });
   const receipt = f.runtime.status().selectionReceipt;
-  assert.deepEqual({ ...receipt, commandId: undefined }, {
-    at: GARAGE_TEST_AT, mode: 'away', targetC: 5, commandId: undefined,
-  });
+  assert.equal(receipt.at, GARAGE_TEST_AT);
+  assert.equal(receipt.mode, 'away');
+  assert.equal(receipt.targetC, 5);
+  assert.equal(receipt.result.status, 'published');
   assert.equal(typeof receipt.commandId, 'string');
   f.update({ control: { targetC: 5, effectiveTargetC: 5 } });
   f.at(GARAGE_TEST_AT + 1000);
   const restarted = f.recreate();
-  assert.deepEqual(restarted.status().selectionReceipt, receipt);
-  f.store.event('garage-native-setting-requested', { setting: 'fan', value: 1 }, f.now());
-  assert.deepEqual(restarted.status().selectionReceipt, receipt);
+  const confirmed = restarted.status().selectionReceipt;
+  assert.equal(confirmed.commandId, receipt.commandId);
+  assert.equal(confirmed.result.status, 'applied');
+  await restarted.setNativeSettings({ setting: 'fan', value: 2 });
+  assert.deepEqual(restarted.status().selectionReceipt, confirmed);
+  const nativeCommand = f.publications.at(-1);
+  f.update({ control: { targetC: 5 }, result: { commandId: nativeCommand.commandId, status: 'native-confirmed' } });
+  await restarted.setHeating({ mode: 'normal' });
+  assert.equal(f.recreate().status().nativeControls.result.commandId, nativeCommand.commandId);
+  assert.equal(f.recreate().status().nativeControls.result.status, 'native-confirmed');
+  f.update({ deviceId: 'replacement-controller', bootId: 'replacement-boot' });
+  assert.equal(f.runtime.status().nativeControls.result, null);
   f.store.event('garage-mode-changed', { mode: 'normal', targetC: 10, commandId: 'different-action' }, receipt.at);
   assert.equal(restarted.status().selectionReceipt, null, 'A different action cannot confirm this saved selection');
 });
@@ -102,7 +112,7 @@ test('negative controller receipts arriving before publication completion cannot
   for (const status of ['rejected', 'failed', 'uncertain']) for (const request of [{ mode: 'away' }, { mode: 'normal', targetC: 12 }]) {
     let command, finish;
     const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-      publish: (_topic, payload, options) => { options.beforePublish(); return new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }); } }) } });
+      publish: (_topic, payload, options) => { options.beforePublish(); options.onFirstWrite(); return new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }); } }) } });
     const previous = f.store.getState(f.runtime.keys.mode);
     const pending = f.runtime.setHeating(request);
     while (!command) await new Promise(resolve => setImmediate(resolve));
@@ -122,7 +132,7 @@ test('negative controller receipts arriving before publication completion cannot
 test('disconnect followed by a late publication failure leaves the previous mode durable', async t => {
   let reject;
   const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-    publish: (_topic, _payload, options) => { options.beforePublish(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
+    publish: (_topic, _payload, options) => { options.beforePublish(); options.onFirstWrite(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
   const previous = f.store.getState(f.runtime.keys.mode);
   const pending = f.runtime.setHeating({ mode: 'away' });
   while (!reject) await new Promise(resolve => setImmediate(resolve));
@@ -140,7 +150,7 @@ test('disconnect followed by a late publication failure leaves the previous mode
 test('durable controller confirmation still permits the mode edit after a late publication failure', async t => {
   let reject;
   const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
-    publish: (_topic, _payload, options) => { options.beforePublish(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
+    publish: (_topic, _payload, options) => { options.beforePublish(); options.onFirstWrite(); return new Promise((_resolve, failed) => { reject = failed; }); } }) } });
   const pending = f.runtime.setHeating({ mode: 'away' });
   while (!reject) await new Promise(resolve => setImmediate(resolve));
   f.update({ control: { targetC: 5, effectiveTargetC: 5 } });
@@ -228,22 +238,22 @@ test('actual backend status enables supported native UI controls and reports con
   assert.equal(mitsubishiControl(status(), 'targetC').available, false);
   await f.runtime.setNativeSettings({ setting: 'fan', value: 2 });
   assert.equal(mitsubishiControl(status(), 'power').available, false);
-  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting: 2.*waiting/);
+  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting · 2 requested.*waiting/);
   f.update({ result: { commandId: f.publications[0].commandId, status: 'native-confirmed', reason: null } });
-  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting: 2.*Confirmed by the pump/);
+  assert.match(mitsubishiResult(status().garage.nativeControls.result, status().now), /Fan setting · 2 requested.*Confirmed by the pump/);
   assert.equal(mitsubishiControl(status(), 'power').available, true);
 });
 
 test('Garage HTTP controls publish once through a challenge gap and cancel a revoked wait', { timeout: 10_000 }, async t => {
   const f = fixture(t);
-  let access = { enabled: true, token: 'fixture-admin' };
+  let access = { enabled: true, token: 'fixture-admin', familyToken: 'fixture-family' };
   const engine = { ...f.engine, garage: f.runtime, config: f.config, clock: f.now,
     status: () => ({ now: f.now(), garage: f.runtime.status() }) };
   const server = createAppServer({ engine, store: f.store, getAccess: () => access });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
-  const post = (action, input, signal) => fetch(`http://127.0.0.1:${server.address().port}/api/garage/${action}`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer fixture-admin' },
+  const post = (action, input, signal, token = 'fixture-admin') => fetch(`http://127.0.0.1:${server.address().port}/api/garage/${action}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify(input), signal,
   });
   async function waitUntilBusy() {
@@ -255,7 +265,8 @@ test('Garage HTTP controls publish once through a challenge gap and cancel a rev
   assert.equal(f.runtime.status().controlAvailable, true);
   assert.equal(f.runtime.status().nativeControls.settings.fan.available, true);
   assert.equal(f.runtime.status().nativeControls.settings.targetC.available, false);
-  const heating = post('heating', { mode: 'normal', targetC: 15 });
+  assert.equal((await post('native', { setting: 'fan', value: 4 }, undefined, 'fixture-family')).status, 403);
+  const heating = post('heating', { mode: 'normal', targetC: 15 }, undefined, 'fixture-family');
   await waitUntilBusy();
   assert.equal(f.publications.length, 0);
   assert.equal(f.runtime.selection.normalTargetC, 10);

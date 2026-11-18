@@ -810,9 +810,9 @@
                 <button id="garage-mode-normal" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Normal</span><strong id="garage-mode-normal-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
                 <button id="garage-mode-away" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="button" aria-pressed="false" disabled><span>Away</span><strong id="garage-mode-away-target">—</strong><span class="heating-button-state" aria-hidden="true"></span></button>
               </div>
-              <p id="garage-target-confirmation" class="muted" role="status">Waiting for heat-pump controller confirmation</p>
+              <p id="garage-target-confirmation" class="muted" role="status">Waiting for a room target from the heat-pump controller</p>
               <p id="garage-control-detail" class="muted" role="status"></p>
-              <p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p>
+              <div id="garage-mode-feedback"><p id="garage-heating-message" class="temporary-status" role="status" aria-live="polite"></p></div>
               </div>
               <p id="garage-warming-warning" class="heating-hold-warning heating-hold-warning-strong garage-warming-warning" role="status" aria-live="polite" hidden></p>
               <div id="garage-heating-state" class="heating-summary" role="group" aria-label="Current garage heating state">
@@ -826,6 +826,7 @@
                 <p id="garage-heating-help" class="muted">Normal and Away stay selected until you change them, including across restarts.</p>
                 <label for="garage-normal-target">Normal temperature · °C</label>
                 <div class="garage-target-input"><input id="garage-normal-target" data-write-control data-access-path="/api/garage/heating" type="number" min="0" max="31" step="0.5" required disabled><button id="garage-target-submit" data-write-control data-access-path="/api/garage/heating" class="secondary-button" type="submit" disabled>Save &amp; select Normal</button></div>
+                <div id="garage-target-feedback"></div>
                 <p id="garage-target-help" class="muted">Away uses the preset shown above. Selecting a temperature keeps the heat pump’s power setting; use Heat-pump settings to turn it on or off.</p>
               </form>
               </details>
