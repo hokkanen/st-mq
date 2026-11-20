@@ -35,6 +35,11 @@ meter increment using endpoint phase powers into three estimated phase-energy
 intervals; their sum preserves the measured increment. There is no fourth
 total-energy series, and raw current phase values stay live-only. Unknown phase
 shares leave a gap and retain the measured increment as diagnostic evidence.
+During measured draw, a fresh phase report can carry the previous meter total.
+The report updates live phase evidence while the recorder keeps the last meter
+boundary for the next paired counter increment. The existing meter-gap limit
+still bounds that span. If the held total persists across the return to idle,
+the unsettled span stays a gap and consecutive idle readings establish zero.
 Easee keeps its existing measured L1–L3 current/voltage readings, reported total
 active power and explicitly estimated phase-energy intervals.
 

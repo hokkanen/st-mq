@@ -593,12 +593,30 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         if (readback) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt, ...(admittedAt === undefined ? {} : { admittedAt }) };
         if (role === 'work_state' && !retained) reconcileConnection(value, measuredAt, receivedAt);
         if (role === 'phase_info' && !retained) {
-          const before = state.counter, total = value.total_act_energy;
+          let before = state.counter;
+          const total = value.total_act_energy;
           // This EVSE role reports kW already; it is not a generic Shelly W meter.
           const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power);
+          const sameBoot = !bootCandidate && (!state.boot?.incident || before?.bootEpoch === state.boot.epoch);
+          const inMeterWindow = before && sameBoot && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2;
+          const heldCounter = inMeterWindow && total === before.value;
+          const awaitingIncrement = heldCounter && previous?.measuredAt > before.at;
+          // A fresh phase snapshot can repeat the last meter total while power
+          // is flowing. Keep the existing counter anchor for the next increment.
+          // Also allow the first zero-power sample to carry a pending final increment.
+          if (heldCounter && (value.total_power > 0 || awaitingIncrement && previous.value.total_power > 0)) {
+            persist();
+            return;
+          }
+          if (awaitingIncrement) {
+            // Consecutive idle samples can establish the new idle span. The
+            // unsettled interval before the first idle sample stays a gap.
+            engine.recorder.energyGap?.({ source: 'shelly-evse', device: association, prefix: 'ev2',
+              start: before.at, end: previous.measuredAt, receivedAt, admittedAt, quality: ['meter-report-gap'] });
+            before = { ...before, at: previous.measuredAt, phasePowers: [0, 0, 0] };
+          }
           let acceptedEnergy = false;
-          if (before && !bootCandidate && (!state.boot?.incident || before.bootEpoch === state.boot.epoch)
-            && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2 && total >= before.value) {
+          if (inMeterWindow && total >= before.value) {
             const energy = total - before.value;
             const plausible = config.maximumCurrentA * 3 * 300 / 1000 * (measuredAt - before.at) / 3600000 * 1.2;
             if (energy <= plausible + .001) {

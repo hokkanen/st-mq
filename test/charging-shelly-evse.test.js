@@ -1477,6 +1477,68 @@ test('official-shaped role RPC discovers capabilities and canonical C2 energy ne
   assert.equal(f.adapter.snapshot().meterError,null,'The next accepted meter increment clears the transient warning');
 });
 
+test('fresh phase snapshots with a held counter do not split or discard a charging increment', async t => {
+  const f = fixture(t);
+  await f.ready();
+  f.setNow(NOW + 4000);
+  await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, NOW + 4000);
+  assert.equal(f.energy.length, 0);
+  f.setNow(NOW + 10000);
+  f.fields.phase_info.total_act_energy = .027;
+  await f.adapter.refresh();
+  f.setNow(NOW + 15000);
+  await f.adapter.refresh();
+  f.restartAdapter();
+  await f.ready();
+  f.setNow(NOW + 20000);
+  f.fields.phase_info.total_act_energy = .054;
+  await f.adapter.refresh();
+  assert.deepEqual(f.energy.map(({ start, end, energies }) => [start - NOW, end - NOW, energies.reduce((a, b) => a + b, 0)]),
+    [[0, 10000, .027], [10000, 20000, .027]]);
+  assert.equal(f.gaps.length, 0);
+  assert.equal(f.adapter.snapshot().meterError, null);
+});
+
+test('an unresolved counter hold leaves a gap and resumes with independently observed idle zero', async t => {
+  const f = fixture(t);
+  await f.ready();
+  f.setNow(NOW + 4000);
+  await f.adapter.refresh();
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[phase], { current: 0, power: 0 });
+  f.setNow(NOW + 10000);
+  await f.adapter.refresh();
+  assert.equal(f.energy.length, 0);
+  f.setNow(NOW + 20000);
+  await f.adapter.refresh();
+  assert.deepEqual(f.gaps.map(({ start, end, quality }) => [start - NOW, end - NOW, quality]),
+    [[0, 10000, ['meter-report-gap']]]);
+  assert.deepEqual(f.energy.map(({ start, end, energies }) => [start - NOW, end - NOW, energies]),
+    [[10000, 20000, [0, 0, 0]]]);
+});
+
+test('a held counter cannot extend the meter window or bridge a genuine gap', async t => {
+  const f = fixture(t);
+  await f.ready();
+  const expiry = f.adapter.config.maxAgeMs * 2;
+  for (let elapsed = 5000; elapsed <= expiry; elapsed += 5000) {
+    f.setNow(NOW + elapsed);
+    await f.adapter.refresh();
+  }
+  assert.equal(f.energy.length, 0);
+  assert.equal(f.gaps.length, 0);
+  f.setNow(NOW + expiry + 1000);
+  await f.adapter.refresh();
+  assert.deepEqual(f.gaps.map(({ start, end, quality }) => [start - NOW, end - NOW, quality]),
+    [[0, expiry + 1000, ['meter-report-gap']]]);
+  f.setNow(NOW + expiry + 11000);
+  f.fields.phase_info.total_act_energy = .027;
+  await f.adapter.refresh();
+  assert.deepEqual(f.energy.map(({ start, end }) => [start - NOW, end - NOW]),
+    [[expiry + 1000, expiry + 11000]]);
+});
+
 test('native kW power agrees with phase current and supplies independent Tesla matching evidence', async t => {
   const f = fixture(t);
   Object.assign(f.fields.phase_info, { total_power: 4.138,

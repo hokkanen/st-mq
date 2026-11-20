@@ -280,8 +280,14 @@ function observation(view, now) {
   const errorCode = rawError ? CONTROL_ERRORS.has(rawError) ? rawError : 'control-error' : null;
   const reasonCode = view.request?.pause ? 'session-pause' : CONTROL_REASONS.has(control.reasonCode) ? control.reasonCode
     : CONTROL_REASONS.has(control.reason) ? control.reason : errorCode;
+  // A short input-admission hold blocks new Shelly commands. The controller
+  // can still confirm its accepted instruction from the committed observations.
+  const retainedConfirmation = snapshot.transport === 'shelly-evse' && snapshot.observationReady === true
+    && control.confirmed === true && !control.pending
+    && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason);
   const controlAvailability = snapshot.online === false || view.telemetry?.providerConnected === false
-    || errorCode !== null || snapshot.controlReady === false || snapshot.faulted === true || snapshot.authorizationBlocked === true
+    || errorCode !== null || snapshot.controlReady === false && !retainedConfirmation
+    || snapshot.faulted === true || snapshot.authorizationBlocked === true
     || ['unavailable', 'uncertain', 'ownership-uncertain'].includes(control.phase) ? 'unavailable'
       : readAt === null ? 'unknown' : physicalFresh ? 'available' : 'unavailable';
   const chargingField = values.charging, powerField = values.powerKw;

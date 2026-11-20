@@ -96,9 +96,12 @@ shared-model or priority change appears under **Plans & inputs**.
 When neither a current allowance nor a usable current readback is being assessed,
 brief input-persistence holds only refresh the current evidence. They do not add
 duplicate shared events. A positively confirmed session Pause also avoids
-duplicate control events caused solely by those holds. Native permission loss,
+duplicate control events caused solely by those holds. During active or waiting
+Shelly execution, an input-admission hold also preserves the controller's
+existing confirmation while its committed observations remain valid. The shared
+command-readiness evidence still reflects the hold. Native permission loss,
 pending device commands, physical changes and evidence outages remain distinct
-events. This recording choice never makes a held command ready.
+events.
 
 Dashboard Pause confirmation belongs to its matching active pause request,
 separately from economic-schedule confirmation. A confirmed Pause does not

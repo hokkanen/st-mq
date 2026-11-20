@@ -232,6 +232,35 @@ test('reports retain a timed-out reading separately from an uncertain actuator i
   assert(!report.timeline.some(row => row.errorCode === 'evse-command-unconfirmed'));
 });
 
+test('a Shelly input hold preserves confirmed execution in the report while genuine loss still records', () => {
+  const { observe } = fixture(), view = charger();
+  view.id = 'charger2'; view.provider = 'shelly-evse';
+  view.control.phase = 'active'; view.control.confirmed = true;
+  Object.assign(view.control.snapshot, { transport: 'shelly-evse', controlReady: true, observationReady: true });
+  const controlEvents = report => report.timeline.filter(row => row.kind === 'control');
+  assert.equal(controlEvents(observe(view)).length, 1);
+  view.control.snapshot.controlReady = false;
+  for (const [i, reason] of ['evse-input-persistence-pending', 'evse-source-time-pending'].entries()) {
+    view.control.snapshot.commandBlockReason = reason;
+    const report = observe(refresh(view, now + (i + 1) * 1000), now + (i + 1) * 1000);
+    assert.equal(controlEvents(report).length, 1);
+    assert.equal(report.current.releaseConfirmed, true);
+    assert.equal(report.current.controlAvailability, 'available');
+  }
+  view.control.pending = { acknowledged: true };
+  const pending = observe(refresh(view, now + 3000), now + 3000);
+  assert.equal(pending.current.releaseConfirmed, false);
+  assert.equal(controlEvents(pending).at(-1).availability, 'unavailable');
+  view.control.pending = null;
+  Object.assign(view.control.snapshot, { controlReady: true, commandBlockReason: null });
+  assert.equal(controlEvents(observe(refresh(view, now + 4000), now + 4000)).at(-1).confirmed, true);
+  Object.assign(view.control.snapshot, { controlReady: false, observationReady: false,
+    commandBlockReason: 'evse-input-persistence-pending' });
+  const lost = observe(refresh(view, now + 5000), now + 5000);
+  assert.equal(lost.current.releaseConfirmed, false);
+  assert.equal(controlEvents(lost).at(-1).availability, 'unavailable');
+});
+
 test('draw following a degraded price-plan release does not certify scheduling as expected', () => {
   const { observe } = fixture(), view = charger();
   Object.assign(view.plan, { state: 'release', reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true });
