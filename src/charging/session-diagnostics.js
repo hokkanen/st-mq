@@ -350,7 +350,7 @@ function observation(view, now) {
     supplyBlocked: values.availableCurrentA?.available === true && values.availableCurrentA.value === 0,
     deadlineAt: at(view.deadlineAt), remainingGridKwh: number(view.progress?.remainingGridKwh ?? view.requiredGridKwh),
     deliveredGridKwh: number(view.progress?.deliveredGridKwh), energyIncomplete: view.progress?.basis?.energyCoverageIncomplete !== false,
-    energyAt: at(view.progress?.basis?.lastMeasuredAt), targetConflict: view.targetSelection?.conflict === true };
+    energyAt: at(view.progress?.basis?.lastMeasuredAt), targetConflict: view.targetSelection?.conflict ?? null };
 }
 
 // Passive incident ingestion is independent of the removable recovery policy.
@@ -551,10 +551,11 @@ function assess(record, current, now, idleProcessing = false) {
     && !['target-confirmed', 'deadline-missed'].includes(record.outcome.state), now, 'unknown');
   // Requested readiness and native vehicle completion are separate. A stopped
   // charger, manual target or energy estimate alone proves neither completion.
+  const targetConflict = current.targetConflict ?? record.findings.some(row => row.code === 'target-conflict' && row.resolvedAt === null);
   if (current.physicalFresh && current.vehicleSoc && current.charging === false && current.nativeTarget.value !== null
     && !current.nativeTarget.assumed && ['bmw-cardata', 'teslamate', 'mqtt', 'vehicle'].includes(current.nativeTarget.source)
     && current.soc.value >= current.nativeTarget.value && (current.soc.measuredAt ?? current.soc.receivedAt) >= record.startedAt
-    && !current.targetConflict) verify(record, 'completion', now);
+    && !targetConflict) verify(record, 'completion', now);
   const settling = now - record.expectationAt < 2 * MINUTE;
   condition(record, 'charging-during-hold', !gap && !settling && current.physicalFresh && current.charging === true
     && current.expectation === 'hold', now, 2 * MINUTE);
@@ -567,7 +568,7 @@ function assess(record, current, now, idleProcessing = false) {
   finding(record, 'vehicle-timer', waiting && current.nativeStartAt !== null && current.nativeStartAt > now, now, 'explained');
   finding(record, 'supply-unavailable', waiting && current.supplyBlocked, now, 'explained');
   finding(record, 'manual-priority', current.manual, now, 'explained');
-  finding(record, 'target-conflict', current.targetConflict, now, 'explained');
+  if (current.targetConflict !== null) finding(record, 'target-conflict', current.targetConflict, now, 'explained');
   finding(record, 'identification-inconclusive', current.identification === 'inconclusive' && !current.vehicleId, now, 'unknown');
   if (previous?.vehicleId && !current.vehicleId) finding(record, 'identity-unavailable', true, now, 'unknown');
   if (current.vehicleId) finding(record, 'identity-unavailable', false, now, 'unknown');

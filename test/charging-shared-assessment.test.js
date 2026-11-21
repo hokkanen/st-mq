@@ -113,6 +113,39 @@ test('peer cable replacement changes shared context without moving the focused g
   assert.notEqual(run.shared.history[0].peers[1].session, run.shared.current.peers[1].session);
 });
 
+test('an unplugged peer makes the previous joint cost bound unavailable until plans catch up', t => {
+  const f = fixture(t), diagnostics = f.createDiagnostics();
+  f.plug(); f.coordinate();
+  const observe = () => diagnostics.observe(f.view.chargers, f.now(), f.view.coordination).chargers[0].current;
+  assert.equal(observe().shared.current.adopted.costCents, 50);
+
+  f.advance();
+  const peer = f.view.chargers[1];
+  peer.values.connected = f.reading(false);
+  peer.control.session.connected = false;
+  peer.request = null;
+  let report = observe();
+  for (const model of [report.shared.current.proposed, report.shared.current.adopted]) {
+    assert.equal(model.state, 'unknown');
+    assert.equal(model.costLowerBoundCents, null);
+  }
+  assert.equal(report.findings.some(row => row.code === 'shared-allocation-inconsistent'), false);
+
+  f.coordinate();
+  for (const context of [f.view.coordination.proposed, f.view.coordination.adopted]) {
+    context.plans.charger2 = { feasible: null, costCents: null };
+    delete context.allocations[0].chargers.charger2;
+    context.solver = { cashCostCandidateCents: 25, cashCostLowerBoundCents: 25, cashCostGapBoundCents: 0 };
+  }
+  report = observe();
+  for (const model of [report.shared.current.proposed, report.shared.current.adopted]) {
+    assert.equal(model.state, 'feasible');
+    assert.equal(model.costCents, 25);
+    assert.equal(model.costLowerBoundCents, 25);
+  }
+  assert.equal(report.findings.some(row => row.code === 'shared-allocation-inconsistent'), false);
+});
+
 test('natural priority propagation settles without false findings and sustained mismatch survives restart', t => {
   const f = fixture(t); let guide = f.createGuide(), diagnostics = f.createDiagnostics();
   guide.start(f.input(0), f.view); f.plug(); f.coordinate('balanced');
@@ -541,7 +574,7 @@ test('idle processing receipts update current evidence without appending empty s
     diagnostics.observe(f.view.chargers, start + index * 100, f.view.coordination);
     const current = diagnostics.status(start + index * 100).chargers[1].current;
     assert.equal(current.shared.current.execution.commandReady, ready, 'Current readiness remains honest');
-    assert.equal(current.current.controlAvailability, ready ? 'available' : 'unavailable');
+    assert.equal(current.current.controlAvailability, 'available', 'The confirmed execution remains observable');
   }
   const events = diagnostics.reportEvents(ref).events;
   assert.equal(events.filter(row => row.code === 'shared-charging-evidence').length, 0);
@@ -553,6 +586,7 @@ test('idle processing receipts update current evidence without appending empty s
     commandBlockReason: 'evse-input-persistence-pending' });
   charger.control.pending = { role: 'start_charging', value: false };
   restarted.observe(f.view.chargers, start + 3500, f.view.coordination);
+  assert.equal(restarted.status(start + 3500).chargers[1].current.current.controlAvailability, 'unavailable');
   assert.equal(restarted.reportEvents(ref).events.filter(row => row.kind === 'control').length, controlsBefore + 1,
     'An actual pending native command remains a distinct control event');
   charger.control.pending = null;

@@ -35,8 +35,11 @@ function physical(charger, id, now) {
 /** Recount published joint allocation slices, independently of the planner's
  * feasible flag. This checks the model, never physical delivery or optimality. */
 function model(context, chargers, peers, now) {
+  // After unplug, the previous model can still include that session's costs
+  // and allocations until the next calculation publishes the new scope.
   if (!context || !fresh(context.at, now) || !PRIORITIES.includes(context.priority)
     || !Array.isArray(context.allocations) || peers.some(peer => peer.connected === null)
+    || peers.some(peer => peer.connected === false && context.sessions?.[peer.id] != null)
     || peers.some(peer => peer.connected && (!peer.session || peer.deadlineAt === null || peer.requiredGridKwh === null
       || context.sessions?.[peer.id] !== chargers.find(charger => charger.id === peer.id)?.request?.sessionId
       || context.requests?.[peer.id]?.revision !== chargers.find(charger => charger.id === peer.id)?.request?.revision

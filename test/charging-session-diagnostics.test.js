@@ -367,6 +367,40 @@ test('requested minimum, energy estimate and native vehicle completion remain di
   assert.equal(report.coverage.completion.state, 'verified');
 });
 
+test('missing BMW target evidence does not resolve a conflict or verify completion', t => {
+  const { store, observe } = fixture(), view = charger();
+  t.after(() => store.close());
+  view.vehicle.id = 'bmw';
+  view.values.charging.value = false;
+  view.values.powerKw.value = 0;
+  view.values.soc = reading(80, 'bmw-cardata');
+  view.values.vehicleCeilingSoc = reading(85, 'bmw-cardata');
+  view.targetSelection = { conflict: true };
+  const conflict = report => report.findings.find(row => row.code === 'target-conflict');
+  const initial = observe(view);
+  assert.equal(conflict(initial).resolvedAt, null);
+
+  view.targetSelection = null;
+  view.values.soc = reading(85, 'bmw-cardata', now + MINUTE);
+  const gap = observe(refresh(view, now + MINUTE), now + MINUTE);
+  assert.equal(conflict(gap).resolvedAt, null);
+  assert.equal(gap.coverage.completion.state, 'not-exercised');
+
+  const restarted = new ChargingSessionDiagnostics({ store, clock: () => now + 2 * MINUTE });
+  const next = at => readCompleteReport(restarted, restarted.observe([refresh(view, at)], at).chargers[0].current);
+  view.targetSelection = { conflict: true };
+  const resumed = next(now + 2 * MINUTE);
+  assert.equal(resumed.id, initial.id);
+  assert.equal(conflict(resumed).count, 1);
+  assert.equal(conflict(resumed).resolvedAt, null);
+
+  view.targetSelection = { conflict: false };
+  const resolved = next(now + 3 * MINUTE);
+  assert.equal(conflict(resolved).resolvedAt, now + 3 * MINUTE);
+  assert.equal(resolved.coverage.completion.state, 'verified');
+  assert.deepEqual(resolved.timeline.filter(row => row.code === 'target-conflict').map(row => row.kind), ['finding', 'recovery']);
+});
+
 test('deadline miss needs an applicable postdeadline reading and remains visible after recovery', () => {
   const { observe } = fixture(), view = charger(); view.deadlineAt = now + MINUTE;
   observe(view);
