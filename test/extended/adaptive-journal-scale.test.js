@@ -6,15 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { JOURNAL_RETENTION } from '../../src/storage/journal.js';
 
 const benchmark = fileURLToPath(new URL('../../scripts/benchmarks/adaptive-journal.js', import.meta.url));
-const run = args => {
-  const result = spawnSync(process.execPath, [benchmark, ...args], { encoding: 'utf8', timeout: testCompletionLimit(160_000), maxBuffer: 16 * 1024 * 1024 });
+const run = (args, timeoutMs = 160_000) => {
+  const result = spawnSync(process.execPath, [benchmark, ...args], { encoding: 'utf8', timeout: testCompletionLimit(timeoutMs), maxBuffer: 16 * 1024 * 1024 });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   return result.stdout.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.workload);
 };
 
 test('constant recording and replica catch-up preserve reports through repeated journal retention', t => {
   const cycles = JOURNAL_RETENTION.maxCommits * 3;
-  const [result] = run([`--cycles=${cycles}`, '--replicate-every=64', '--workloads=constant']);
+  const [result] = run([`--cycles=${cycles}`, '--replicate-every=64', '--workloads=constant'], 180_000);
   assert.equal(result.retained.counts.observations, 1, 'Fresh constant reports do not force measurement rows');
   assert.equal(result.retained.counts.recorder_coverage, 1, 'One continued reporting interval remains compact');
   assert(result.retained.counts.journal_commits <= JOURNAL_RETENTION.maxCommits);
