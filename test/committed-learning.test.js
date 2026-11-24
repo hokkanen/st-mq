@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
-import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint, learningConfiguration, LEARNING_ALGORITHM, LEARNING_WINDOW_MS} from '../src/app/committed-learning.js';
+import { committedLearningSample, recordLearningContext, replayLearningJournal, validLearningCheckpoint,
+  learningConfiguration, learningCheckpointDigest, learningCheckpointMaterial, learningVersion,
+  LEARNING_ALGORITHM, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
 import { DEFAULT_HOME_MODEL } from '../src/domain/home-model.js';
 import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } from '../src/control/adaptive-learning.js';
@@ -16,6 +18,26 @@ import { initialAdaptiveModel, updateAdaptiveLearning, updateAdaptiveEpisode } f
 const MINUTE = 60_000, HOUR = 60 * MINUTE;
 const start = Date.parse('2026-01-01T00:00:00Z');
 const config = { heatPumpCompressorKw: 3, auxRatedKw: 9, circulationKw: 0.08, dhwrKw: 0.025 };
+
+test('checkpoint digests match the original canonical JSON for active and archived samples', () => {
+  const sample = { z: 'Pakkasyö ❄️\n"\ud800', a: { 10: -0, 2: 1.25e-9, '02': null, absent: undefined } };
+  const archivedSamples = [sample, , undefined, null];
+  const base = { model: { z: 0, a: null }, algorithmVersion: LEARNING_ALGORITHM,
+    journalCursor: 1, journalHash: 'fixture-journal-hash', historyCursor: 10,
+    historyResampling: { lastAt: start }, reconstruction: { origin: 'fixture' } };
+  const variants = [base, { ...base, samples: [], episodeArchive: [] }, {
+    ...base, samples: [sample, { valid: false }, sample],
+    episodeArchive: [{ samples: archivedSamples, id: 'older-window' }, { id: 'newer-window', samples: [] }],
+  }];
+  for (const checkpoint of variants) {
+    checkpoint.checkpointDigest = learningVersion(learningCheckpointMaterial(checkpoint));
+    assert.equal(learningCheckpointDigest(checkpoint), checkpoint.checkpointDigest);
+    assert.equal(validLearningCheckpoint(checkpoint), true);
+  }
+  variants[2].episodeArchive[0].samples[0] = { ...sample, z: 'changed evidence' };
+  assert.equal(validLearningCheckpoint(variants[2]), false);
+});
+
 test('thermal equipment assumptions do not replace room measurements or reset their normal reference',t=>{
   const prior={...config,indoorSensorWeights:{indoor_temperature:.5,downstairs_temperature:.3,bedroom_temperature:.2},
     floorThermalPriors:{capacityKwhPerC:3.2,nativeCapacityKwhPerC:8.8}};

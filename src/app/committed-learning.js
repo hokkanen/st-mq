@@ -36,10 +36,11 @@ export function learningConfiguration(config = {}) {
     homeModel: { ...CONTROL_DEFAULTS.homeModel, ...config.homeModel } };
   return Object.fromEntries(MODEL_KEYS.filter(key => resolved[key] !== undefined).map(key => [key, structuredClone(resolved[key])]));
 }
+const canonicalLearningValue = input => Array.isArray(input) ? input.map(canonicalLearningValue) : input && typeof input === 'object'
+  ? Object.fromEntries(Object.keys(input).sort().map(key => [key, canonicalLearningValue(input[key])])) : input;
+
 export function learningVersion(value) {
-  const canonical = input => Array.isArray(input) ? input.map(canonical) : input && typeof input === 'object'
-    ? Object.fromEntries(Object.keys(input).sort().map(key => [key, canonical(input[key])])) : input;
-  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonicalLearningValue(value))).digest('hex');
 }
 
 /** Accidental-corruption detection, not authentication. Worker progress fields
@@ -50,10 +51,56 @@ export function learningCheckpointMaterial(checkpoint) {
   const { checkpointDigest, historyCursor, historyResampling, reconstruction, ...modelCheckpoint } = checkpoint;
   return modelCheckpoint;
 }
+
+// Write the same canonical JSON as learningVersion, canonicalizing one prepared
+// sample at a time. Both the active and archived sample lists can be large.
+function hashCheckpointMaterial(material) {
+  const hash = createHash('sha256');
+  const json = value => JSON.stringify(canonicalLearningValue(value));
+  const writeValue = value => hash.update(json(value) ?? 'null');
+
+  function writeArray(values, writeItem) {
+    hash.update('[');
+    for (let index = 0; index < values.length; index++) {
+      if (index > 0) hash.update(',');
+      writeItem(values[index]);
+    }
+    hash.update(']');
+  }
+
+  function writeEpisode(episode) {
+    if (episode && typeof episode === 'object' && !Array.isArray(episode)) writeRecord(episode);
+    else writeValue(episode);
+  }
+
+  function writeRecord(record, includeEpisodes = false) {
+    // Enumerating the shallow sorted object also reproduces JSON's ordering of
+    // integer keys, before the other keys in canonical order.
+    const ordered = Object.fromEntries(Object.keys(record).sort().map(key => [key, record[key]]));
+    hash.update('{');
+    let separator = '';
+    for (const [key, value] of Object.entries(ordered)) {
+      const samples = key === 'samples' && Array.isArray(value);
+      const episodes = includeEpisodes && key === 'episodeArchive' && Array.isArray(value);
+      const encoded = samples || episodes ? null : json(value);
+      if (encoded === undefined) continue;
+      hash.update(`${separator}${JSON.stringify(key)}:`);
+      if (samples) writeArray(value, writeValue);
+      else if (episodes) writeArray(value, writeEpisode);
+      else hash.update(encoded);
+      separator = ',';
+    }
+    hash.update('}');
+  }
+
+  writeRecord(material, true);
+  return hash.digest('hex');
+}
+
 export function learningCheckpointDigest(checkpoint) {
   if (isImmutableValue(checkpoint) && immutableCheckpointDigests.has(checkpoint))
     return immutableCheckpointDigests.get(checkpoint);
-  const digest = learningVersion(learningCheckpointMaterial(checkpoint));
+  const digest = hashCheckpointMaterial(learningCheckpointMaterial(checkpoint));
   if (isImmutableValue(checkpoint)) immutableCheckpointDigests.set(checkpoint, digest);
   return digest;
 }
