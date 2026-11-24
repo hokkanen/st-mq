@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { testLatencyLimit } from '../scripts/lib/offline-test-profile.js';
 import { Store } from '../src/storage/store.js';
 import { CONTROL_DEFAULTS } from '../src/app/config.js';
 import { committedLearningSample,recordLearningContext,LEARNING_WINDOW_MS as WINDOW,replayLearningJournal } from '../src/app/committed-learning.js';
@@ -87,15 +88,18 @@ test('dense complete-window journal and normalized cycle recover while independe
     .catch(error=>{failure??=error;}).finally(()=>{maxWriteMs=Math.max(maxWriteMs,performance.now()-began);pending=null;});},10);
   let result;
   try {result=await recover(f,snapshot);}finally{clearInterval(timer);await pending;}
+  t.diagnostic(JSON.stringify({intervals:2301,writes,maxWriteMs}));
   assert.ifError(failure);assert.equal(result.report.counts.skipped,0);
   assert.ok(writes>5,'controller writer advances while dense source graphs are processed');
-  assert.ok(maxWriteMs<1500,`dense donor work must not monopolize the target writer (${maxWriteMs} ms)`);
+  assert.equal(f.master.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-during-recovery'").get().n,writes);
+  assert.ok(maxWriteMs<testLatencyLimit(1500),`dense recovery write exceeded its latency limit (${maxWriteMs} ms)`);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_cycle_observations').get().n,2301);
   assert.deepEqual(f.master.db.prepare('SELECT payload FROM learning_cycle_observations ORDER BY ordinal').all().map(row=>JSON.parse(row.payload)),
     writer.db.prepare('SELECT payload FROM learning_cycle_observations ORDER BY ordinal').all().map(row=>JSON.parse(row.payload)));
-  assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true}),result.checkpoint);
+  // Replaying can update caches and must join any asynchronous writer work.
+  assert.deepEqual(await f.master.runWrite(() => replayLearningJournal(f.master,'mqtt',null,{rebuild:true}),
+    {signal:t.signal}),result.checkpoint);
   assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(),undefined);
-  t.diagnostic(JSON.stringify({intervals:2301,writes,maxWriteMs}));
 });
 
 
