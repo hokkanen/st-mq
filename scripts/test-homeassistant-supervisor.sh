@@ -36,7 +36,8 @@ process.stdout.write(JSON.stringify([...new Set(paths)]));
 NODE
 docker build --file "$stmq_root/test/extended/supervisor/Dockerfile" \
   --tag "$stmq_image" "$stmq_source"
-docker run --rm --network none --read-only --cap-drop ALL \
+# The read-only fixture inputs may be accessible only to the invoking user.
+docker run --rm --network none --read-only --cap-drop ALL --user "$(id -u):$(id -g)" \
   --security-opt no-new-privileges --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
   -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPATH=/supervisor -e GIT_PYTHON_REFRESH=quiet \
   --mount "type=bind,source=$stmq_source,target=/supervisor,readonly" \
