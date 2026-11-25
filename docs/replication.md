@@ -210,7 +210,7 @@ read transaction. Peer comparisons require equal transaction checkpoints; a
 source that has advanced is not falsely compared against an older receiver.
 Manual checks are available under **Recording details → History tools → Check database** and
 scheduled checks use `recording.full_verification_interval_hours` (`0` disables
-them). Pairing manual operations also offer **Verify with full snapshot**.
+them). For manual handover or promotion, pairing offers **Full history check**.
 
 Initial full seeds additionally match byte length and the `sha256-sqlite-pages-v1`
 transport digest. That digest excludes only SQLite header counters that can change

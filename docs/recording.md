@@ -1473,7 +1473,7 @@ The audit proves reproducibility, not physical accuracy, and cannot silently
 repair the main database or controlling model.
 
 The verifier runs locally on master or slave, with start/pause/resume/cancel and
-**Discard temporary verification data** controls for administrators. Viewers can
+**Discard temporary data** controls for administrators. Viewers can
 read status. Its private progress, checkpoints and results use
 `<data directory>/temporary-model-verification/temporary-verification.sqlite`
 with an explanatory README, outside `/tmp` and outside essential backups and
@@ -1758,10 +1758,10 @@ alone raises no source warning. This neither extends recorded
 coverage nor confirms current heat-pump or sensor availability. Explicit failed
 or invalid evidence remains visible, and physical readback keeps its own limits.
 Stream labels preserve their measurement and unit, with links to the applicable
-recording details, without exposing private source identifiers. **Last source check** dates a source polling attempt, including
-an unavailable result, and does not claim a saved measurement or successful write.
-The expanded Recording fold separates **Activity** from **Source health**.
-Activity dates the last completed loop update and source polling attempt. Source
+recording details, without exposing private source identifiers. The expanded
+Recording fold separates **Activity** from **Source health**. Activity shows
+**Last completed update** and **Last source polling attempt**. The latter includes
+attempts that returned unavailable. Source
 counts distinguish observed streams, usable evidence and logical items needing
 attention; unknown stream statuses are identified separately. **About these counts**
 keeps the explanation in a disclosure, while the recorded-history caveat stays
@@ -2145,12 +2145,15 @@ settings. A native On/Off location test must show a corresponding Caravan meter
 power rise and fall before any state is recorded, even with Automatic power
 disabled. The minimum response is 3 W in each direction, allowing a small fan
 load when dehumidifying is unnecessary; meter noise can raise that threshold.
-Qualification uses advancing reports, never cached republications; a failed or
-inconclusive test leaves a gap and a
-new appliance or meter connection repeats the test. Both must remain fresh after
-a pass, and restart requires a new test after outstanding restoration. Native
-power is restored to its prior setting before normal temperature control resumes,
-with a durable restoration obligation.
+Qualification uses advancing reports. An inconclusive or failed test leaves a gap.
+The accepted rise/fall check can survive restart or handover for the same appliance,
+meter and wiring. Both feeds must supply 30 seconds of stable, independently
+advancing evidence before recording resumes. A continuous evidence outage of at
+least 60 seconds or changed equipment or wiring invalidates the pass and requires
+a new check. On restart or handover, the unseen interval includes time since the
+last committed healthy checkpoint. The controller saves a durable obligation to
+restore prior native power before normal temperature control resumes. See the
+[location check and retention rules](caravan-dehumidifier.md#automatic-power-and-caravan-location-check).
 Enabled automatic cold protection defers or aborts the test until warmer
 temperature evidence arrives. An independent native power change supersedes
 the test's captured setting; restoration respects that newer choice.
@@ -2158,11 +2161,11 @@ Humidity is not a qualification requirement. Coverage stops at the earliest
 required evidence expiry; testing and unresolved restoration remain gaps.
 A bounded required-report timestamp wait also remains a gap. For an already
 recorded state in the same qualified connection, admission resumes coverage
-prospectively with a separate availability event and the original native clocks;
-it does not require an additional unchanged appliance report. Electrical power
-or meter expiry and actual feed loss still invalidate qualification and require
-the normal fresh check. Fan-history expiry requires fresh fan evidence without
-repeating a still-valid electrical check.
+prospectively with a separate availability event and the original native clocks.
+That does not require an additional unchanged appliance report. Expiry of
+required power or meter evidence immediately suspends recording and starts the
+outage interval. Fan-history expiry requires fresh fan evidence while a still-valid
+electrical check is retained.
 This gate does not suppress the independent BLU or Caravan energy series.
 Both Caravan views and the series explorer show the same four categorical labels;
 retired dehumidifier series have no alias or
@@ -2400,8 +2403,9 @@ revisions and recovery decisions remain available, so transaction expiry does
 not impose a time limit on recovery revert or model reconstruction. This work
 stays separate from scanning unrelated observations or copying the database.
 
-**Verify with full snapshot** adds the independent full verifier to a manual
-operation. Manual verification and scheduled background checks use the same
+**Full history check** for handover or promotion and **Also verify full snapshot**
+in History recovery add the independent full verifier to the selected operation.
+Manual verification and scheduled background checks use the same
 verifier and admission queue as pairing and recovery operation checks. At most
 one full verifier runs in an application process; waiting checks hold no pinned
 database reader, and cancelling one removes its pending request or joins its
@@ -2414,21 +2418,22 @@ results do not grant device authority or replace an independent dated backup.
 
 ## Single-file database export
 
-Open **Recording details → Backups → Export database** and choose:
+As an admin, open **Recording details → Backups → Export database**:
 
 - **Save local copy** saves on the server, in `recording.backup_directory`.
   Its default empty setting selects `<database directory>/backups`, including
   `/config/st-mq/backups` on Home Assistant. An explicitly configured absolute or
   home-relative directory selects another root. The folder also contains reset
-  bundles and the paired export repository; changing it requires restart. Existing
-  copies stay intact in their original locations. The saved path is shown after success.
-- **Download database** saves to the browser's computer. Supporting browsers
-  prompt for a destination and stream directly to the selected file. Other
-  browsers buffer the response and use their usual download settings.
-
-**Download sent** confirms that the server finished sending the snapshot. Check
-the browser's download or selected file to confirm that it was saved; the server
-cannot verify the browser's final file or its durability.
+  bundles and the paired export repository. Changing it requires restart. Existing
+  copies stay in their original locations. The success message gives the filename
+  and the backup panel above it shows the folder. This action requires a writable
+  controller.
+- **Download database** transfers the available snapshot to the browser's computer,
+  including from a slave with a readable snapshot. Supporting browsers prompt for
+  a destination and stream directly to the selected file. **Database download
+  saved** means the browser finished writing that file. Other browsers receive
+  the complete copy before starting their usual download. **Download ready**
+  gives the filename. Check the browser's downloads for the final save.
 
 Both actions use the same filename format, for example
 `stmq-2026-09-25T15-04-32-123Z.sqlite`: date, time, milliseconds and `Z` for UTC.
@@ -2805,13 +2810,13 @@ prove device response time. No samples remains explicit; missing evidence stays
 unknown. They introduce no automatic warning threshold. Snapshot and history
 views do not present these local timings as the master's current responsiveness.
 
-The web API accepts no destination path: authenticated `POST /api/database-export`
-with an empty JSON object saves in the configured server folder, and authenticated
-`GET /api/database-export` downloads a temporary snapshot. Temporary files are removed
-on completion, failure or disconnection. Only one export runs at a time across
-the application's direct and ingress listeners. Normal web/ingress authentication applies and is checked again before the
-copy is saved or sent. Slave exports hold the verified snapshot they began with
-until the operation completes.
+The export API requires admin access and accepts no destination path.
+`POST /api/database-export` with an empty JSON object saves in the configured
+server folder. `GET /api/database-export` downloads a temporary snapshot. Temporary
+files are removed on completion, failure or disconnection. Only one export runs at
+a time across the application's direct and ingress listeners. The server checks
+authorization again before saving or sending the copy. Slave exports hold the
+verified snapshot they began with until the operation completes.
 
 An export includes private history and saved application state. Retain the matching
 software version for model replay. **Recover history** can import supported gaps

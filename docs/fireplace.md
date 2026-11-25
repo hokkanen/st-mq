@@ -65,12 +65,13 @@ or certify the original model's control forecasts.
 ## Visibility and estimated savings
 
 **Home → Home heat model** explains manual kilograms, calculated delayed release
-and the effective fireplace response in degrees C/kg, including its evidence status. The
-**View** menu groups **Firewood additions**, **Modeled fireplace release**, daily
-**Firewood electricity cost avoided** and **Firewood electricity avoided** under
-Fireplace. **Fireplace response** is a separate Home coefficients view because its
-°C/kg unit differs from fuel events and modeled release. Individual signals are
-also searchable in Series explorer.
+and the effective fireplace response in degrees C/kg, including its evidence status.
+In **Explore chart → Views**, the Fireplace group includes **Firewood additions**,
+**Modeled fireplace release**, and daily views for **Firewood electricity cost
+avoided** and **Firewood electricity avoided**. **Fireplace response** appears
+under Home coefficients because its °C/kg unit differs from fuel events and
+modeled release. Individual signals are
+also searchable in **All series**.
 Simultaneous additions share a marker with total kilograms and load count. Release
 includes tails from loads before the selected dates. Before logging began, missing
 records do not establish zero firewood. Corrections update these derived views.

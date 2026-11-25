@@ -502,8 +502,8 @@ The optional **Full history check** for handover/promotion and **Also verify ful
 snapshot** for recovery add the independent full verifier to that manual
 operation. Handover and incremental rejoin compare the source and receiver only
 at the same transaction checkpoint; a newer master is never compared against an
-older slave as if they should already match. **Recording details → Verify
-database** runs the same verifier manually. Optional background checks are
+older slave as if they should already match. **Recording details → History tools →
+Check database** runs the same verifier manually. Optional background checks are
 configured with `recording.full_verification_interval_hours` (`0` disables them).
 These full checks are intentionally proportional to database size and can consume
 storage bandwidth. Their results are separate from routine journal continuity.

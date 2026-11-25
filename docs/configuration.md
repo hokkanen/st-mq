@@ -440,9 +440,10 @@ all history and may temporarily retain WAL pages while it runs, so its I/O and
 duration grow with database size. It is independent of routine replication and
 does not repair or replace any database.
 
-Manual pairing and history recovery actions offer **Verify with full snapshot**,
-unchecked by default. Recovery sources with different histories are checked
-individually. Comparing full contents is permitted only when both read snapshots
+Pairing offers **Full history check** for handover and promotion. History recovery
+offers **Also verify full snapshot**. Both menus default to **Standard checks**.
+Recovery sources with different histories are checked individually. Comparing full
+contents is permitted only when both read snapshots
 have the same database identity, transaction sequence and commit hash; different
 heads require catch-up before comparison. Full database exports remain available
 independently of these checks.

@@ -12,10 +12,12 @@ controller's BTHome input or the protection sender.
 
 ## Source timestamps and availability
 
-A feed preserves the source entity's `last_reported` timestamp independently of
-its MQTT publication time. Requesting a cached snapshot does not refresh a
-physical measurement. A change-only temperature source can become stale while HA
-remains online; its reporting cadence must satisfy the consumer's freshness rule.
+The garage-air publisher preserves the source entity's `last_reported` timestamp
+independently of its MQTT publication time. The Caravan dehumidifier bridge uses
+the per-field receipt times from its [native observation adapter](../integrations/homeassistant/tuya-local-observation.md).
+A cached snapshot keeps the original clocks. A change-only temperature source can
+become stale while HA remains online, so its reporting cadence must satisfy the
+consumer's freshness rule.
 
 Source availability and HA's broker availability describe different connections.
 Neither an online message nor a retained value establishes a new measurement.

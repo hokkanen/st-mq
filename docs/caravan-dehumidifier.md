@@ -3,12 +3,13 @@
 The **electriQ DESD8LW** appears below air and energy readings in
 **Garage → Sensors & More equipment → Caravan**. Its native Home Assistant
 entities connect through the [MQTT automation generator](../integrations/homeassistant/dehumidifier.js).
-Use **Tuya Local** entities for local-network operation. Install and commission
-Tuya Local in Home Assistant first, using its
-[setup instructions](https://github.com/make-all/tuya-local#configuration).
-Account-assisted setup retrieves the local key once; runtime device control uses
-the LAN. This implementation uses the verified DESD8LW data points: 1 for power,
-2 for target humidity, 4 for fan speed and 6 for measured relative humidity.
+Use **Tuya Local** entities for local-network operation. Install a Tuya Local
+version supported by the [observation adapter](../integrations/homeassistant/tuya-local-observation.md#apply-the-reviewed-patch).
+Add the appliance profile below before configuring and commissioning the device.
+Account-assisted setup retrieves the local key. Runtime device control uses the
+LAN. See the [Tuya Local configuration guide](https://github.com/make-all/tuya-local#configuration).
+This implementation uses the verified DESD8LW data points: 1 for power, 2 for target
+humidity, 4 for fan speed and 6 for measured relative humidity.
 The DESD9LW and Qlima profiles describe different data-point types or settings.
 
 The bridge currently maps native power, 30–80% target humidity in increments of

@@ -332,7 +332,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
         : ['publishing', 'published'].includes(device.operation?.status) ? 'Waiting for the device to report the requested setting.'
           : busy || blocked() ? 'Another request is in progress.'
             : !allowed ? 'Controls are unavailable. Check the device connection and control settings.'
-            : 'Changes apply immediately.';
+            : 'Selecting a setting sends a request. Check the device report to confirm the change.';
     policyDetails.hidden = device.temperatureControl?.configured !== true;
     recordingPanel.hidden = !device.temperatureControl;
     if (device.temperatureControl) {

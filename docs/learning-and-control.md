@@ -143,14 +143,14 @@ prior selected interpretation. Unchanged prefixes remain reusable; a stale worke
 cannot mix generations or publish against a newer selection. Coefficient history
 is included in normal main-database backups, exports and mirroring. It uses compact
 change points rather than additional per-minute model snapshots.
-The **View** menu groups compatible comparisons with their relevant temperature
-context and labeled activity rows. Saved temperatures and references, thermal
-inputs, electrical inputs, activity fractions and coefficients keep their own
-units and meanings. Home coefficients follow the selected recorded learning history. **Series explorer** can isolate every
-supported saved input or coefficient by its label or signal identifier. The
-shared electricity-price controls remain available across views. Observed
-temperature history stays distinct from the original normalized inputs used
-for learning.
+**Explore chart → Views** groups compatible comparisons with their relevant
+temperature context and labeled activity rows. Saved temperatures and references,
+thermal inputs, electrical inputs, activity fractions and coefficients keep their
+own units and meanings. Home coefficients follow the selected recorded learning
+history. **All series** can isolate every supported saved input or coefficient by
+its label or signal identifier. The shared electricity-price controls remain
+available across views. Observed temperature history stays distinct from the
+original normalized inputs used for learning.
 
 Observed thermal drivers are outdoor temperature, archived solar radiation,
 the estimated combined hydronic heat, derived from space-heating compressor duty
