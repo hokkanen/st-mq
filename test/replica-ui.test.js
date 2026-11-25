@@ -27,6 +27,8 @@ test('the header names topology and role consistently and keeps mirror operation
   }
   assert.equal(isReadOnlyReplica({ topology: 'pair', role: 'master' }), true, 'missing pair authority never enables control');
   assert.equal(instanceRoleDisplay({ topology: 'pair', role: 'master' }).label, 'Pair · Checking role');
+  assert.match(instanceRoleDisplay({ topology: 'pair', pair: { role: 'slave', sync: { state: 'waiting' } } }).detail,
+    /Receives history from the master.*requires an explicit action/);
   assert.equal(primaryReplicationDisplay({ topology: 'pair', role: 'master', pair: { role: 'master', canControl: true },
     sync: { state: 'ready' } }), null, 'pair mode uses its own panel without an outgoing mirror notice');
   for (const role of ['primary', 'replica', 'unknown']) {

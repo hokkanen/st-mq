@@ -37,11 +37,11 @@ its timestamp. A contradictory newer output prevents confirmation.
 
 The circulation entry deliberately exposes no ordinary switch control or timed
 equipment test. Its sole writer is the durable circulation executor. **Start
-circulation** runs for `controller.dhwr_duration_minutes` (default 10, range 1–60),
-including during Home Pause. Starting again begins a new full run; **Stop
-circulation** ends it immediately. An explicit Stop can also stop fresh reported
-operation started outside this application. Heating-phase changes and manual
-Preheat do not shorten or start a separately requested circulation run.
+circulation** requests a run for `controller.dhwr_duration_minutes` (default 10,
+range 1–60), including during Home Pause. Starting again requests a new full run.
+**Stop** requests switch-off, including for fresh reported operation started
+outside this application. Heating-phase changes and manual Preheat leave an
+independently requested run under the circulation controls.
 
 Before ON, the executor saves its OFF obligation and an opaque digest binding
 the broker/account, configured component and discovered native identity.

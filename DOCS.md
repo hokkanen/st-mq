@@ -9,8 +9,9 @@ or as a Home Assistant Core integration.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
 With fresh settings, the app starts with simulated devices and Home heating
-paused. After configuring live connections, enable automation separately for
-each feature.
+paused. Review each feature's control settings when configuring live connections.
+The initial preference for configured chargers is Automatic on. Charger
+commissioning and live readiness are separate requirements.
 See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
@@ -24,7 +25,7 @@ the independent feature controls and Garage local temperature regulation.
    Home Assistant builds the image locally; the host needs network access for
    the build and enough free storage. If the repository does not appear, refresh
    the app store and inspect **Settings → System → Logs → Supervisor**.
-   This follows Home Assistant's [third-party app installation](https://www.home-assistant.io/common-tasks/os/#installing-a-third-party-app-repository).
+   See Home Assistant's [app repository instructions](https://www.home-assistant.io/common-tasks/os/apps/#adding-an-app-repository).
    For a local development installation, place the checkout in the local-app
    folder, `/local_apps/st-mq` in the current official Terminal & SSH app
    (`/addons/st-mq` in tools using the older mount), then choose **Check for
@@ -162,14 +163,17 @@ The **Configuration** section also reports live access status. Setting a valid
 entrance and permits explicit HTTPS setup in **Web access**. It does not open a
 network listener by itself.
 `controller.web_family_token` optionally enables family access with a different
-password. Family can read all pages, operate firewood (removal within 15 minutes),
-DHWR, manual heating and Away/Pause, garage doors and all EV card
-controls. Other writes, exports/downloads and settings administration require
-admin; see [web access](docs/configuration.md#admin-and-family-web-access).
+password. Family can browse the operational dashboard and use Home heating,
+circulation, firewood (removal within 15 minutes), Garage Normal/Away, garage
+doors and everyday charging controls. Native heat-pump settings, equipment
+tests, exports and configuration require admin access. See
+[web access](docs/configuration.md#admin-and-family-web-access).
 
-Changing a password applies immediately; affected direct-access tabs must use
-the new password. Clearing both and applying disables direct access while Home
-Assistant ingress remains available as admin. Direct login includes password
+Changing a password applies immediately. Affected direct-access tabs must use
+the new password. With optional LAN HTTP backup disabled, clearing both passwords
+and applying disables direct access. To clear passwords while that listener is
+configured, turn it off in the saved options and restart with the new settings.
+Home Assistant ingress remains available as admin. Direct login includes password
 visibility and **Log out** under **Configuration**. Logging out clears that tab's
 login and revokes its remembered login when present, without interrupting requested
 device operations. Optional remembered HTTPS logins retain their original expiry;
@@ -454,8 +458,9 @@ Home Assistant Core's configuration. The historical
 Host networking and `NET_ADMIN` / `NET_RAW` support the optional paired-host
 virtual MQTT address; see [pairing](docs/pairing.md#mqtt-address-management).
 Home Assistant port remapping does not change listeners in host-network mode.
-Direct HTTP uses host port 1234 when enabled. Supervisor assigns an available
-ingress port because the manifest declares `ingress_port: 0`; ST-MQ reads that
+Local recovery listens on loopback port 1234 by default. The optional LAN HTTP
+backup listener defaults to port 1236 when enabled. Supervisor assigns a separate
+ingress port because the manifest declares `ingress_port: 0`. ST-MQ reads that
 assignment before opening listeners. The ingress listener accepts only the
 Supervisor proxy.
 

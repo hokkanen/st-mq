@@ -21,7 +21,7 @@ optional [saved-learning verification](reconstruction-and-versioning.md#coeffici
 retain their separate per-computer ownership; neither changes the replicated
 model or grants equipment authority.
 
-Use the same ST-MQ release on both computers. The slave checks the database
+Use the same ST-MQ build on both computers. The slave checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already
 running slave keeps its previous readable generation and reports the problem.
 The SSH prepare/ready handshake uses version 3 and the exact current physical

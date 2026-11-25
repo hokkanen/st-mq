@@ -41,7 +41,7 @@ export function homePlannedChange(status = {}) {
     'The controller has not reported a current heating plan.');
 
   if (decision.phase === 'recovery') return display(planLabel, 'Next action after recovery',
-    `Normal heating demand has resumed while warmth recovers; recovery has no fixed end time. ${provenance}`);
+    `Recovery is the planned phase. Its completion time depends on the recovery assessment. ${provenance}`);
 
   const schedule = decision.plan?.schedule;
   if (!schedule) return display(planLabel, decision.phase === 'normal' ? 'No actions scheduled' : 'Next action unavailable',

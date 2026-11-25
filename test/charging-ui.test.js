@@ -1199,6 +1199,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Price planning'], /reaching the target or ready-by time does not stop charging/i);
   assert.match(explanations['Manual priority'], /confirmed end.*automatic scheduling when it ends/);
   assert.match(explanations['Automatic charging'], /unplugging and restart.*without replacing other charger instructions/);
+  assert.match(explanations['Automatic charging'], /Releasing this application’s own delay can let the vehicle resume charging/);
   assert.match(explanations['Charge now'], /until you turn it off or unplug/);
   for (const backend of [{ control: { kind: 'ocpp-tx-pause', snapshot: null } },
     { telemetry: { transport: 'ocpp' } }, { control: { snapshot: { transport: 'ocpp' } } }]) {
@@ -1207,6 +1208,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
     assert.doesNotMatch(local['Period transitions'], /Easee cloud|one-off start/);
     assert.match(local['Pause recovery'], /expires automatically.*loses contact.*authorization.*does not return.*cloud control/);
     assert.match(local['Pause recovery'], /Pause charging has no timed expiry/);
+    assert.match(local['Automatic charging'], /Releasing this application’s own delay can let the vehicle resume charging/);
     assert.match(local['Use automatic'], /button in Charging controls replaces.*enables Automatic charging and ends Charge now/);
     assert.match(local['Charger confirmation'], /pending until the charger confirms.*measurements.*started or paused/);
   }

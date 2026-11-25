@@ -104,6 +104,10 @@ the same wizard. For a review without applying installation changes, use:
 bash scripts/setup-linux.sh --dry-run
 ```
 
+The shell dry run requires an existing trusted Node 26 runtime. It can prepare
+the checkout's npm dependencies to load the wizard. It leaves system packages,
+services and installation settings alone.
+
 An alternate installation connection can be selected with
 `--connection /private/path/linux-deploy.json`. Re-running setup reads the current
 installation and preserves its data and saved authority. It normally stops,

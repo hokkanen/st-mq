@@ -360,3 +360,24 @@ test('the actual bootstrap path strips Node injection and inherited runtime sett
     assert.equal(output, 'bootstrap sanitized');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test('the shell dry run refuses missing trusted Node before requesting sudo in either argument order', async t => {
+  if (process.getuid?.() === 0 || !existsSync('/run/systemd/system') || !/^ID=ubuntu$/m.test(readFileSync('/etc/os-release', 'utf8'))) {
+    t.skip('Native bootstrap execution requires an ordinary account on a supported Ubuntu systemd host.'); return;
+  }
+  const root = temp();
+  try {
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'stat'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+    writeFileSync(join(bin, 'sudo'), '#!/bin/sh\n: > sudo-attempted\nexit 1\n', { mode: 0o700 });
+    const connection = ['--connection', join(root, 'review.json')];
+    for (const args of [['--dry-run', ...connection], [...connection, '--dry-run']]) {
+      const output = await runCommand('bash', ['-c', 'exec bash "$@" 2>&1', 'setup', join(source, 'scripts/setup-linux.sh'), ...args], {
+        cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, timeout: 10000, acceptedExitCodes: [1],
+      });
+      assert.equal(existsSync(join(root, 'sudo-attempted')), false, 'A dry run must not enter privileged bootstrap');
+      assert.match(output, /A trusted Node runtime is required before the wizard can run/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

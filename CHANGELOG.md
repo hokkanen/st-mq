@@ -74,6 +74,8 @@ changes from published 0.9.5.
 
 - Ubuntu setup and the HA container default to Node 26.13 LTS. Node 22.19+
   within major 22 remains deprecated with maintained compatibility checks.
+- Linux setup honors `--dry-run` before attempting to install Node, including
+  when `--connection` comes first.
 - Select Live integrations with `controller.input: providers` for configured
   MQTT devices, H66 and other providers. The retired `mqtt` input value is
   rejected. MQTT broker and equipment configuration remain supported.

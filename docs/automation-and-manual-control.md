@@ -13,9 +13,10 @@ control. History viewers and slaves cannot send equipment commands.
 | Caravan | Automatic power Off / On | Independent dehumidifier control |
 
 Home starts paused without a resume time. This single durable choice is bound to
-the current equipment. Selecting Pause restores automatic changes to Normal;
-subsequent manual choices use the pause scope. Selecting Automatic clears the
-pause and restores owned manual changes before reassessing the plan.
+the current equipment. Selecting Paused requests restoration of automatic
+heating changes. Subsequent manual choices use the pause scope. Selecting
+Automatic clears the pause and requests restoration of owned manual changes
+before reassessing the plan.
 An explicitly approved manual-planner cycle has its own permission and cancellation;
 changing Automatic / Paused and restarting the application preserve that
 independent cycle within its original window. Accepted automatic cycles also
@@ -51,9 +52,9 @@ Manual Preheat raises ROOM for one fixed deadline, using
 `controller.floor_preheat.lease_seconds` (900 seconds by default), including when
 floor control is disabled. A configured, enabled and commissioned floor adapter
 adds the pooled four-output treatment; otherwise Preheat is ROOM-only.
-Polling does not renew the deadline. Normal or Reduced ends it sooner. At the
-deadline the controller restores ROOM independently of floor feedback. See
-[floor capability and commissioning requirements](floor-preheat.md).
+Polling does not renew the deadline. Normal or Reduced can end it sooner. At the
+deadline the controller requests ROOM restoration independently of floor feedback.
+See [floor capability and commissioning requirements](floor-preheat.md).
 
 With the commissioned floor adapter enabled, the same action requests all four
 outputs for that original lease and checks whether device-local expiry reported

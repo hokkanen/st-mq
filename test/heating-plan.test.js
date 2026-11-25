@@ -33,6 +33,7 @@ test('active Home phases expose their next transition without assigning a recove
   assert.equal(homePlannedChange(status).value, 'Recovery at 18:00', 'active execution expiry overrides the frozen schedule');
   status.decision.phase = 'recovery';
   assert.equal(homePlannedChange(status).value, 'Next action after recovery');
+  assert.match(homePlannedChange(status).detail, /Recovery is the planned phase/);
   assert.equal(homePlannedChange(status).at, null, 'generic phase expiry does not promise normal heating');
   status.decision.phase = 'normal';
   assert.equal(homePlannedChange(status).value, 'Awaiting plan update', 'elapsed schedule does not become a future reduction');

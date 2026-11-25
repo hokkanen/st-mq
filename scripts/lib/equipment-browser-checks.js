@@ -453,6 +453,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("document.getElementById('test-circulation').click();true");
     await until("window.equipmentUiFixture.calls.length === 5 && !document.getElementById('test-circulation').disabled"); await settle();
     assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Waiting for device feedback/);
+    assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /10-minute run timer starts at switch-on confirmation\. Stop requests switch-off/);
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     await evaluate("document.getElementById('dhwr-stop').click();true");
     await until("window.equipmentUiFixture.calls.length === 6 && document.getElementById('dhwr-stop').disabled"); await settle();
@@ -477,7 +478,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       f.beginManual();document.getElementById('home-heat-pump-details').open=true;return true;})()`); await refresh();
     assert.equal(await evaluate("document.getElementById('home-manual-override-details').open"), false, 'Manual override starts folded');
     await evaluate("document.getElementById('home-manual-override-details').open=true;true");
-    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat requested.*Ends at.*lease deadline/);
+    assert.match(await evaluate("document.getElementById('heating-test-message').textContent"), /Preheat requested.*Ends at.*requests ROOM restoration at the lease deadline/);
     assert.equal(await evaluate("document.getElementById('home-automation-pause').getAttribute('aria-pressed')"), 'true');
     assert.match(await evaluate("document.getElementById('override-status').textContent"), /Paused until you select Automatic/);
     assert.equal(await evaluate("document.getElementById('h66-test-message').textContent"), '', 'A manual preheat request is separate from native-setting receipts');

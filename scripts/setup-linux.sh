@@ -53,10 +53,12 @@ for setup_candidate in "$(command -v node || true)" /usr/bin/node /usr/local/bin
   if [[ -n $setup_candidate ]] && setup_trusted_node "$setup_candidate"; then break; fi
 done
 if [[ -z $setup_node ]]; then
-  if [[ ${1-} == --dry-run ]]; then
-    printf '%s\n' 'A trusted Node runtime is required before the wizard can run. Normal setup installs the pinned official runtime.' >&2
-    exit 1
-  fi
+  for setup_argument in "$@"; do
+    if [[ $setup_argument == --dry-run ]]; then
+      printf '%s\n' 'A trusted Node runtime is required before the wizard can run. Normal setup installs the pinned official runtime.' >&2
+      exit 1
+    fi
+  done
   printf '%s\n' 'Setup needs a trusted Node runtime. It will install download tools if missing and a verified official Node runtime under /opt/st-mq.'
   command -v sudo >/dev/null || { printf '%s\n' 'Install sudo and retry as the application account.' >&2; exit 1; }
   timeout --foreground --kill-after=5s 120 sudo -v

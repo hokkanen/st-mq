@@ -21,7 +21,7 @@ the same arrow placement with **One extra day ↗**.
 | --- | --- |
 | **Automatic charging** | Saves the scheduling preference for this equipment, including across restart and unplugging. A later native instruction can retain priority while this switch remains on. |
 | **Charge now** | Ends Pause and requests immediate charging, including with Automatic off. Explicitly replaces the displayed external Stop and supported native schedules after confirmed takeover. Current limits, protection and device readiness remain binding. Turning it off returns to Automatic and enables it if needed. ON is a request, not proof of draw. |
-| **Pause charging** | Stops charging until unplugging or a later explicit resumption. Turns Charge now off and leaves Automatic unchanged. Survives restart and network reconnect; check the displayed pause confirmation. |
+| **Pause charging** | Requests a stop until unplugging or a later explicit resumption. Turns Charge now off and leaves Automatic unchanged. Survives restart and network reconnect. Check the displayed pause confirmation. |
 | **Save for this session** | Applies current charge, target, usable capacity and ready-by edits to this physical connection. It does not rewrite configured defaults. |
 | **Use automatic** | Appears for a dashboard Pause or supported handover from another charger instruction. It enables Automatic, ends Pause and Charge now, and returns to the price plan. |
 | **Identify** | Requests another bounded identification attempt for the current connection. An existing confirmed assignment remains visible during the check. |
@@ -36,8 +36,9 @@ does not repeat the write automatically.
 Automatic starts on for both chargers and shared priority starts Balanced when
 charging state is first initialized, including a fresh database. Later saved
 choices survive restart; replacement equipment starts with Automatic off.
-Changing the Automatic preference alone does not stop or resume charging. Use
-**Pause charging** for a session stop and check the observed response. A later
+Turning Automatic off stops price scheduling. On Easee, releasing the
+controller's own delay can let charging resume. Use **Pause charging** for a
+session stop and check the observed response. A later
 observed external Start/Resume can end the pause; an unobservable native-app tap
 cannot establish that instruction. A later observed external Stop ends Charge now.
 [Ownership and takeover](execution-and-recovery.md) explains which instructions

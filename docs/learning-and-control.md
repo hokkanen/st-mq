@@ -702,12 +702,12 @@ retains the last AUX decision. The AUX fallback remains latched for the cycle. N
 not exclusively to space heating. `recovery_compressor_only: false` disables
 the AUX restriction while retaining the timed hot-water hold.
 
-At the original deadline, normal DHW and operating-mode settings restore and
-scheduled DHWR eligibility resumes even if thermal recovery assessment continues.
-Resuming eligibility does not force a circulation pulse. The deadline does not
-restart on each controller update. Restoration obligations survive interruption;
-loss of control can require earlier full restoration. Separate transports do not
-guarantee atomic compressor switching.
+At the original deadline, the controller requests restoration of normal DHW and
+operating-mode settings. Scheduled DHWR can resume when restoration and the
+ordinary circulation checks allow it, including while thermal recovery assessment
+continues. The deadline does not restart on each controller update. Restoration
+obligations survive interruption. Loss of control can require earlier full
+restoration. Separate transports do not guarantee atomic compressor switching.
 
 Before an accepted future reduction, a new automatic circulation pulse must fit
 its full configured run and the existing ON/OFF confirmation budgets before the
@@ -930,9 +930,10 @@ become fresh merely because the application restarted. A documented register
 profile is distinct from verification of the installed pump and firmware.
 
 DHWR uses MQTT switch ON and OFF and the configurable run duration
-(`controller.dhwr_duration_minutes`, default 10), whether paused or not. Clicking
-Start again starts a full new run; Stop ends it immediately. Restoring manual
-heating or native parameters does not end that independent circulation run.
+(`controller.dhwr_duration_minutes`, default 10), in Automatic or Pause. A
+confirmed switch-on starts the full run timer, including after another Start.
+Stop requests switch-off. Restoring manual heating or native parameters does
+not end that independent circulation run.
 Internal/API actions are `circulation`, `normal` and `reduction`; obsolete timed
 button commands are rejected. Tariff control uses the configured relay directly. Pending OFF is saved before ON is sent and
 reconciled on restart, shutdown and restoration. See [device setup](dhwr-mqtt.md).

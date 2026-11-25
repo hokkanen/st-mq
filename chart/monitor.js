@@ -428,10 +428,13 @@ function showHeatingTestResult(result) {
   if (result.superseded) message.textContent += ' A later selection or device report has replaced this request.';
   else if (ended) message.textContent += ' This manual action has ended.';
   else if (result.command === 'preheat') message.textContent += Number.isFinite(result.expiresAt)
-    ? ` Ends at ${time(result.expiresAt)}; ROOM is restored at the lease deadline. Normal or Reduced ends it sooner.`
-    : ' Ends at the floor lease deadline; Normal or Reduced ends it sooner.';
-  else if (result.command === 'circulation') message.textContent += ` Runs for ${lastStatus?.dhwr?.durationMinutes ?? 10} minutes from this click. Stop ends it immediately.`;
-  else if (result.indefinite || result.holdUntil === null && lastStatus?.automation?.home?.enabled === false)
+    ? ` Ends at ${time(result.expiresAt)}. The controller requests ROOM restoration at the lease deadline. Normal or Reduced can end it sooner.`
+    : ' Ends at the preheat deadline. Normal or Reduced can end it sooner.';
+  else if (result.command === 'circulation') {
+    const minutes = lastStatus?.dhwr?.durationMinutes;
+    const length = Number.isFinite(minutes) ? `${minutes}-minute ` : '';
+    message.textContent += ` The ${length}run timer starts at switch-on confirmation. Stop requests switch-off.`;
+  } else if (result.indefinite || result.holdUntil === null && lastStatus?.automation?.home?.enabled === false)
     message.textContent += ' Held until you select another mode or Automatic.';
   else if (result.holdUntil > (lastStatus?.now ?? Date.now())) message.textContent += ` Held until ${time(result.holdUntil)} or Automatic.`;
   else message.textContent += ' Automatic heating reassesses this choice on the next controller update, normally within 1 minute.';
@@ -957,7 +960,7 @@ function render(s) {
     : ({ normal: 'Normal heating is available', preheat: 'Building heat reserve before the reduction', reduction: 'Reducing heating during the selected interval', recovery: 'Recovering the house’s heat reserve' })[s.decision.phase ?? s.decision.action] ?? 'Heating plan';
   const heldMode = ({ normal: 'Normal heating', preheat: 'Preheat', reduction: 'Reduced heating', recovery: 'Recovery heating' })[manualHold?.phase] ?? 'Your selected heating mode';
   const decisionReasons = manualHold
-    ? `${heldMode} is ${manualConfirmed ? 'held' : 'requested'} ${manualHold.until == null ? 'until you select another mode or Automatic' : `until ${time(manualHold.until)}`}. ${manualHold.phase === 'preheat' ? 'ROOM is restored at the original lease deadline; Normal or Reduced ends Preheat sooner.' : 'Selecting Automatic restores normal settings and reassesses the heating plan.'} Heat-pump parameter edits remain in effect.`
+    ? `${heldMode} is ${manualConfirmed ? 'held' : 'requested'} ${manualHold.until == null ? 'until you select another mode or Automatic' : `until ${time(manualHold.until)}`}. ${manualHold.phase === 'preheat' ? 'The controller requests ROOM restoration at the original lease deadline. Normal or Reduced can end Preheat sooner.' : 'Selecting Automatic requests restoration of owned settings and reassesses the heating plan.'} Heat-pump parameter edits remain in effect.`
     : (s.decision.reasons ?? []).map(r => heatingReasonText(r).trim().replace(/\.+$/, '').replace(/^./, value => value.toUpperCase())).join('. ');
   const recoveryDetail = !manualHold && s.decision.phase === 'recovery'
     ? `${s.decision.recoveryCompressorOnly ? 'Compressor-only recovery is requested' : 'Native recovery settings apply'}${s.decision.recoveryFallbackReason ? ` · ${label(s.decision.recoveryFallbackReason)}` : ''}.` : '';

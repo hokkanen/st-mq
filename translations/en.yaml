@@ -35,16 +35,18 @@ configuration:
       web_token:
         name: Direct-access admin password
         description: >-
-          At least 24 characters. Leave both web passwords empty to disable
-          direct access on port 1234 while keeping ingress available. Password
-          changes take effect when reviewed configuration is applied.
+          At least 24 characters. This password enables password access to local
+          recovery on loopback. HTTPS and LAN HTTP backup have separate settings.
+          With LAN HTTP backup disabled, leave both passwords empty for ingress-only
+          access. Password changes take effect when reviewed configuration is applied.
       web_family_token:
         name: Direct-access family password
         description: >-
           Optional password of at least 24 characters, different from the admin
-          password. Requires an admin password. Family can view pages and use
-          everyday heating, charging and equipment controls. Configuration,
-          database exports and administrative changes require admin access.
+          password. Requires an admin password. Family can view the operational
+          dashboard and use Home heating, circulation, firewood, Garage modes,
+          garage doors and everyday charging controls. Native heat-pump settings,
+          equipment tests, configuration and database exports require admin access.
       max_drop_c:
         name: Preferred occupied temperature drop (°C)
         description: >-

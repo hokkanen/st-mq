@@ -147,9 +147,9 @@ not recorded instead of guessing.
 
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
-| Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, the measured average is unavailable. A bounded one-room estimate may support control. Learning rejects a whole window containing a report gap. |
+| Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace by default | At expiry or on an explicit acquisition failure, the measured average is unavailable. A bounded one-room estimate may support control. Missing temperatures contribute no learning observations. See [short gaps during cycles](#one-missing-room). |
 | Garage probe history | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. The pump's local BTHome regulation has its own evidence path and timeout; see [Garage control](garage.md). |
-| Indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
+| Indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Set the reporting interval to zero to use this policy. The default indoor sensor setup uses periodic reports. |
 | H66 equipment (outdoor register excluded from weather selection/history) | Five-minute source validity for equipment diagnostics | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
 

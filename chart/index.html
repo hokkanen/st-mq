@@ -165,7 +165,7 @@
                       <label for="pause-until">Resume automatic heating at</label>
                       <div class="temporary-input-row"><input id="pause-until" type="text" data-date-picker="datetime-local" aria-describedby="override-status pause-help"><button id="resume-now" class="secondary-button" type="button" disabled>Automatic now</button></div>
                       <p id="override-status" class="temporary-status">No scheduled resume.</p>
-                      <p id="pause-help" class="muted">Set a time to pause now and resume automatically then. Leave it empty to stay paused until you select Automatic. Pausing restores normal heating first; later Normal or Reduced selections stay for the pause. Preheat keeps its own lease deadline. Monitoring and learning continue.</p>
+                      <p id="pause-help" class="muted">Set a time to pause now and resume automatically then. Leave it empty to stay paused until you select Automatic. Pausing requests restoration of automatic heating changes. Later Normal or Reduced selections stay for the pause. Preheat keeps its own lease deadline. Monitoring and learning continue.</p>
                     </div>
                     <div class="temporary-field">
                       <label for="away-until">Away until</label>
@@ -243,10 +243,10 @@
                         <div><dt>Normal heating</dt><dd>Release price-based changes and use the heat pump’s saved settings. The heat pump decides when heat is needed.</dd></div>
                         <div><dt>Preheat</dt><dd>Restore normal hot-water and auxiliary settings, then raise the saved ROOM demand setting by up to <strong id="home-preheat-setting">—</strong>, subject to device limits. Commissioned floor overrides may open the configured circuits together. ROOM is a demand setting, not a room-air target.</dd></div>
                         <div><dt>Reduced heating</dt><dd>Request tariff reduction. With native heat-pump control available, also lower hot-water settings and restrict auxiliary heating. Automatic hot-water circulation is held back; a run already in progress finishes before reduction starts. A reduction request does not prove that the compressor stopped.</dd></div>
-                        <div><dt>Recovery</dt><dd>Release tariff reduction and restore normal ROOM demand. A timed hold can retain reduced hot-water settings and restrict auxiliary heat; indoor-average protection can release the auxiliary restriction early. Saved settings and normal circulation eligibility return at the hold deadline.</dd></div>
+                        <div><dt>Recovery</dt><dd>Request an end to tariff reduction and a return to the saved ROOM setting. A timed hold can retain reduced hot-water settings and restrict auxiliary heat. Indoor-average protection can release the auxiliary restriction early. When the hold ends, the controller requests restoration of held settings and can schedule circulation when its checks pass.</dd></div>
                       </dl>
                       <p id="home-policy-durations" class="heating-policy-note">Configured duration limits are unavailable.</p>
-                      <p class="heating-policy-note">Manual heating override requests the same equipment actions as the corresponding automatic phase, bypassing savings and forecast selection. Reduced heating also applies the available hot-water and auxiliary restrictions and holds back automatic circulation. In Automatic, Normal and Reduced are reassessed on the next controller update. Pause holds them until you select Automatic or the scheduled resume time. Preheat ends at its fixed deadline, or sooner if you select Normal or Reduced; the controller also restores ROOM at that deadline. Equipment availability, native limits and restoration checks still apply.</p>
+                      <p class="heating-policy-note">Manual heating override requests the same equipment actions as the corresponding automatic phase, bypassing savings and forecast selection. Reduced heating also applies the available hot-water and auxiliary restrictions and holds back automatic circulation. In Automatic, Normal and Reduced are reassessed on the next controller update. Pause holds them until you select Automatic or the scheduled resume time. The controller requests ROOM restoration at the Preheat deadline or when Normal or Reduced ends Preheat sooner. Equipment availability, native limits and restoration checks still apply.</p>
                       <div class="heating-policy-decision" role="status"><strong id="home-policy-current-title">Waiting for a decision</strong><p id="home-policy-current-detail"></p><p id="home-policy-economics" class="heating-policy-note"></p></div>
                       <details id="home-policy-details" class="equipment-fold heating-policy-details">
                         <summary>Decision thresholds &amp; safeguards</summary>
@@ -416,7 +416,7 @@
                         <button id="dhwr-stop" data-write-control class="secondary-button" type="button" disabled>Stop</button>
                       </div>
                       <p id="dhwr-message" class="temporary-status" role="status" aria-live="polite"></p>
-                      <p id="dhwr-control-help" class="muted">Start requests a full run for the configured duration, in Automatic or Pause. Stop requests an immediate end; device feedback confirms the result.</p>
+                      <p id="dhwr-control-help" class="muted">Start requests a timed run in Automatic or Pause. The timer starts at switch-on confirmation. Stop requests switch-off. Check the reported operation for device feedback.</p>
                     </div>
                   </div>
                 </details>

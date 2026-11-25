@@ -10,7 +10,7 @@ listener and certificate helper report their own failures.
 
 | Entrance | Default | Authentication |
 | --- | --- | --- |
-| Local recovery | `http://127.0.0.1:1234` | Admin/family passwords; standalone Linux permits tokenless initial bootstrap only on loopback. HA bootstrap uses ingress. |
+| Local recovery | `http://127.0.0.1:1234` | Standalone Linux requires a password when configured and otherwise permits passwordless loopback access. Home Assistant requires a password here and uses ingress for initial access. |
 | Home Assistant ingress | Supervisor-assigned port | Existing HA authentication and ingress-proxy validation. |
 | Optional HTTPS | `https://<certificate-hostname>:8443` | Ordinary ST-MQ admin/family passwords; TLS grants no control authority. |
 | Optional LAN HTTP backup | `http://<LAN-address>:1236` | Ordinary passwords, with an unencrypted-access warning. Disabled by default. |

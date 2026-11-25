@@ -32,7 +32,7 @@ and operation.
 
 ## Before enabling pairing
 
-Run the same ST-MQ release on both machines. Both need their own working local
+Run the same ST-MQ build on both machines. Both need their own working local
 MQTT broker, provider configuration and any device verification required for
 normal control. The mirrored database does not copy credentials, machine role,
 node identity or network configuration. A slave therefore needs its future
@@ -230,7 +230,7 @@ storage.
 
 Use this procedure when both computers have incompatible development databases
 and you have chosen to start new history. It preserves the old files; it does
-not migrate or import them. If a same-version, current-schema master or backup
+not migrate or import them. If a current-format master or backup
 already has the history you want, preserve that source instead of resetting it.
 Normal protected-history recovery also requires the current schema.
 

@@ -20,16 +20,16 @@ export function instanceRoleDisplay(status) {
     if (pair.transition || pair.role === 'transition') return { state: 'transition', label: 'Pair · Role change',
       detail: 'A role change is in progress. Wait for the new role to be confirmed.' };
     if (pair.role === 'protected') return { state: 'protected', label: 'Pair · Protected',
-      detail: 'Local history is protected. Home control and incoming mirroring are stopped.' };
+      detail: 'Local history is protected. Device control and incoming mirroring are stopped.' };
     if (pair.role === 'slave') return { state: 'slave', label: 'Pair · Slave',
-      detail: 'Read-only slave. Keeps synchronized history ready for manual handover or promotion. Never takes control automatically.' };
+      detail: 'Read-only slave. Receives history from the master. Handover or promotion requires an explicit action.' };
     if (pair.role === 'master') {
       const waiting = pair.canControl !== true || ['slave', 'protected', 'transition'].includes(status?.role)
         || status?.instance?.role === 'slave';
       return waiting ? { state: 'transition', label: 'Pair · Master · Waiting',
         detail: 'Master role reported. Waiting for its current dashboard and control readiness.' }
         : { state: 'master', label: 'Pair · Master',
-          detail: 'This computer owns the master role. Home heating, charging and Caravan power each follow their own control permissions.' };
+          detail: 'This computer owns the master role. Home heating, Garage heating, charging and Caravan power each follow their own control permissions.' };
     }
     return { state: 'transition', label: 'Pair · Checking role', detail: 'Waiting for this computer’s pair role to be confirmed.' };
   }

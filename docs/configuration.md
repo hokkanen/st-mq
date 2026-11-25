@@ -376,19 +376,18 @@ Choose **Apply reviewed configuration** as admin to rotate or clear passwords wi
 restarting. Clearing the family password disables family login; clearing both
 withholds authenticated network access; standalone bootstrap remains local and
 Home Assistant bootstrap continues through ingress.
-An enabled LAN HTTP backup requires network credentials: disable that listener
-and restart before clearing its required admin password.
+An enabled LAN HTTP backup requires network credentials. To clear its admin
+password, disable that listener and restart with the new settings.
 Every accepted Home Assistant ingress session has
 full ST-MQ admin access, independently of these passwords or the Home Assistant
 user's administrator flag. The administrator-only sidebar entry controls
 visibility, not ingress authorization. The family role applies only to direct
 access with the family password; see [Home Assistant access details](../DOCS.md#home-assistant-files-and-permissions).
 
-Family reads all application data with credentials concealed, may calculate
-read-only heating-plan comparisons, and may record
-firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
-heating, Home Automatic/Paused and Garage manual modes, garage doors and all EV
-card controls. The EV controls include viewing and refreshing **One extra day**
+Family can browse the operational dashboard and calculate read-only heating-plan
+comparisons. Family can record firewood, remove entries within 15 minutes, and
+use DHWR, Away/Pause, manual heating, Home Automatic/Paused, Garage Normal/Away,
+garage doors and everyday EV controls. These include viewing and refreshing **One extra day**
 comparisons, allowing one more day and canceling an active allowance. Every other
 write, export and download requires admin. These permissions do not change
 equipment authority, restoration or freeze protection. The role is not configurable. Native pump
