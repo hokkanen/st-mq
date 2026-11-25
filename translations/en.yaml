@@ -3,11 +3,12 @@ configuration:
     name: Home heating and access
     description: >-
       Start with simulated input and Home heating automation paused. Home
-      Assistant ingress grants application admin access through your Home Assistant
-      admin login. Home Automatic/Pause, Garage Normal/Away, charging Automatic
+      Assistant ingress grants application admin access to each accepted Home
+      Assistant session. Home Automatic/Paused, Garage Normal/Away, charging Automatic
       and Caravan Automatic power are independent dashboard controls. Save
-      options, then use Data & settings → Check & review configuration → Apply
-      reviewed configuration. Input, topology and mirror role changes require
+      options, then open Data & settings → Connections & configuration →
+      Configuration. Choose Check & review configuration, then Apply reviewed
+      configuration. Input, topology and mirror role changes require
       a restart. Configuration does not grant permission to control equipment.
     fields:
       input:

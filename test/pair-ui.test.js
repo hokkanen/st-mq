@@ -168,7 +168,7 @@ test('schema failures explain deliberate recovery without suggesting broker fixe
   const mismatch = pairIssueHelp({ role: 'protected', error: 'database_schema_mismatch' });
   assert.match(mismatch, /database schema does not match/);
   assert.match(mismatch, /Reset pairing → Start fresh/);
-  assert.match(mismatch, /cannot be migrated/);
+  assert.match(mismatch, /Preserve the existing files.*compatible backup/);
   assert.equal(pairIssueHelp({ role: 'slave', sync: { state: 'error', error: 'database_schema_mismatch' } }), mismatch);
   const malformed = pairIssueHelp({ role: 'protected', error: 'database_schema_invalid' });
   assert.match(malformed, /database structure/);

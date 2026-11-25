@@ -8,19 +8,18 @@ this repository, with installation slug `st-mq`. It is not installed through HAC
 or as a Home Assistant Core integration.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.5 release starts with simulated devices and Home
-heating paused. Default startup launches no live controller or provider. Live
-automation is enabled separately in each feature after configuring its connection.
+With fresh settings, the app starts with simulated devices and Home heating
+paused. After configuring live connections, enable automation separately for
+each feature.
 See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
 the independent feature controls and Garage local temperature regulation.
 
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
-   `https://github.com/hokkanen/st-mq` and install the app from that repository.
-   The default branch, `main`, publishes 0.9.5. An existing
-   repository configured with `#H66` needs the default repository source for
-   this release.
+   `https://github.com/hokkanen/st-mq` and install **Home Energy** from that
+   repository. The app store reads `main` by default. Select the default
+   repository source when moving from a source configured with `#H66`.
    A Git tag or GitHub release does not change the branch installed by HA.
    Home Assistant builds the image locally; the host needs network access for
    the build and enough free storage. If the repository does not appear, refresh
@@ -36,13 +35,15 @@ the independent feature controls and Garage local temperature regulation.
    tab. Set an admin password of at least 24 characters in `web_token`
    for optional [HTTPS setup](docs/https.md) under **Data & settings → Web access**. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
-   `controller.input: simulated` for initial review; Home defaults to Pause; Garage control is disabled by default.
+   `controller.input: simulated` for initial review. Home defaults to **Paused**
+   and Garage control starts disabled.
 3. Start ST-MQ and choose **Open Web UI** in Home Assistant. Ingress needs no
    separate application password or router port forwarding. **Start on boot**
    keeps ST-MQ running after a host restart; **Show in sidebar** adds the
    app's sidebar entry and is optional.
-   Direct HTTPS and explicitly enabled LAN HTTP backup ask for either
-   configured password and selects its role. The application UI clearly labels simulation.
+   Use the configured admin or family password for direct HTTPS or an explicitly
+   enabled LAN HTTP backup listener. The password determines the access role.
+   The dashboard labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
@@ -57,20 +58,19 @@ the independent feature controls and Garage local temperature regulation.
    --file /share/st-mq/st-mq.csv --kind stmq`, then import `easee.csv` with
    `--kind easee`. Terminal & SSH is a separate container and does not contain
    ST-MQ's Node executable or history script. Alternatively prepare a fresh
-   database from those CSVs with the same ST-MQ version on standalone Linux,
+   database from those CSVs with the same ST-MQ build on standalone Linux,
    close its writer, and copy it into the public app folder while ST-MQ is stopped. Source CSVs stay outside the image.
 6. Choose `controller.input: offline` to view imported history without device
-   connections. Choose `providers` or `mqtt` for live temperatures and prices.
+   connections. Choose `providers` (**Live integrations**) for configured devices,
+   temperatures and prices.
    Keep Home on **Paused** while reviewing plans. Configure the
    current direct equipment relay route in [equipment setup](docs/mqtt-equipment.md)
    and verify its device identity, command acceptance and fresh state readback, or
    commission H66 native control as described below. Then enable Home **Automatic** if desired. Configure Garage manual control separately.
-   Disable the former heat/action automation; the current application does not
-   publish heating commands through that protocol.
-   Configure local indoor temperature subscriptions under `mqtt`: smoke channel 1
-   supplies Upstairs, channel 2 Bedroom and channel 3 Downstairs. See
-   [temperature configuration](docs/recording.md#local-mqtt-temperature-sensors-and-interface)
-   for the topic fields and payload formats.
+   Retire any old `heat/action` automation before enabling Home control.
+   Configure indoor temperature topics in `equipment.devices` and the broker
+   connection under `mqtt`. See [temperature configuration](docs/temperature-sensors.md)
+   for room assignments and reporting requirements.
 7. Follow [H66 MQTT setup](docs/h66-mqtt.md) to connect the gateway and set
    `controller.h66_device` to its exact MQTT prefix. Verify C60 telemetry, native
    settings and restoration before enabling automatic H66 control.
@@ -405,26 +405,19 @@ successfully imported values.
 
 ## Moving from an earlier version
 
-Back up the installed app, its options and any original CSV exports before
-replacing it. The 0.9.5 release is available from `main` in the
-default repository; it does not convert an existing installation's saved options or
-database. An app configured with `#H66` needs the default repository source for
-this release; publishing a tag does not change that setting.
+Before a manual update, back up the installed app, saved options and any original
+CSV exports. Published `v0.9.5` uses SQLite schema 36. This source uses schema 37
+and rejects a schema-36 database before mutation, including when a private build
+still displays version `0.9.5`. See the
+[installation transition](docs/startup.md#moving-from-an-earlier-version).
 
-Home Assistant marks 0.9.5 as a breaking update, so automatic updates do not
-cross this boundary. Review compatibility and perform the update manually after
-preserving the previous installation.
-
-Home Assistant builds require a 64-bit amd64 or aarch64 system. The armhf, armv7
-and i386 builds offered by 0.7.5 are not provided for 0.9.5.
-
-The 0.7.5 runtime and configuration are not upgrade inputs. Configure the current
-version from its current options and use a fresh database, then optionally import
-the supported original [0.7.5 CSV files](docs/csv-import.md). Unknown or retired
-settings and incompatible development databases are rejected, without automatic
-translation or reset. Select a fresh database directory explicitly and retain the
-old data; do not delete a database merely to clear a startup error. A matching
-current-format backup can still be restored using the backup workflow above.
+Use a 64-bit `amd64` or `aarch64` system. Where no compatible backup exists,
+choose a fresh database explicitly and keep the old installation files. Start
+from current options and optionally import the supported original
+[0.7.5 CSV files](docs/csv-import.md). Use the backup workflow above for a
+compatible current-format database. For two computers, follow the
+[paired fresh-start procedure](docs/pairing.md#deliberate-fresh-start-after-a-development-schema-change)
+if both need new storage.
 
 Review outstanding equipment changes and restoration duties before replacing a
 live controller. Keep one command owner, begin evaluation with simulated input,

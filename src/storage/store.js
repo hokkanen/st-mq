@@ -111,7 +111,7 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
   const version = db.prepare('PRAGMA user_version').get().user_version;
   if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database; optionally import supported v0.7.5 CSV files. The existing database was not changed.`),
     { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
-  if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
+  if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact current-format backup or a new empty database. The existing database was not changed.'),
     { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   validateCheckpoint(db);
   // Two indexed range seeks reject every unsupported algorithm before writable
@@ -121,7 +121,7 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
     .get(LEARNING_ALGORITHM, LEARNING_ALGORITHM))
     throw Object.assign(new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.'),
       { code: 'database_algorithm_mismatch' });
-  if (full && db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact same-version backup.'),
+  if (full && db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact current-format backup.'),
     { code: 'database_integrity_failed' });
 }
 

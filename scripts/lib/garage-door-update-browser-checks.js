@@ -5,7 +5,8 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
   await setReducedMotion?.(false);
   await evaluate(`(() => {
     const f=window.equipmentUiFixture;
-    f.savedDoorWatch={fetch:window.fetch,response:f.response};f.watchRevision=1;
+    f.savedDoorWatch={fetch:window.fetch,response:f.response,devices:f.devices,now:f.now};f.watchRevision=1;
+    f.devices=f.devices.map(device=>device.kind==='door'?structuredClone(device):device);
     for(const d of f.devices.filter(d=>d.kind==='door')) {
       d.cover.operation=null;d.available=true;d.cover.available=true;d.cover.sourceTimePending=false;
       for(const r of Object.values(d.readings)){r.value=0;r.coverState='closed';r.stale=false;r.observedAt=f.now;r.receivedAt=f.now;}
@@ -132,7 +133,9 @@ export async function checkGarageDoorUpdatesBrowser({ evaluate, refresh, until, 
     assert.equal(await evaluate('window.equipmentUiFixture.responses'), reports, 'Both estimated opening phases complete without a full refresh');
     assert.equal(await evaluate(`[...document.querySelectorAll('.garage-door-row[data-side]')].every(n=>n.dataset.state==='open'&&getComputedStyle(n.querySelector('.garage-door-motion')).display==='none')`), true);
   } finally {
-    await evaluate(`(() => {const f=window.equipmentUiFixture;window.fetch=f.savedDoorWatch.fetch;f.response=f.savedDoorWatch.response;if(f.savedTravel){f.status.garage=f.savedTravel;delete f.savedTravel;}return true;})()`);
+    await evaluate(`(() => {const f=window.equipmentUiFixture,saved=f.savedDoorWatch;
+      window.fetch=saved.fetch;f.response=saved.response;f.devices=saved.devices;f.now=saved.now;
+      if(f.savedTravel){f.status.garage=f.savedTravel;delete f.savedTravel;}return true;})()`);
     await refresh();
     await evaluate('delete window.equipmentUiFixture.savedDoorWatch;true');
   }

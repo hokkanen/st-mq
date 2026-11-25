@@ -6,10 +6,10 @@
 ST-MQ is a local household energy controller for Home Assistant OS and standalone
 Linux. The repository and installation slug are `st-mq`.
 
-**0.9.5 is the current release.** Review installation compatibility and commission
-live integrations for each installation. Default startup
-uses simulated devices with Home heating paused. Live input and each feature's
-control permission are separate choices.
+See [published releases](https://github.com/hokkanen/st-mq/releases) for stable
+builds. Review installation compatibility and commission live integrations for
+each installation. Default startup uses simulated devices with Home heating
+paused. Live input and each feature's control permission are separate choices.
 
 ## Capabilities
 
@@ -34,17 +34,17 @@ control permission are separate choices.
 
 Add `https://github.com/hokkanen/st-mq` under **Settings → Apps → Install app →
 ⋮ → Repositories** in Home Assistant OS, then select the app from the `st-mq`
-repository. The default branch, `main`, publishes 0.9.5. Installations configured with `#H66`
-need the default repository source for this release; a tag does not change their
-configured source.
+repository as **Home Energy**. The app store reads `main` by default.
+Installations still using `#H66` need to select the default repository source.
 Follow [Home Assistant setup](DOCS.md) for installation, saved options, ingress,
 backups and MQTT integration. Home Assistant Container has no app manager; use
 standalone ST-MQ alongside it.
 
-For a standalone or paired installation on Ubuntu, run the setup wizard:
+For a standalone or paired installation on Ubuntu, select a published tag and
+run the setup wizard. Replace `vVERSION` with that tag:
 
 ```sh
-git clone https://github.com/hokkanen/st-mq.git
+git clone --branch vVERSION https://github.com/hokkanen/st-mq.git
 cd st-mq
 bash scripts/setup-linux.sh
 ```
@@ -103,17 +103,14 @@ outstanding restrictions. New charging can wait for the controller's
 authorization during an outage; pause expiry alone does not restore cloud
 control. See [Easee control and qualification](docs/charging/integrations/easee.md).
 
-Before 1.0.0 there is one current database/configuration contract. Incompatible
-development databases are rejected before mutation and require a deliberate
-fresh start; there is no automatic migration or reset. Same-version backup,
-restore, restart and learning reconstruction remain supported. The two 0.7.5 CSV
-imports are the historical exception; keep original exports outside the checkout.
-Home Assistant marks 0.9.5 as a breaking update requiring manual review.
-Existing 0.7.5 installations need a fresh current configuration and database,
-with any supported CSV history imported explicitly. Review
-[Home Assistant installation changes](DOCS.md#moving-from-an-earlier-version) or
-[standalone installation changes](docs/startup.md#moving-from-an-earlier-version)
-before replacing a running controller.
+Published 0.9.5 databases require deliberate fresh setup for the 1.0.0
+transition unless you already have a compatible current-format backup.
+Incompatible development databases are rejected before mutation. Original 0.7.5
+CSV exports can still be imported explicitly. Review the
+[Home Assistant](DOCS.md#moving-from-an-earlier-version) or
+[standalone](docs/startup.md#moving-from-an-earlier-version) instructions before
+replacing a running controller. From 1.0.0 onward, each production release owns
+a tested [upgrade from its predecessor](docs/pairing.md#software-upgrades).
 
 ## Deployment paths
 

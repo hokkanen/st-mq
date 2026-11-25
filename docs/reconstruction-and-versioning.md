@@ -543,9 +543,11 @@ Original observations, frozen forecasts and correction provenance keep their
 historical meaning; learning changes explicitly identify retained evidence,
 supported rebuilds or a new learning epoch.
 
-The Home learning algorithm is `committed-house-v22-rolling-fit-bounded-input-gaps`, with
-thermal model version 4. Production starts from a fresh database and an explicit
-initial seed. There is no compatibility migration for development databases.
+The 1.0.0 Home learning algorithm is `committed-house-v22-rolling-fit-bounded-input-gaps`,
+with thermal model version 4. A fresh database uses the explicit initial seed.
+An intact database from a private build with the same schema and algorithm can
+carry its existing history into 1.0.0. Incompatible development databases remain
+outside the production upgrade path.
 
 The journal saves the resolved learning configuration, including the relative
 ROOM preheat increase, shared recovery-hold duration, source assumptions and

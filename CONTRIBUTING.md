@@ -62,9 +62,12 @@ values with `fixture-` so their intent is explicit to the secret checker.
 Keep Home Assistant's root manifest, documentation, images and translation layout
 intact. The application package is private and is not published to npm.
 
-Before 1.0.0, maintain one current development contract. Preserve the supported
-0.7.5 CSV import and current restart/backup/restoration behavior; do not add old
-runtime aliases, development migrations or silent resets.
+The 1.0.0 baseline has one current runtime contract and supports the read-only
+0.7.5 CSV import. For each subsequent production release, follow the
+[upgrade policy](docs/pairing.md#software-upgrades). A change to private storage
+can ship in a patch or minor release when the tested upgrade preserves documented
+behavior. Apply [Semantic Versioning](https://semver.org/) to documented user and
+integration behavior. The dashboard and its backend ship together.
 
 Use GitHub issues for actionable unfinished work. Use commit/PR descriptions for
 implementation detail and test evidence, and `CHANGELOG.md` for changes users
@@ -73,6 +76,11 @@ A release uses matching package, lockfile, app and container versions. Tag relea
 as `v<version>` only as part of an authorized publication and publish the release
 commit on `main`. Home Assistant follows its configured repository branch and
 reads the app manifest version; a Git tag alone does not publish an app update.
+Identify a private soak by its commit SHA. If the existing HA deployment path
+requires the installed manifest version, keep the candidate at that version and
+qualify the final packaging commit separately. Keep its diff limited to the
+release stamp, related documentation and packaging expectations. After a
+successful soak, publish the exact qualified release commit.
 Release notes compare the current release with the preceding stable version's
 tagged source and documentation, consolidating development changes into the final
 supported behavior. Describe a feature introduced during the release cycle as a

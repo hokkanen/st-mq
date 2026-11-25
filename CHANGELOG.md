@@ -6,116 +6,81 @@ Versions follow Semantic Versioning.
 
 ## Unreleased
 
-- Property energy checks account for likely thousandfold Equalizer unit
-  discrepancies. They label the assumed conversion and show the original
-  meter increase alongside the adjusted comparison.
+Version 1.0.0 is the first production baseline for the tested
+[upgrade policy](docs/pairing.md#software-upgrades). This section covers the
+changes from published 0.9.5.
 
-- One-day charging allowances keep their updated estimated saving or extra cost
-  visible on both chargers when shared costs or forecast uncertainty change.
-  The comparison explains the other charger's cost and the combined result.
-  Routine forecasts preserve retained allocation targets, and target changes
-  refresh active comparisons even when charging periods stay the same.
-  Peer cost explanations identify which charger's extra day causes the effect.
-  Changed combined costs refresh even when savings stay equal; active and
-  read-only comparisons disclose background refresh failures and retained estimates.
+### Home heating
 
-- Accepted Home heating schedules survive missing inputs, restart and learning
-  rebuilds. Stopping preheat at the predicted limit of heat already delivered
-  preserves the planned reduction. Bounded background comparisons can shorten
-  and move remaining preheat to a cheaper suitable window; an economic exit
-  requires evidence that stopping, including recovery, costs less. Missing
-  assessment evidence and trial budget overruns do not discard accepted execution.
-  The dashboard also allows the planner view to finish within its existing
-  background calculation deadline.
+- Home starts with calibrated thermal defaults and initial estimates of how the
+  equipment responds. It can plan preheat, reduction and recovery while it
+  learns from local observations. The planner shows which estimates have local
+  support, the current normal indoor reference, the occupied limits and the
+  alternatives it evaluated.
+- Admins can approve one reviewed cycle while automatic Home heating is paused
+  or disabled. The approval belongs to that cycle and equipment. Configured
+  comfort limits apply from startup. Native protection, independent manual
+  holds and restoration requirements still apply.
+- Automatic learning trials follow heating demand and a complete-cycle cost
+  allowance. The Finnish-day limit counts attempts, including interrupted
+  trials, with a default maximum of four. A further automatic trial requires
+  one continuous observed Normal hour after the preceding cycle. Supported
+  temperature-only gaps of up to 30 minutes can retain cycle evidence.
+- Accepted cycles retain their original window through restart, missing inputs
+  and model reconstruction. When already delivered heat reaches the predicted
+  preheat limit, the planner can end preheat and retain the planned reduction.
+  Cheaper continuation or early exit must account for settings restoration,
+  recovery and remaining heat debt.
+- H66 reduction and its recovery hold cap the native hot-water start setting
+  at 45 °C or the saved normal setting if lower. Floor control reports renewal
+  and release outcomes separately from current GPIO feedback. Sonoff status
+  reads and releases allow ten seconds for replies, with a separate 1.8-second
+  activation window.
 
-- Thermal equipment assumptions preserve the occupied temperature reference and
-  room measurement continuity. Changing them no longer starts sensor settling.
-  The heating planner shows the actual normal reference separately from the
-  allowed drop, distinguishes initial estimates from observed support, and
-  reports available economic alternatives despite rejecting other candidates.
+### EV charging
 
-- Home starts with shared calibrated thermal coefficients and explicit initial
-  native-response estimates, and can plan
-  preheating, peak reduction and recovery before new training episodes exist.
-  The defaults are fitted using data from a real installation and adapt as new
-  observations arrive. Initial estimates do not claim installed validation.
-  Cheap informative trials include preheat from startup and can
-  continue beyond the daily priority target after recovery. Manual treatments and
-  paused observations contribute to continuous learning. Configured comfort limits
-  apply immediately, without a separate startup cap or learning cooldown. Explicit
-  manual-planner approval can relax cycle policy and operate while Home automatic
-  control is paused or disabled, preserving defaults and independent manual holds.
-  Causal reserve
-  initialization and weighted genuine sensor updates avoid discarding sparse
-  useful evidence. The Home learning algorithm changes; incompatible development
-  journals still reject before mutation, with no automatic database conversion.
+- Charging edits now go through guarded schedule adoption, including ready-by
+  changes that leave the cheapest periods unchanged. If a replacement is
+  unconfirmed, the dashboard keeps the last accepted schedule with an explanation.
+  One-day allowance details identify each charger's cost effect and retain the
+  previous estimate when refresh fails.
+- Easee local OCPP uses scoped automatic Start authorization and preserves an
+  independent Start while economic scheduling updates. Bounded startup and
+  session diagnostics show where connection and authorization are waiting.
+- Shelly EVSE recovery reconciles a confirmed same-device reboot with saved
+  session intent under the documented conditions. Session reports retain
+  correlated timeouts, late replies and reboot evidence. Native reads and
+  commands allow ten seconds for replies. Current-sharing and status displays
+  distinguish permission holds, electrical headroom and binding allocation.
+- The charging chart shows per-charger highest-phase current and clearer
+  allowance lines. Property energy checks disclose likely thousandfold Equalizer
+  unit conversions and show the original meter increase alongside the comparison.
 
-- Heating learning trials follow observed space-heating cycles and forecast
-  demand instead of a fixed half-hour initial ceiling. The controller seeks four
-  useful daily opportunities by default and reports actual attempts separately
-  from completed cycles and accepted learning. Trial allowances screen additional
-  cycle cost, including recovery, rather than hypothetical full-rated recovery
-  consumption; native AUX restrictions and negative-price exposure remain applied.
+### Garage and operation
 
-- Live integrations use `controller.input: providers`, including configured MQTT
-  devices and H66. The redundant `mqtt` input value is rejected; database schemas
-  and saved-state namespaces are unchanged.
+- Meross MSG200 doors support signed local contact reports and Open/Close over
+  MQTT. A pair can provide a shared TLS MQTT endpoint. Fresh contacts confirm
+  the resulting open or closed state, and a missed state query gets one bounded
+  read retry. Movement is estimated from reports.
+- Garage heating shows current native confirmation independently of an earlier
+  command receipt. Its equipment fold keeps the scroll position on phones.
+- Paired dashboards use master and slave consistently. Event history resumes
+  after browser suspension, and late chart warming results cannot restore
+  the status of an earlier configuration.
+- Runtime logs show timestamped startup and role summaries and summarize
+  repeated failures. Optional debug detail includes bounded OCPP startup phases.
 
-- HA and Linux runtime logs show timestamped startup and role summaries, with
-  bounded repeated-failure counts. Detailed OCPP startup traces require the
-  optional debug log detail.
+### Installation and compatibility
 
-- Charging session edits reassess the joint schedule while charging. Ordinary
-  ready-by edits reach the controller, including when the cheapest periods stay
-  unchanged, and unconfirmed replacements keep an explanation beside the last
-  accepted schedule.
-
-- Automatic heating updates wait for an executor-owned expiry or restoration
-  without recording a command failure or cancelling the current learning cycle.
-
-- Charger 2 limiting reasons distinguish electrical headroom from a tighter
-  shared allocation after current-step rounding, with the same treatment for
-  native and vehicle limits. A known charger-permission hold remains visible
-  alongside these limits instead of appearing as a pending charger confirmation;
-  genuine command uncertainty and restoration warnings retain priority.
-
-- Session-owned RPC diagnostics show their retained report's data context,
-  including an explicit Simulation label for simulated transport evidence.
-
-- Malformed Shelly RPC outcomes cannot acknowledge commands, cancel reply
-  deadlines or consume late-reply diagnostics.
-
-- Floor renewal failures retain their specific cause after safe release and show
-  it in Home independently of current GPIO readiness and restoration duties.
-
-- Sonoff floor status reads and releases allow ten seconds for replies. The
-  unchanged 1.8-second activation window has a distinct failure message in floor
-  controls and Home heating diagnostics, preserving uncertain release duties.
-
-- Charger 2 session reports retain reply timeouts and late replies with timing
-  and original-session context. Shelly reads and commands allow ten seconds for
-  replies, reducing false timeouts during slow responses. Charging-control
-  confirmation rules remain unchanged.
-
-- Meross MSG200 garage doors support signed local MQTT contact reports and
-  Open/Close controls. Paired installations can expose a shared TLS MQTT endpoint.
-  Door recording preserves delayed source-clock admission and the configured
-  contact-report deadline without changing earlier history.
-- Fresh native door contacts confirm Open/Close receipts in the dashboard.
-  A missed native state query gets one bounded read-only retry; movement requests
-  remain single attempts.
-
-- Background worker shutdown cancels late startup storage waits, preventing a
-  chart cancellation race from hanging shutdown.
-
-- Opening Garage’s Sensors & More equipment fold on a phone keeps the current
-  scroll position.
-
-- Ubuntu and Home Assistant default to Node 26 LTS (26.13.0). Main validation
-  uses Node 26; Node 22 remains deprecated with maintained Ubuntu and HA
-  compatibility suites. Node 24 application testing and support are removed.
-- Late chart-warming responses no longer restore cache status from an earlier
-  configuration after cache settings change.
+- Ubuntu setup and the HA container default to Node 26.13 LTS. Node 22.19+
+  within major 22 remains deprecated with maintained compatibility checks.
+- Select Live integrations with `controller.input: providers` for configured
+  MQTT devices, H66 and other providers. The retired `mqtt` input value is
+  rejected. MQTT broker and equipment configuration remain supported.
+- Published 0.9.5 uses SQLite schema 36 and 1.0.0 uses schema 37 with an updated
+  learning algorithm. Review the [installation transition](docs/startup.md#moving-from-an-earlier-version)
+  before replacing a controller. Keep original backups and select a fresh
+  database only if needed. The supported 0.7.5 CSV import remains available.
 
 ## 0.9.5 — 2026-10-29
 

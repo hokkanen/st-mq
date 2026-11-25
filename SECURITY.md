@@ -16,10 +16,10 @@ using synthetic data. No response-time guarantee is currently offered.
 
 ## Supported versions and deployment
 
-Security fixes target the current 0.9.5 release. Older 0.7.5 runtime installations
-are not maintained by the CSV import support.
-There is no promise of compatibility with earlier development databases or
-configuration formats.
+Security fixes target the [current stable release](https://github.com/hokkanen/st-mq/releases/latest).
+Support for 0.7.5 CSV import covers the files only. The
+[production upgrade policy](docs/pairing.md#software-upgrades) starts at the
+actual 1.0.0 release.
 
 Use the application's HTTPS listener for remote direct access. Configure the
 admin/family passwords as described in the

@@ -63,24 +63,28 @@ The normal server serves the completed UI build.
 
 ## Moving from an earlier version
 
-To install the published 0.9.5 release in a separate checkout, select its tag
-explicitly:
+To install a [published release](https://github.com/hokkanen/st-mq/releases) in
+a separate checkout, replace `vVERSION` with its tag:
 
 ```sh
-git clone --branch v0.9.5 https://github.com/hokkanen/st-mq.git st-mq-0.9.5
-cd st-mq-0.9.5
+git clone --branch vVERSION https://github.com/hokkanen/st-mq.git st-mq-release
+cd st-mq-release
 npm ci
 npm run build
 ```
 
 Keep existing installation configuration, databases and original CSV exports
-outside this checkout. The current version accepts only its current configuration
-and database formats; it does not translate 0.7.5 settings or migrate earlier
-development databases. Review [configuration](configuration.md), select a fresh
-database directory explicitly when needed, and use [CSV import](csv-import.md)
-only for the two supported 0.7.5 exports. Incompatible databases remain unchanged.
-Current-format backup/restore and restart remain supported. Once a compatible
-fresh database is running, **Recording details → History recovery → Review history** can inspect
+outside this checkout. For the 1.0.0 transition, published `v0.9.5` uses SQLite
+schema 36 and 1.0.0 uses schema 37. SQLite schema and the recorded learning
+algorithm determine compatibility independently of the version displayed by a
+private build. Incompatible databases are rejected before mutation. Review the
+[current configuration](configuration.md) and select a fresh database directory
+explicitly if you have no compatible backup. The optional [CSV import](csv-import.md)
+accepts the two original 0.7.5 export formats. For upgrades between production
+releases beginning with 1.0.0, read the target release's
+[upgrade procedure](pairing.md#software-upgrades).
+
+Once a compatible database is running, **Recording details → History recovery → Review history** can inspect
 current-format SQLite backups and recover missing history without restoring old
 configuration or actuation permission. It cannot import incompatible development
 schemas. Pairing reset archives preserve original files and, when their databases

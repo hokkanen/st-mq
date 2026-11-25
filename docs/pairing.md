@@ -726,29 +726,34 @@ For a release pair that explicitly supports a rolling upgrade:
    it returns as a slave and catches up without manual history recovery. Confirm
    synchronization before considering the upgrade complete.
 
-The current pre-v1.0.0 runtime rejects incompatible development databases and
-learning journals. This sequence does not promise mixed-version operation today;
-follow each release's requirements, including a deliberate stopped upgrade or
-archived fresh development start when required. An incompatible format is not
-evidence of corruption or divergent history. Preserve originals and resolve the
-reported compatibility problem; repeated checks cannot translate old formats.
+The 1.0.0 runtime rejects incompatible development databases and learning
+journals before mutation. Follow the
+[1.0.0 installation transition](startup.md#moving-from-an-earlier-version)
+from older builds. An incompatible format can be intact. Preserve the originals
+and resolve the compatibility problem before trying to synchronize or hand over.
 
 The owner approved the lasting [F9 upgrade policy](../AGENTS.md#f9) on 2026-10-07.
 Beginning with the actual v1.0.0 production baseline, each later production release
-provides and tests its specific upgrade from the preceding production database
-and persisted state. Unchanged formats need no conversion. Preserve source data
-until success, historical meaning, pairing roles, equipment identity and restoration
-duties. Learning changes explicitly retain/rebuild supported evidence or identify
-a new learning epoch; they never silently reinterpret or discard history.
+provides and tests a path from the preceding production release, including its
+recorded history, backups, saved configuration and persisted state. Open unchanged
+formats directly. When conversion is needed, prefer a documented, release-specific
+offline tool or procedure that works from a verified copy. Keep the original
+database, settings and pairing state intact until verification and retain them
+for recovery. The controller continues to use one current runtime format.
 
-Older production backups retain a documented, tested path through necessary
-intermediate releases. This is a release obligation, not a universal old-database
-reader, parallel internal schemas or speculative migration framework. Unknown
-format variants are not guessed, and unsupported development databases gain no
-compatibility promise. Each release tests its supported slave-first sequence or
-identifies coordinated stopped activation before the master relinquishes control.
-Successful transfer alone is not cross-version control readiness; incompatibility
-fences remain binding. Copying a database never transfers command permission.
+Verify historical meaning, installation settings, equipment identity, pairing
+roles and outstanding restoration duties before returning to live operation.
+Learning changes explicitly retain or rebuild supported evidence or identify a
+new learning epoch. Older production backups follow documented, tested
+intermediate releases. Unsupported development inputs keep their existing
+rejection rules.
+
+Each release documents and tests either slave-first handover or a coordinated
+stop and restart, along with the recovery path if the update fails. Mixed-version
+handover and downgrade require explicit qualification. Document what recovery
+can retain if the new build has already written data. Successful transfer alone
+does not establish cross-version control readiness. Copying a database never
+transfers command permission.
 
 ## Reset pairing
 

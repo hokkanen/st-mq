@@ -82,7 +82,7 @@ or **Received** timestamp. Receipt time is not measurement time. Open the readin
 information for the full date and any unavailable measurement time; compact dates
 include the year when it differs from the dashboard's current local year.
 
-Type ready-by as **HH:mm**, or use **Choose time → Set** and then **Save for this
+Type ready-by as **HH:mm**, or use **Choose ready-by time → Set** and then **Save for this
 session**. The deadline becomes one concrete occurrence for this connection;
 midnight, identification, replanning and restart do not roll it forward.
 A deliberate ready-by edit may change it. Drafts survive ordinary status refreshes,

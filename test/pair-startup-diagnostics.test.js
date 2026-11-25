@@ -187,7 +187,7 @@ test('schema diagnostics expose only numeric versions and fixed recovery guidanc
   assert.equal(diagnostic.reason, 'database_schema_mismatch');
   assert.equal(diagnostic.actualSchema, SCHEMA_VERSION - 1);
   assert.equal(diagnostic.requiredSchema, SCHEMA_VERSION);
-  assert.match(diagnostic.guidance, /fresh development databases and pairing storage/);
+  assert.match(diagnostic.guidance, /Preserve the existing files.*compatible backup.*Reset pairing → Start fresh/);
   assert.doesNotMatch(JSON.stringify(diagnostic), /private|household/);
   const invalid = startupFailureDiagnostic({ ...error, actualSchema: 'private', requiredSchema: Infinity }, 'runtime_failed');
   assert.equal(Object.hasOwn(invalid, 'actualSchema'), false);

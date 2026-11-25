@@ -578,10 +578,9 @@ physical floor model requires an ON/OFF mode. Unknown and partial output remains
 recorded and cannot admit a new learning trial whose complete stored-heat
 assessment would be unavailable. A previously admitted trial retains its intent
 and last valid planning assumptions when observation feeds become unavailable. An installation without floor equipment gains
-no additional observation prerequisite. The controller
-seeks four useful trial opportunities per Finnish day by default, prioritizing
-learning before that target. This is an objective, not a promise to act through a
-blocked condition. Configured reduction ceilings also bound initial trials;
+no additional observation prerequisite. The controller can prioritize useful
+trials within the configured daily attempt limit and the same readiness, comfort
+and cost constraints. Configured reduction ceilings also bound initial trials;
 there is no fixed half-hour bootstrap ceiling. A bounded summary of the last
 48 hours of committed Normal space-heating coverage supplies typical runs and
 demand, excluding DHW, gaps, interventions and meaningful fireplace heat. Forecast
