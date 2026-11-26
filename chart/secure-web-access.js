@@ -324,8 +324,10 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
   const dns = state.dns ?? {};
   const dnsText = { not_configured: 'Check not configured', ready: 'Reported address matches', mismatch: 'Address does not match',
     unavailable: 'Check unavailable', address_confirmation_required: 'Address needs confirmation' }[dns.state] ?? 'Not checked';
+  const dnsChecked = dns.state !== 'not_configured' && dns.checkedAt != null;
   const retainedRenewal = admin && state.pair?.localOwner === true && state.pair.peerRenewalRequired === true;
   const peerOwner = state.pair?.ownerId && state.pair.localOwner === false;
+  const helperManagementAvailable = admin && !peerOwner;
   const remoteUnavailable = admin && !peerOwner && state.remoteAccess?.state === 'unavailable' && (state.enabled === true || retainedRenewal);
   const savedSetup = Boolean(state.pair?.ownerId || state.updates?.installed || state.certificate)
     && !(state.pair?.paired === true && !state.pair.ownerId);
@@ -392,14 +394,14 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
       || ['degraded', 'repair_required', 'certificate_settings_required'].includes(state.phase)
       || state.phase === 'authorization_required' && !authorizationUrl),
     accountLinks: admin && !peerOwner && ['approval_or_connection_pending', 'certificate_settings_required'].includes(state.phase),
-    dnsText: `${dnsText}${dns.checkedAt ? ` · ${date(dns.checkedAt)}` : ''}`,
+    dnsText: dnsChecked ? `${dnsText} · ${date(dns.checkedAt)}` : dnsText,
     networkNotice: localDestination ? 'This loopback destination cannot provide household access. Confirm the reserved server LAN address or shared pair VIP.' : '',
     dnsHelp: hostname ? 'Certificate issuance does not require router DNS changes. A successful check on this computer does not verify other household devices.'
       : 'Certificate issuance can be completed before configuring household DNS.',
     dnsResolver: admin ? ipv4(dns.resolver) ?? 'Not configured' : '',
     expectedAddress: expectedAddress ? `${expectedAddress}${localDestination ? ' · this computer only' : ''}` : 'Confirm the reserved LAN IPv4 address',
-    dnsA: admin ? Array.isArray(dns.a) && dns.a.length ? dns.a.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
-    dnsAAAA: admin ? Array.isArray(dns.aaaa) && dns.aaaa.length ? dns.aaaa.join(', ') : dns.checkedAt && dns.state !== 'not_configured' && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
+    dnsA: admin ? Array.isArray(dns.a) && dns.a.length ? dns.a.join(', ') : dnsChecked && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
+    dnsAAAA: admin ? Array.isArray(dns.aaaa) && dns.aaaa.length ? dns.aaaa.join(', ') : dnsChecked && dns.state !== 'unavailable' ? 'No answers' : 'Not checked' : '',
     hostsEntry: hostname && householdAddress ? `${householdAddress} ${hostname}` : '',
     curlCommand: url && householdAddress ? `curl --resolve '${hostname}:${new URL(url).port || '443'}:${householdAddress}' '${url}'` : '',
     browserInstructions: !admin ? '' : 'Configure the hostname mapping and check the connection in Household DNS & recovery. Open the full HTTPS address on each intended device and sign in normally; a new address has its own browser session.',
@@ -426,16 +428,16 @@ export function secureWebAccessView(state = {}, { admin = false, now = Date.now(
     latest: admin ? state.updates?.latest ?? 'Not checked' : null,
     checked: admin ? checkClockKnown ? date(state.updates.lastSuccessfulCheck) : 'Not checked' : null,
     policy: state.updates?.policy === 'manual' ? 'manual' : 'automatic',
-    updateAvailable: admin && !peerOwner && newerRelease,
-    releaseSummary: admin ? !state.updates?.installed ? 'Set up HTTPS to install the tested helper release.'
+    updateAvailable: helperManagementAvailable && newerRelease,
+    releaseSummary: helperManagementAvailable ? !state.updates?.installed ? 'Set up HTTPS to install the tested helper release.'
       : newerRelease ? 'A newer eligible release is available.' : checkedRelease === 0 ? checkClockKnown
         ? 'Up to date with the last checked release.' : 'Installed and observed release match; check time unknown.'
       : checkedRelease === -1 ? checkClockKnown
         ? 'The installed helper is newer than the last checked release.'
         : 'The installed helper is newer than the observed release; check time unknown.'
       : 'Check releases to compare the installed helper with the current supported release.' : '',
-    updatePolicyAvailable: admin && !peerOwner,
-    updateSummary: peerOwner ? 'Certificate helper updates are managed on the paired certificate-owner computer.'
+    helperManagementAvailable,
+    updateSummary: peerOwner ? 'Certificate renewal and helper updates are managed on the paired certificate-owner computer.'
       : state.updates?.policy === 'manual' ? 'Signed stable releases wait for explicit installation approval.'
       : 'Signed stable releases are checked and installed automatically. Existing HTTPS can keep using a valid stored certificate after a helper update fails; some helper failures require repair.',
     restoreIdentity: admin && errorCode === 'identity_restore_required',
@@ -493,6 +495,7 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     const available = admin && !pending && !view.busy && !readFailure && Object.hasOwn(phases, state.phase);
     for (const action of ['enable', 'recheck', 'retry', 'disable', 'check-updates', 'update-now', 'restore-identity', 'reauthorize-pair'])
       $(`secure-web-access-${action}`).disabled = !available || action === 'update-now' && !view.updateAvailable
+        || action === 'check-updates' && !view.helperManagementAvailable
         || action === 'enable' && !view.setupAvailable;
     $('secure-web-access-restore-identity').hidden = !view.restoreIdentity;
     $('secure-web-access-restore-identity').disabled = !available || !view.restoreIdentity;
@@ -522,7 +525,9 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     setText('secure-web-access-enable', view.enableLabel);
     $('secure-web-access-disable').hidden = !view.enabled;
     $('secure-web-access-retry').hidden = !view.retryAvailable || view.restoreIdentity;
-    $('secure-web-access-update-policy').disabled = !available || !view.updatePolicyAvailable;
+    $('secure-web-access-update-groups').hidden = !view.helperManagementAvailable;
+    $('secure-web-access-update-controls').hidden = !view.helperManagementAvailable;
+    $('secure-web-access-update-policy').disabled = !available || !view.helperManagementAvailable;
     $('secure-web-access-update-now').hidden = !view.updateAvailable;
     $('secure-web-access-owner-select').disabled = !available || !view.pairSetup;
     const policy = policyDraft ?? view.policy;
@@ -609,7 +614,8 @@ export function createSecureWebAccessPanel({ document, request, getAccess = () =
     if (actionView.busy) return false;
     if (action === 'enable' && !actionView.setupAvailable) return false;
     if (action === 'recheck' && !actionView.recheckAvailable) return false;
-    if (action === 'update-now' && !actionView.updateAvailable || action === 'set-update-policy' && !actionView.updatePolicyAvailable) return false;
+    if (action === 'update-now' && !actionView.updateAvailable
+        || ['check-updates', 'set-update-policy'].includes(action) && !actionView.helperManagementAvailable) return false;
     if (action === 'restore-identity' && !secureWebAccessView(state, { admin: true }).restoreIdentity) return false;
     if (action === 'reauthorize-pair' && !actionView.pairReauthorization) return false;
     if (action === 'start-fresh' && (!actionView.fresh || !recoverySession())) return false;

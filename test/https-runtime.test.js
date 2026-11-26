@@ -688,8 +688,10 @@ test('explicit setup installs only its helper, activates validated certificate, 
   const operation = await manager.action({ action: 'enable' }); assert.ok(operation.id);
   const view = await settled(t, manager);
   assert.equal(view.phase, 'ready'); assert.equal(view.hostname, hostname); assert.equal(view.certificate.generation, 1);
+  assert.equal(view.dns.state, 'not_configured'); assert.equal(view.dns.checkedAt, null);
   assert.equal(calls.install, 1); assert.equal(calls.helperStart, 1); assert.equal(calls.certificate, 1);
   await manager.action({ action: 'recheck' }); await settled(t, manager);
+  assert.equal(manager.status().dns.checkedAt, null, 'Recheck does not timestamp a skipped lookup');
   assert.equal(calls.install, 1); assert.equal(calls.certificate, 1, 'Rechecks do not force issuance');
   const family = manager.status({ admin: false }); assert.equal(family.enabled, true); assert.equal('hostname' in family, false); assert.equal('helper' in family, false); assert.equal('operation' in family, false);
   for (const field of ['environment', 'setup', 'dns']) assert.equal(field in family, false);
@@ -842,6 +844,7 @@ test('LAN DNS checks retain address evidence and do not conflate TLS readiness w
     config.web.httpsHost = scenario.host ?? '192.0.2.44'; config.web.lanResolver = '192.0.2.53';
     await manager.action({ action: 'enable' }); const view = await settled(t, manager);
     assert.equal(view.phase, 'ready'); assert.equal(view.dns.state, scenario.expected);
+    assert(Number.isFinite(view.dns.checkedAt), 'Attempted queries have an observation time');
     assert.deepEqual(view.dns.a, scenario.a instanceof Error ? [] : scenario.a);
     assert.deepEqual(view.dns.aaaa, scenario.aaaa instanceof Error ? [] : scenario.aaaa);
     assert.deepEqual(queries, [['A', hostname], ['AAAA', hostname]]);

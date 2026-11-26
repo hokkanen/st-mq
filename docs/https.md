@@ -350,6 +350,9 @@ version, latest observed candidate, and failed/stale checks. The updater manages
 only this private helper; it does not update host Tailscale, Node, dependencies,
 Home Assistant, ST-MQ or router firmware.
 
+The paired certificate owner shows local helper details and update controls.
+The receiving computer shows where certificate renewal and helper updates are managed.
+
 **Local certificate helper** groups the installed version, reported node-key expiry
 and vendor security-update status in consistent label/value rows. **Release checks**
 groups the tested setup version, latest observed release and last successful check.

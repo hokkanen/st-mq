@@ -352,7 +352,7 @@ export function createHttpsManager({ getConfig, onCertificate, onDisable = async
   }
   async function checkDns() {
     const resolverAddress = config().web?.lanResolver;
-    if (!state.hostname || !resolverAddress) { dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: clock() }; return; }
+    if (!state.hostname || !resolverAddress) { dns = { state: 'not_configured', a: [], aaaa: [], checkedAt: null }; return; }
     if (!isIPv4(resolverAddress)) throw httpsError('lan_resolver_invalid');
     const resolver = (dependencies.createResolver ?? (options => new Resolver(options)))({ timeout: 3000, tries: 1 }); resolver.setServers([resolverAddress]);
     const results = await Promise.allSettled([resolver.resolve4(state.hostname), resolver.resolve6(state.hostname)]);

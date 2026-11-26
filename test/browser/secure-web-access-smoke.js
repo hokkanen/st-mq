@@ -349,7 +349,7 @@ try {
   await until("/HTTPS ready/.test(document.getElementById('secure-web-access-state').textContent)");
   await evaluate("document.getElementById('secure-web-access-network-details').open=true;document.getElementById('secure-web-access-update-details').open=true;true");
   assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'HTTPS ready · DNS not verified');
-  assert.match(await evaluate("document.getElementById('secure-web-access-dns').textContent"), /Check not configured/);
+  assert.equal(await evaluate("document.getElementById('secure-web-access-dns').textContent"), 'Check not configured');
   assert.equal(await evaluate("document.getElementById('secure-web-access-https').textContent"), 'Listening · port 8443');
   assert.equal(await evaluate("document.getElementById('secure-web-access-hosts-entry').textContent"), `192.0.2.50 ${hostname}`);
   assert.equal(await evaluate("document.getElementById('secure-web-access-curl-command').textContent"), `curl --resolve '${hostname}:8443:192.0.2.50' 'https://${hostname}:8443/'`);
@@ -515,7 +515,7 @@ try {
           await writeFile(join(screenshots, `${name}-full-fold-${theme}-${width}.png`), Buffer.from(full.data, 'base64'));
         }
       }
-      if (details) {
+      if (details && !await evaluate("document.getElementById('secure-web-access-update-groups').hidden")) {
         const facts = await evaluate(`(()=>{
           const groups=document.querySelector('.secure-web-access-update-groups');
           return {groups:groups.getBoundingClientRect().toJSON(),rows:[...groups.querySelectorAll('dl > div')].map(row=>{
@@ -565,6 +565,8 @@ try {
       operation: { id: '11111111-1111-4111-8111-111111111111', action, state: 'running', stage: 'starting',
         startedAt: Date.parse('2026-10-14T12:00:00Z'), completedAt: null, error: null } }]),
     ['remote-configured', { ...readyFixture, remoteAccess: { state: 'configured' } }],
+    ['ready-peer-owner', { ...readyFixture, helper: originalFixture.helper, updates: originalFixture.updates,
+      pair: { paired: true, ownerId: 'synthetic-peer', localOwner: false } }],
     ['background-maintenance', { ...readyFixture, busy: true, operation: { action: 'recheck', state: 'completed', completedAt: Date.parse('2026-10-14T11:59:59Z'), error: null } }],
     ['remote-unavailable', { ...readyFixture, phase: 'ready', error: 'helper_remote_forwarding_unavailable', remoteAccess: { state: 'unavailable' } }],
     ['disabled-pair', originalFixture],
@@ -613,6 +615,15 @@ try {
         recovery: { kind: 'paired-setup', fresh: { token: 'fixture-peer-prerequisite' }, error } }]),
   ]) {
     installFixture(changes); await evaluate('webBrowser.panel.refresh({force:true})');
+    if (name === 'ready-peer-owner') {
+      await evaluate("document.getElementById('secure-web-access-update-details').open=true;true");
+      assert.equal(await evaluate("document.getElementById('secure-web-access-https').textContent"), 'Listening · port 8443');
+      assert.equal(await evaluate("document.getElementById('secure-web-access-update-summary').checkVisibility()"), true);
+      assert.match(await evaluate("document.getElementById('secure-web-access-update-summary').textContent"), /renewal and helper updates.*paired certificate-owner/);
+      for (const id of ['update-groups', 'update-controls', 'check-updates']) {
+        assert.equal(await evaluate(`document.getElementById('secure-web-access-${id}').checkVisibility()`), false);
+      }
+    }
     if (name === 'pair-reauthorization') {
       assert.equal(await evaluate("document.getElementById('secure-web-access-reauthorize-pair').hidden"), false);
       assert.equal(await evaluate("document.getElementById('secure-web-access-retry').hidden"), true);
@@ -741,7 +752,7 @@ try {
     if (name==='password-required') assert.equal(await evaluate("document.getElementById('secure-web-access-enable').disabled"), true);
     if (name==='expired-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-state').textContent"), 'HTTPS unavailable');
     if (name==='peer-certificate') assert.equal(await evaluate("document.getElementById('secure-web-access-authorize').hasAttribute('href')"), false);
-    await captureLayout(name,{details:['current-release','retained-urgent','unknown-destination','loopback-destination','custom-ports','default-port','long-hostname'].includes(name)});
+    await captureLayout(name,{details:['ready-peer-owner','current-release','retained-urgent','unknown-destination','loopback-destination','custom-ports','default-port','long-hostname'].includes(name)});
   }
   installFixture({ ...readyFixture, phase: 'degraded', error: 'helper_authorization_start_failed' });
   await evaluate('webBrowser.panel.refresh({force:true})');

@@ -156,9 +156,13 @@ test('ready wording requires current certificate and listener evidence, includin
 });
 
 test('setup without router DNS reaches local HTTPS and gives temporary certificate-checked testing instructions', () => {
-  const view = secureWebAccessView({ ...ready, dns: { state: 'not_configured', resolver: null, expectedAddress: '192.0.2.1' } }, { admin: true });
+  const view = secureWebAccessView({ ...ready, dns: { state: 'not_configured', checkedAt: ready.dns.checkedAt, resolver: null, expectedAddress: '192.0.2.1' } }, { admin: true });
   assert.equal(view.label, 'HTTPS ready · DNS not verified');
   assert.equal(view.dnsText, 'Check not configured');
+  assert.equal(view.dnsA, 'Not checked'); assert.equal(view.dnsAAAA, 'Not checked');
+  const verified = secureWebAccessView(ready, { admin: true });
+  assert.match(verified.dnsText, /^Reported address matches · 14 Oct 2026/);
+  assert.equal(verified.dnsAAAA, 'No answers');
   assert.match(view.summary, /listener is running.*DNS has not been verified/);
   assert.match(view.addressHelp, /household DNS.*same Tailscale network/);
   assert.equal(view.next, null);
@@ -752,26 +756,40 @@ test('identity restoration discards a confirmation when refreshed evidence alrea
   assert.deepEqual(writes, [], 'An obsolete identity recovery confirmation sends no operation');
 });
 
-test('helper installation requires setup and stays on the certificate owner while release inspection remains available', async () => {
+test('helper setup advice and update controls belong to the computer that manages the helper', async () => {
   const unconfigured = { ...ready, enabled: false, phase: 'disabled', helper: {},
     updates: { policy: 'manual', installed: null, candidate: '1.104.2' } };
   assert.equal(secureWebAccessView(unconfigured, { admin: true }).updateAvailable, false);
+  assert.match(secureWebAccessView(unconfigured, { admin: true }).releaseSummary, /Set up HTTPS/);
   assert.equal(secureWebAccessView({ ...unconfigured, enabled: true }, { admin: true }).updateAvailable, false, 'Set up HTTPS owns initial installation');
   assert.equal(secureWebAccessView({ ...unconfigured, updates: { ...unconfigured.updates, installed: '1.104.1' } }, { admin: true }).updateAvailable, true);
-  const peer = { ...ready, pair: { paired: true, ownerId: 'synthetic-peer-owner', localOwner: false } };
+  const peer = { ...ready, helper: {}, updates: unconfigured.updates,
+    pair: { paired: true, ownerId: 'synthetic-peer-owner', localOwner: false } };
   const view = secureWebAccessView(peer, { admin: true });
-  assert.equal(view.updateAvailable, false); assert.equal(view.updatePolicyAvailable, false);
+  assert.equal(view.updateAvailable, false); assert.equal(view.helperManagementAvailable, false);
+  assert.equal(view.releaseSummary, '');
   assert.match(view.updateSummary, /managed on the paired certificate-owner/);
   const { document, nodes } = fixture(), writes = [];
+  let source = peer;
   const panel = createSecureWebAccessPanel({ document, getAccess: () => admin, request: async (_path, body) => {
-    if (body) { writes.push(body); peer.operation = operationReply(body.action, 'completed'); return structuredClone(peer.operation); }
-    return structuredClone(peer);
+    if (body) { writes.push(body); source.operation = operationReply(body.action, 'completed'); return structuredClone(source.operation); }
+    return structuredClone(source);
   } });
   await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-update-groups').hidden, true);
+  assert.equal(nodes.get('secure-web-access-update-controls').hidden, true);
+  assert.equal(nodes.get('secure-web-access-check-updates').disabled, true);
   assert.equal(nodes.get('secure-web-access-update-now').disabled, true);
   assert.equal(nodes.get('secure-web-access-update-policy').disabled, true);
   assert.equal(await panel.run('update-now'), false);
   assert.equal(await panel.run('set-update-policy', { policy: 'automatic' }), false);
+  assert.equal(await panel.run('check-updates'), false);
+  assert.deepEqual(writes, []);
+  source = { ...ready, pair: { paired: true, ownerId: 'synthetic-local-owner', localOwner: true } };
+  await panel.refresh({ force: true });
+  assert.equal(nodes.get('secure-web-access-update-groups').hidden, false);
+  assert.equal(nodes.get('secure-web-access-update-controls').hidden, false);
+  assert.equal(nodes.get('secure-web-access-check-updates').disabled, false);
   await panel.run('check-updates');
   assert.deepEqual(writes, [{ action: 'check-updates' }]);
   assert.match(secureWebAccessView({ ...peer, error: 'https_setup_required' }, { admin: true }).error, /Set up HTTPS/);
