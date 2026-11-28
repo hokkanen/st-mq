@@ -11,13 +11,13 @@ import { LiveLearning } from '../src/app/live-learning.js';
 import { assessCycle, rebuildCycleWorking } from '../src/app/cycle-evaluation.js';
 
 const START = Date.parse('2026-01-01T00:00:00Z'), HOUR = 3600000;
-function fixture(t,{file=false,reductionHours=72,equipment={nativeAuxAllowed:false},floor=false,preheatMinutes=0}={}) {
+function fixture(t,{file=false,reductionHours=72,equipment={nativeAuxAllowed:false},floor=false,preheatMinutes=0,integral}={}) {
   const directory = file ? mkdtempSync(join(tmpdir(),'stmq-cycle-evidence-')) : null;
   const store = new Store(file ? join(directory,'synthetic.sqlite') : ':memory:');
   t.after(async()=>{await store.close();if(directory)rmSync(directory,{recursive:true,force:true});});
   const tracker = new CycleTracker({store,input:'synthetic',config:{recoveryTimeoutHours:8}});
   const model = initialAdaptiveModel(floor?{floorThermalPriors:{capacityKwhPerC:2}}:{});
-  const plan = {model,initialState:{indoorC:21,reserveC:21,...(floor?{slabC:21}:{})},targetC:21,reference:null,
+  const plan = {model,initialState:{indoorC:21,reserveC:21,...(floor?{slabC:21}:{}),...(integral===undefined?{}:{integral})},targetC:21,reference:null,
     referenceLabel:'continuous normal operation',occupancy:{mode:'occupied'},maxDropC:1,
     intervals:[{start:START,end:START+HOUR,outdoorC:21,solarRadiationWm2:0,price:0}],
     equipment,
@@ -169,6 +169,38 @@ test('missing or damaged current working caches rebuild exactly without restarti
     assert.equal(store.db.prepare('SELECT 1 FROM state WHERE key=?').get(key),undefined,'Completed cycles retain no working-cache rows');
     assert.equal([...store.cycleEvidence(before.id)].length,4,'Original source intervals survive cache replacement');
   }
+});
+
+test('reopening a cycle preserves its recovery temperature peak and integral dip', async t => {
+  const { store, tracker } = fixture(t, { file: true, reductionHours: 0.5, integral: -17 });
+  const at = minute => START + minute * 60_000;
+  tracker.record(sample(at(30), { indoorC: 21.25 }), at(30), { equipment: { integral: -77 } });
+  for (const minute of [35, 40, 45]) {
+    tracker.record(sample(at(minute), { indoorC: 21.2 }), at(minute), { equipment: { integral: -80 } });
+  }
+  const path = store.path;
+  await store.close();
+  const reopened = new Store(path);
+  try {
+    const resumed = new CycleTracker({ store: reopened, input: 'synthetic' });
+    assert.equal(resumed.active().stableSince, at(30));
+    assert.deepEqual(resumed.active().recoveryConfirmation, { peakIndoorC: 21.25, integralBelowSince: at(35) });
+    resumed.record(sample(at(50), { indoorC: 21.2 }), at(50), { equipment: { integral: -80 } });
+    assert.equal(resumed.active().stableSince, null);
+  } finally {
+    await reopened.close();
+  }
+});
+
+test('a previously saved confirmation hour needs a qualifying sample under the new rule', t => {
+  const { store, tracker } = fixture(t, { reductionHours: 0.5 });
+  tracker.record(sample(START + HOUR / 2), START + HOUR / 2);
+  const cycle = tracker.active();
+  assert.equal(cycle.stableSince, START + HOUR / 2);
+  delete cycle.recoveryConfirmation;
+  store.cycle('synthetic', cycle);
+  tracker.record(sample(START + HOUR), START + HOUR);
+  assert.equal(tracker.active().stableSince, START + HOUR);
 });
 
 test('an unknown working-cache format rejects writable startup before changing main or WAL bytes',async t=>{

@@ -2,8 +2,31 @@ import { advanceCycleEvaluation, trialCostScenarios } from '../control/planner.j
 import { predictThermalStep, fireplaceEvidenceReady, advanceThermalBounds, MAX_THERMAL_INPUT_GAP_MS } from '../control/adaptive-learning.js';
 import { initialTemperatureCoverage, advanceTemperatureCoverage } from '../domain/temperature-coverage.js';
 import { fireplaceRate, fireplaceAffectsLearning } from '../domain/fireplace.js';
+import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 
 const HOUR = 3600000, number = Number.isFinite;
+const RECOVERY_INTEGRAL_DROP = 60;
+const RECOVERY_INTEGRAL_DWELL_MS = 15 * 60_000;
+const RECOVERY_MAX_COOLING_C = 0.15;
+
+export function recoveryConfirmation(cycle, { now, previousAt, settled, indoorLowerC, integral }) {
+  const previous = cycle.recoveryConfirmation;
+  const initialIntegral = cycle.plan.initialState.integral;
+  const integralLow = number(integral) && number(initialIntegral) && integral < initialIntegral - RECOVERY_INTEGRAL_DROP;
+  const continuingDip = now - previousAt <= H66_MAX_AGE_MS ? previous?.integralBelowSince : null;
+  const integralBelowSince = integralLow ? continuingDip ?? now : null;
+  const sustainedDip = integralBelowSince !== null && now - integralBelowSince >= RECOVERY_INTEGRAL_DWELL_MS;
+  // A cycle created before this rule has no peak for its old confirmation hour.
+  const peak = number(cycle.stableSince) ? previous?.peakIndoorC : null;
+  const cooling = number(peak) && indoorLowerC < peak - RECOVERY_MAX_COOLING_C - 1e-9;
+  const stable = settled && !cooling && !sustainedDip;
+  return {
+    stableSince: stable ? (number(peak) ? cycle.stableSince : now) : null,
+    recoveryConfirmation: { peakIndoorC: stable ? Math.max(peak ?? indoorLowerC, indoorLowerC) : null, integralBelowSince },
+    integralLow,
+  };
+}
+
 export function evaluationInputs(cycle, fireplaceEvents) {
   return { model: cycle.plan.model, initialState: cycle.plan.initialState, targetC: cycle.plan.targetC,
     config: cycle.modelConfig, occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC,

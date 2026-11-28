@@ -1679,10 +1679,6 @@ export class Engine {
       : checkpoint.state ?? initialHomeState(checkpoint.model, sample.indoorC, sample.outdoorC, sample.solarRadiationWm2));
     const cycleWorkingJob = this.cycles.workingJob();
     if (cycleWorkingJob) this.cycles.adoptWorking(yield { kind: 'cycle-working', options: cycleWorkingJob });
-    const priorCycleSample = this.cycles.active()?.lastSample;
-    if (Number.isFinite(priorCycleSample?.indoorC) && Number.isFinite(cycleSample.indoorC) && now > priorCycleSample.timestamp)
-      cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
-    else cycleSample.indoorTrendCPerHour = sample.indoorTrendCPerHour;
     let episode = this.cycles.record(cycleSample, now, { thermalState: this.fireplaceReserveOverride == null
       ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
       equipment: { ...equipment, integral: cycleSample.integral }, controlIndoor: observations.indoorControl });

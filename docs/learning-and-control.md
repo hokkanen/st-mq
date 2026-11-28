@@ -390,6 +390,13 @@ reduction starts, no reduction is recorded or displayed. The later native
 recovery execution keeps its own clock; dispatch latency cannot become a short
 reduction period.
 
+Recovery confirmation requires one qualifying hour. The uncertainty-adjusted
+indoor temperature may fall by up to 0.15 °C from its highest qualifying
+reading during that hour. The heating integral can delay completion while it
+is more than 60 °min below its value at cycle start. It resets the confirmation
+hour after 15 consecutive minutes below that threshold. Missing readings or
+sample gaps longer than the H66 freshness limit break the low-reading streak.
+
 The planner uses the same weighted indoor
 average for prediction, limits and discomfort in every path, including bounded
 trials and recovery. Individual rooms have no automatic veto. An admitted

@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { appendLearningRecord } from './committed-learning.js';
 import { evaluateCyclePair, phaseAt, trialCostScenarios } from '../control/planner.js';
 import { advanceReference, observedState, missingCycleThermalInput, rebuildCycleWorking, assessCycle,
-  initialTrialCostPrefix, advanceTrialCostPrefix } from './cycle-evaluation.js';
+  initialTrialCostPrefix, advanceTrialCostPrefix, recoveryConfirmation } from './cycle-evaluation.js';
 import { fireplaceEpisodeAffected } from './fireplace-inputs.js';
 import { normalOperationHours } from '../control/heating-trials.js';
 import { indoorAvailability, measuredIndoorEndpoint, initialTemperatureCoverage, advanceTemperatureCoverage, temperatureCoverageUsable, TRIAL_TEMPERATURE_GAP_MS } from '../domain/temperature-coverage.js';
@@ -15,8 +15,12 @@ const number = Number.isFinite;
 const dateKey = now => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Helsinki', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(now));
 const mean = rows => rows.length ? rows.reduce((sum, x) => sum + x, 0) / rows.length : null;
 const summary = result => { const { trajectory, ...values } = result ?? {}; return values; };
-const sampleEndpoint = sample => Object.fromEntries(['timestamp','windowStart','windowEnd','phase','indoorC','indoorEstimated','indoorTrendCPerHour',
+const sampleEndpoint = sample => Object.fromEntries(['timestamp','windowStart','windowEnd','phase','indoorC','indoorEstimated',
   'priceCents','priceStart','priceEnd'].filter(key => Object.hasOwn(sample,key)).map(key => [key,sample[key]]));
+function resetRecoveryConfirmation(cycle) {
+  cycle.stableSince = null;
+  delete cycle.recoveryConfirmation;
+}
 
 export class CycleTracker {
   constructor({ store, input, config = {} }) {
@@ -95,7 +99,7 @@ export class CycleTracker {
       const reference = result.reference?.continuation?.state ?? null;
       if (!isDeepStrictEqual(cycle.observerState,result.observer)
         || !isDeepStrictEqual(cycle.referenceState ?? null,reference)
-        || !isDeepStrictEqual(cycle.temperatureCoverage,result.temperatureCoverage)) cycle.stableSince = null;
+        || !isDeepStrictEqual(cycle.temperatureCoverage,result.temperatureCoverage)) resetRecoveryConfirmation(cycle);
       cycle.observerState = result.observer; cycle.referenceState = reference;
       cycle.temperatureCoverage = result.temperatureCoverage;
       const saved = this.saveWorking(cycle,result); this.save(cycle);
@@ -114,7 +118,7 @@ export class CycleTracker {
         if (cycle.assessment) cycle.assessment = { ...cycle.assessment, profitCents: null, recoveryErrorCents: null,
           basis: 'unassessed-corrected-fireplace-history' };
         if (cycle.status === 'active') {
-          cycle.observerState = null; cycle.stableSince = null;
+          cycle.observerState = null; resetRecoveryConfirmation(cycle);
           this.store.setState(this.workingKey(cycle),null);
         }
         this.store.cycle(this.input,cycle);
@@ -291,13 +295,12 @@ export class CycleTracker {
     return this.store.transaction(() => this.#recordSample(sample,now,options));
   }
   #recordSample(sample, now, { thermalState, equipment = {}, controlIndoor = null } = {}) {
-    const cycle = this.active(); if (!cycle) return null;
+    let cycle = this.active(); if (!cycle) return null;
     const pending = this.workingJob();
     if (pending) {
       if (this.store.path !== ':memory:') throw new Error('Cycle reconstruction must precede live recording');
       this.adoptWorking(rebuildCycleWorking(this.store,pending));
-      const rebuilt = this.active();
-      cycle.observerState = rebuilt.observerState; cycle.referenceState = rebuilt.referenceState; cycle.stableSince = rebuilt.stableSince;
+      cycle = this.active();
     }
     const working = this.readWorking(cycle);
     const rows = [];
@@ -391,7 +394,7 @@ export class CycleTracker {
     cycle.phases = [...new Set([...cycle.phases,...rows.map(row => row.phase)])];
     const referenceState = advanceReference(cycle,rows,this.events(cycle),working.reference);
     cycle.referenceState = referenceState.continuation?.state ?? null;
-    if (referenceState.unavailable) cycle.stableSince = null;
+    if (referenceState.unavailable) resetRecoveryConfirmation(cycle);
     this.store.transaction(() => {
       this.store.appendCycleEvidence(this.input,cycle,rows,{ sampleAt: now, provenance: sample.provenance ?? null,
         context: { controlIndoor, integral: equipment.integral ?? null, fireplaceRevision: this.fireplaceContext?.fireplaceRevision ?? 0 } });
@@ -416,6 +419,7 @@ export class CycleTracker {
     const recoveryIndoor = number(measuredIndoorEndpoint(sample)) ? measuredIndoorEndpoint(sample)
       : controlIndoor && !controlIndoor.stale ? controlIndoor.value : null;
     const sourceUncertainty = controlIndoor?.estimated ? controlIndoor.uncertaintyC : 0;
+    const indoorLowerC = recoveryIndoor - sourceUncertainty;
     const measuredRecovery = number(measuredIndoorEndpoint(sample)) && !controlIndoor?.estimated;
     const waitingForTemperature = cycle.temperatureCoverage.initialMeasured
       && cycle.temperatureCoverage.maximumGapMs <= TRIAL_TEMPERATURE_GAP_MS && !measuredRecovery;
@@ -423,14 +427,14 @@ export class CycleTracker {
       && !waitingForTemperature && (!temperatureCoverageUsable(cycle.temperatureCoverage) || measuredRecovery && rows.every(row => row.temperatureAvailable))
       && number(recoveryIndoor) && number(sourceUncertainty)
       && (!controlIndoor?.estimated || now <= controlIndoor.validUntil)
-      && recoveryIndoor - sourceUncertainty >= reference.endState.indoorC - 0.2
+      && indoorLowerC >= reference.endState.indoorC - 0.2
       && number(reserve) && reserve - sourceUncertainty >= reference.endState.reserveC - 0.25
       && (!cycle.plan.model.floor?.enabled || number(cycle.observerState?.slabC)
-        && cycle.observerState.slabC - sourceUncertainty >= reference.endState.slabC - 0.25)
-      && (sample.indoorTrendCPerHour ?? 0) >= -0.15
-      && (!number(equipment.integral) || !number(cycle.plan.initialState.integral) || equipment.integral >= cycle.plan.initialState.integral - 60);
-    cycle.stableSince = settled ? cycle.stableSince ?? now : null;
-    if (cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
+        && cycle.observerState.slabC - sourceUncertainty >= reference.endState.slabC - 0.25);
+    const confirmation = recoveryConfirmation(cycle, { now, previousAt: previous.timestamp, settled, indoorLowerC, integral: equipment.integral });
+    cycle.stableSince = confirmation.stableSince;
+    cycle.recoveryConfirmation = confirmation.recoveryConfirmation;
+    if (!confirmation.integralLow && cycle.stableSince !== null && now - cycle.stableSince >= HOUR && now - schedule.reductionEnd >= HOUR
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05 && !cycle.observerState?.upper) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
       if (cycle.assessmentUnavailableReason || !temperatureCoverageUsable(cycle.temperatureCoverage) || !measuredRecovery) {

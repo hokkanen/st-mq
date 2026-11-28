@@ -247,6 +247,65 @@ const fallbackIndoor = (at, changes = {}) => ({ value: 21.5, estimated: true, st
 const neutralSample = (at, changes = {}) => sample(at, { outdoorC: 21,
   thermalCompressorDuty: 0, thermalAuxKw: 0, ...changes });
 
+test('a brief integral dip defers completion without resetting the confirmation hour', t => {
+  const { tracker, plan } = fixture(t, {
+    initialState: { indoorC: 21, reserveC: 21, integral: -17 },
+    intervals: intervals(8, { outdoorC: 21 }),
+  });
+  tracker.start(plan, neutralSample(start), start);
+  const record = (minute, integral) => {
+    const at = start + minute * 60_000;
+    return tracker.record(neutralSample(at), at, { equipment: { integral } });
+  };
+  for (let minute = 15; minute <= 85; minute += 5) record(minute, -77);
+  const stableSince = tracker.active().stableSince;
+  assert.equal(stableSince, schedule.reductionEnd);
+  assert.equal(record(87, -80), null);
+  assert.equal(record(90, -80), null);
+  assert.equal(tracker.active().stableSince, stableSince);
+  assert.equal(record(91, -77).recoveryComplete, true);
+});
+
+test('missing or discontinuous integral samples break the low-reading streak', t => {
+  const { tracker, plan } = fixture(t, {
+    initialState: { indoorC: 21, reserveC: 21, integral: -17 },
+    intervals: intervals(8, { outdoorC: 21 }),
+  });
+  tracker.start(plan, neutralSample(start), start);
+  const record = (minute, integral) => {
+    const at = start + minute * 60_000;
+    return tracker.record(neutralSample(at), at, { equipment: { integral } });
+  };
+  for (const minute of [15, 30]) record(minute, -77);
+  for (const minute of [35, 40, 45]) record(minute, -80);
+  record(46, null);
+  assert.equal(tracker.active().recoveryConfirmation.integralBelowSince, null);
+  for (const minute of [47, 52, 57, 63, 68, 73]) record(minute, -80);
+  assert.equal(tracker.active().recoveryConfirmation.integralBelowSince, start + 63 * 60_000);
+  assert.equal(tracker.active().stableSince, schedule.reductionEnd);
+  record(78, -80);
+  assert.equal(tracker.active().stableSince, null);
+  record(79, -77);
+  assert.equal(tracker.active().stableSince, start + 79 * 60_000);
+});
+
+test('a small indoor step preserves the confirmation hour while cooling from its peak resets it', t => {
+  const { tracker, plan } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  const record = (minute, indoorC, indoorTrendCPerHour) => {
+    const at = start + minute * 60_000;
+    return tracker.record(neutralSample(at, { indoorC, indoorTrendCPerHour }), at);
+  };
+  for (const minute of [15, 30, 45, 60, 75]) record(minute, 21.5, 0);
+  record(86, 21.55, 0.3);
+  record(87, 21.5, -3);
+  assert.equal(tracker.active().stableSince, schedule.reductionEnd);
+  record(88, 21.4, -6);
+  assert.equal(tracker.active().stableSince, schedule.reductionEnd);
+  record(89, 21.39, -0.6);
+  assert.equal(tracker.active().stableSince, null);
+});
+
 test('temperature outages retain real energy accounting and conservative fallback can finish control without validation', t => {
   const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
   tracker.start(plan, neutralSample(start), start);
